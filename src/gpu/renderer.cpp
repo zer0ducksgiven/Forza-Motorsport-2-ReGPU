@@ -6790,7 +6790,11 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
             {
                 const float* c = vc->c[i];
                 if (c[0] != 0 || c[1] != 0 || c[2] != 0 || c[3] != 0)
-                    Log("    vc%u = %g %g %g %g", i, c[0], c[1], c[2], c[3]);
+                {
+                    uint32_t h[4];
+                    memcpy(h, c, 16);
+                    Log("    vc%u = %g %g %g %g [%08X %08X %08X %08X]", i, c[0], c[1], c[2], c[3], h[0], h[1], h[2], h[3]);
+                }
             }
         for (uint32_t k : vs.info.vertexFetchConstants)
         {

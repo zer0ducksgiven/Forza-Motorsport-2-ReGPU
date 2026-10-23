@@ -203,19 +203,26 @@ LONG WINAPI OnWatchHit(EXCEPTION_POINTERS* info)
 
 void ArmWatchpoint(void* threadHandle)
 {
-    static uint64_t address = [] {
-        const char* v = getenv("FM2_WATCHW");
-        if (!v)
-            return uint64_t(0);
-        AddVectoredExceptionHandler(1, OnWatchHit);
-        uint32_t a = uint32_t(strtoul(v, nullptr, 16));
-        if (const char* comma = strchr(v, ','))
-            a = LoadBE32(a) + uint32_t(strtoul(comma + 1, nullptr, 16));
-        Log("watchpoint on guest %08X", a);
-        return uint64_t(g_base + a);
-    }();
-    if (!address)
+    // Re-read each time (every 10 ms), so fm2ctl's env command can move a running game's watchpoint;
+    // FM2_WATCHW=0 parks it.
+    static const bool handler = [] { AddVectoredExceptionHandler(1, OnWatchHit); return true; }();
+    (void)handler;
+    const char* v = getenv("FM2_WATCHW");
+    if (!v)
         return;
+    uint32_t a = uint32_t(strtoul(v, nullptr, 16));
+    if (const char* comma = strchr(v, ','))
+        a = LoadBE32(a) + uint32_t(strtoul(comma + 1, nullptr, 16));
+    if (!a)
+        return;
+    static uint32_t last = 0;
+    if (a != last)
+    {
+        last = a;
+        g_watchHits = 0;
+        Log("watchpoint on guest %08X", a);
+    }
+    const uint64_t address = uint64_t(g_base + a);
     if (SuspendThread(threadHandle) == DWORD(-1))
         return;
     CONTEXT c{};

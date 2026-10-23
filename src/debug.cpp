@@ -361,18 +361,36 @@ std::string Handle(const std::string& line)
         return Ok();
     }
     // find TEXT: guest addresses holding TEXT as ASCII, UTF-16 big- or little-endian (the first 64)
-    if (cmd == "find")
+    if (cmd == "find" || cmd == "findhex")
     {
         std::string text;
         std::getline(in, text);
         text.erase(0, text.find_first_not_of(' '));
         if (text.empty())
-            return Error("find TEXT");
-        std::vector<std::pair<std::string, std::string>> needles = { { "ascii", text }, { "utf16be", "" }, { "utf16le", "" } };
-        for (char c : text)
+            return Error("find TEXT | findhex HEXBYTES");
+        std::vector<std::pair<std::string, std::string>> needles;
+        if (cmd == "findhex")
         {
-            needles[1].second += '\0', needles[1].second += c;
-            needles[2].second += c, needles[2].second += '\0';
+            // findhex HEX: raw bytes in guest order (big-endian floats as they sit in memory).
+            std::string bytes;
+            for (size_t i = 0; i + 1 < text.size(); i += 2)
+            {
+                while (i < text.size() && text[i] == ' ')
+                    i++;
+                if (i + 1 >= text.size())
+                    break;
+                bytes += char(std::stoi(text.substr(i, 2), nullptr, 16));
+            }
+            needles = { { "hex", bytes } };
+        }
+        else
+        {
+            needles = { { "ascii", text }, { "utf16be", "" }, { "utf16le", "" } };
+            for (char c : text)
+            {
+                needles[1].second += '\0', needles[1].second += c;
+                needles[2].second += c, needles[2].second += '\0';
+            }
         }
         std::string out;
         int found = 0;
