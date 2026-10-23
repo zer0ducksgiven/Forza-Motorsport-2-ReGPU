@@ -7655,7 +7655,8 @@ void RendererSetGammaEntry(uint32_t index, uint32_t rgb10)
 }
 
 // The debug server's "capture": what F12 does.
-void RendererRequestCapture() { g_hotkeyFrame = g_r.frame + 1; }
+// Two ahead, as F12: the next frame may already be part drawn (its first draws went untraced).
+void RendererRequestCapture() { g_hotkeyFrame = g_r.frame + 2; }
 
 // The debug server's "ps HASH [EXPR]": an empty expression drops the edit. Returns the alias (0 if dropped).
 uint64_t RendererEditPixelShader(uint64_t hash, const std::string& expr)
