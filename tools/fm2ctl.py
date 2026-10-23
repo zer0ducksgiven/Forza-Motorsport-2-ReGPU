@@ -74,7 +74,9 @@ def start(assignments):
     os.makedirs(os.path.join(ROOT, 'out'), exist_ok=True)
     log = open(os.path.join(ROOT, 'out', 'live.log'), 'w')
     flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP if os.name == 'nt' else 0
-    p = subprocess.Popen([os.path.join(ROOT, 'build', 'tu', 'fm2.exe')], cwd=ROOT, env=env, stdout=log, stderr=log,
+    # FM2CTL_WRAP: a launcher to start the game through, e.g. renderdoccmd capture -w (its arguments, '|'-separated)
+    wrap = [w for w in os.environ.get('FM2CTL_WRAP', '').split('|') if w]
+    p = subprocess.Popen(wrap + [os.path.join(ROOT, 'build', 'tu', 'fm2.exe')], cwd=ROOT, env=env, stdout=log, stderr=log,
                          creationflags=flags)
     for _ in range(120):
         time.sleep(0.5)

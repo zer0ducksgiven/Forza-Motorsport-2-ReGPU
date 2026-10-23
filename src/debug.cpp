@@ -2,6 +2,9 @@
 // See tools/fm2ctl.py for the commands. Input is merged into player 1's pad, screenshots are taken by the
 // renderer at its next swap, and the waits block this thread only.
 #include "debug.h"
+#if __has_include("C:/Program Files/RenderDoc/renderdoc_app.h")
+#include "C:/Program Files/RenderDoc/renderdoc_app.h"
+#endif
 
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -361,6 +364,23 @@ std::string Handle(const std::string& line)
         return Ok();
     }
     // find TEXT: guest addresses holding TEXT as ASCII, UTF-16 big- or little-endian (the first 64)
+    // rdcapture: a RenderDoc capture of the next frame (when the game was started under RenderDoc).
+    if (cmd == "rdcapture")
+    {
+#if __has_include("C:/Program Files/RenderDoc/renderdoc_app.h")
+        HMODULE rd = GetModuleHandleA("renderdoc.dll");
+        if (!rd)
+            return Error("not running under RenderDoc");
+        auto getApi = reinterpret_cast<pRENDERDOC_GetAPI>(GetProcAddress(rd, "RENDERDOC_GetAPI"));
+        RENDERDOC_API_1_1_2* api = nullptr;
+        if (!getApi || !getApi(eRENDERDOC_API_Version_1_1_2, reinterpret_cast<void**>(&api)) || !api)
+            return Error("RENDERDOC_GetAPI failed");
+        api->TriggerCapture();
+        return Ok("\"note\":\"captured at the next present\"");
+#else
+        return Error("built without renderdoc_app.h");
+#endif
+    }
     if (cmd == "find" || cmd == "findhex")
     {
         std::string text;
