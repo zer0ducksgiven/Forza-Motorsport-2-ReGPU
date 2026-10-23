@@ -32,6 +32,8 @@ struct TranslatedShader
     // Float constants the code reads: c[0] up to this (exclusive), 256 with relative
     // addressing. Only these are uploaded per draw.
     uint32_t constantsUsed = 0;
+    // Vertex shaders: bit n set when the code writes interpolator o[n].
+    uint32_t interpolatorsWritten = 0;
 };
 
 TranslatedShader TranslateShader(const ucode::Shader& shader);

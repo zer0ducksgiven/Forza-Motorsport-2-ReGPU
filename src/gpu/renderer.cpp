@@ -2218,6 +2218,7 @@ const CompiledShader& GetShaderLocked(uint64_t hash, const std::vector<uint32_t>
                 cs.info.ok = true;
                 cs.info.usedTextureSlots = base.info.usedTextureSlots;
                 cs.info.constantsUsed = base.info.constantsUsed; // same ALU code
+                cs.info.interpolatorsWritten = base.info.interpolatorsWritten;
                 cs.info.vertexFetchLayout = std::move(layout.vertexFetchLayout);
                 cs.info.vertexFetchConstants = std::move(layout.vertexFetchConstants);
                 cs.cacheKey = base.cacheKey;
@@ -6504,9 +6505,13 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
     const uint32_t colorControl = gpureg::Get(RB_COLORCONTROL);
     // Depth-only passes (EDRAM mode 5) keep the alpha test: the showroom's car shadow map has
     // cut-out geometry that otherwise lands in it as solid blocks (jagged shadow under the
-    // car). FM2_NO_DEPTH_ALPHATEST=1 skips it (as before; race shadows render either way).
+    // car). Except when the vertex shader writes no interpolator: the pixel shader's alpha is
+    // then an unwritten register (leftover on the console, 0 here), and the test discarded
+    // every caster of the race's sun shadow map (no car shadows, #4).
+    // FM2_NO_DEPTH_ALPHATEST=1 skips it in every depth-only pass.
     static const bool depthAlphaTest = getenv("FM2_NO_DEPTH_ALPHATEST") == nullptr;
-    pc->info[0] = (colorControl >> 3) & 1 && (edramMode != 5 || depthAlphaTest) ? (colorControl & 7) : 7;
+    const bool alphaTestHere = edramMode != 5 || (depthAlphaTest && vs.info.interpolatorsWritten != 0);
+    pc->info[0] = (colorControl >> 3) & 1 && alphaTestHere ? (colorControl & 7) : 7;
     pc->info2[0] = RegFloat(RB_ALPHA_REF);
     pc->info2[1] = 1.0f / ScaleX();
     pc->info2[2] = 1.0f / ScaleY();
@@ -7206,6 +7211,10 @@ void PrecompileAll()
     // never arms and each first-time effect in a race stalls for its compile.
     if (!keys.empty())
         g_lastLongHold = std::chrono::steady_clock::now();
+    // Input recordings and replays count from here: how long the boot took (shader compiles)
+    // varies from run to run, the game's own timing after it doesn't.
+    extern std::atomic<int64_t> g_inputEpochNs;
+    g_inputEpochNs.store(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
     Log("precompile: done in %.1f s (%zu shaders loaded, %zu pipelines started)",
         std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count(), shadersInstalled, pipelinesStarted);
 

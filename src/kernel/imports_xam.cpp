@@ -8,6 +8,9 @@
 #include <fstream>
 #include <vector>
 
+// When the boot's shader warm-up ended (renderer.cpp): input recordings and replays count from it.
+std::atomic<int64_t> g_inputEpochNs{ 0 };
+
 #include "gpu/renderer.h"
 #include "debug.h"
 #include "kernel/imports.h"
@@ -636,11 +639,12 @@ bool ReadPad(uint32_t user, PadState& s)
                 s.buttons |= XINPUT_GAMEPAD_START | XINPUT_GAMEPAD_A;
         }
         // FM2_RECORD_INPUT=<file>: write player 1's input (pad and keyboard) as it changes, with
-        // the time since boot. FM2_REPLAY_INPUT=<file> plays such a recording back instead of the
+        // the time since the boot's shader warm-up ended (g_inputEpochNs; nothing before it). FM2_REPLAY_INPUT=<file> plays such a recording back instead of the
         // live input (then holds its last state; FM2_REPLAY_EXIT=<seconds> quits that long after
         // its end), so a route to a rendering bug can be repeated without a person.
+        if (const int64_t epoch = g_inputEpochNs.load(); epoch)
         {
-            const double now = std::chrono::duration<double>(Clock::now() - start).count();
+            const double now = (std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now().time_since_epoch()).count() - epoch) / 1e9;
             static FILE* record = getenv("FM2_RECORD_INPUT") ? fopen(getenv("FM2_RECORD_INPUT"), "w") : nullptr;
             struct Sample
             {

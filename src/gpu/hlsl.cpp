@@ -346,7 +346,10 @@ struct Emitter
         if (reg == 62)
             return "opos";
         if (reg < 16)
+        {
+            result.interpolatorsWritten |= 1u << reg;
             return "o[" + std::to_string(reg) + "]";
+        }
         return "";
     }
 
