@@ -42,6 +42,7 @@ cbuffer PSConstants : register(b1)
     float4 pinfo2;    // x alpha reference, y/z 1 / render scale (pixel positions back to game pixels), w colour ceiling (0 none)
     uint4 tinfo[32];  // x sampler (0 lin wrap, 1 lin clamp, 2 point clamp, 3 point wrap), y/z size, w dimension (3 cube)
     float4 tbias[32]; // x fetch-constant LOD bias, y (as uint) bindless descriptor index
+    float4 pforceLod; // x: forced absolute LOD (FM2_FORCE_LOD), -1 = implicit LOD
 };
 ByteAddressBuffer gmem : register(t0);
 ByteAddressBuffer gphys : register(t1);   // guest physical memory (large vertex buffers, indices)
@@ -254,6 +255,17 @@ float4 TFetchRaw(uint slot, float3 coord, bool denorm, bool vertexStage, float b
     uint mode = tinfo[slot].x & 3u;
     if (vertexStage)
         return t.SampleLevel(sLinearClamp, uv, max(bias, 0));
+    // FM2_FORCE_LOD: sample an absolute mip level instead of the implicit one. Diagnostic:
+    // separates "mips never selected" (this fixes the distance noise) from "mips never
+    // uploaded" (this stays noisy / reads the clamped tail).
+    if (pforceLod.x >= 0.0)
+    {
+        const float lod = clamp(pforceLod.x, 0.0, 16.0);
+        if (mode == 1) return t.SampleLevel(sLinearClamp, uv, lod);
+        if (mode == 2) return t.SampleLevel(sPointClamp, uv, lod);
+        if (mode == 3) return t.SampleLevel(sPointWrap, uv, lod);
+        return t.SampleLevel(sLinearWrap, uv, lod);
+    }
     if (mode == 1) return FM2_SAMPLE_BIAS_2D(t, sLinearClamp, uv, bias);
     if (mode == 2) return FM2_SAMPLE_BIAS_2D(t, sPointClamp, uv, bias);
     if (mode == 3) return FM2_SAMPLE_BIAS_2D(t, sPointWrap, uv, bias);

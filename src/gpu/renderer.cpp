@@ -6281,6 +6281,7 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
         float info2[4];
         uint32_t tinfo[32][4];
         float tbias[32][4];
+        float forceLod[4]; // x: forced absolute LOD (FM2_FORCE_LOD), -1 = implicit
     };
     const UINT64 vsOffset = RingAlloc(sizeof(VSConstants)), psOffset = RingAlloc(sizeof(PSConstants));
     if (vsOffset == ~0ull || psOffset == ~0ull)
@@ -6514,6 +6515,11 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
     // reads those values).
     const uint32_t colorFormat = (gpureg::Get(RB_COLOR_INFO) >> 16) & 0xF;
     pc->info2[3] = colorFormat == 3 || colorFormat == 12 ? 31.875f : 0.0f;
+    // FM2_FORCE_LOD=<float>: force the pixel shader to sample an absolute mip level, for the
+    // RADV distance-noise diagnostic. -1 (default) keeps the implicit LOD.
+    static const float forceLod = getenv("FM2_FORCE_LOD") ? float(atof(getenv("FM2_FORCE_LOD"))) : -1.0f;
+    pc->forceLod[0] = forceLod;
+    pc->forceLod[1] = pc->forceLod[2] = pc->forceLod[3] = 0.0f;
 
     Section(4);
     // Textures are bindless: each one has a permanent descriptor in the heap's
