@@ -5590,6 +5590,19 @@ void TraceSkip(const char* why, uint32_t initiator)
 
 namespace
 {
+// FM2_TRACE_DIRECT: in-place vertex buffers of depth-only draws, by address (see DrawImpl).
+struct DirectTrace
+{
+    struct Entry
+    {
+        uint64_t frame = ~0ull, hash = 0, vs = 0;
+        uint32_t bytes = 0;
+    };
+    std::mutex mutex;
+    std::unordered_map<uint32_t, Entry> seen;
+    uint32_t changed = 0, checked = 0;
+} g_directTrace;
+
 // Performance counters (FM2_PERF=1 logs them once a second).
 struct Perf
 {
@@ -6574,6 +6587,21 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
         static const uint32_t directBytes = getenv("FM2_DIRECT_FETCH_KB") ? uint32_t(atoi(getenv("FM2_DIRECT_FETCH_KB"))) * 1024u : kDirectFetchBytes;
         if (g_r.physical && !noDirect && bytes >= directBytes)
         {
+            // FM2_TRACE_DIRECT=1: remember the in-place buffers of depth-only draws and check at the next
+            // frame's end whether the game rewrote them (the GPU reads them later than the draw is recorded).
+            static LiveSwitch traceDirect("FM2_TRACE_DIRECT");
+            if (traceDirect && edramMode == 5)
+            {
+                std::lock_guard lock(g_directTrace.mutex);
+                auto& e = g_directTrace.seen[address];
+                if (e.frame != g_r.frame)
+                {
+                    e.frame = g_r.frame;
+                    e.bytes = bytes;
+                    e.vs = C().vsHash;
+                    e.hash = ContentHash(GuestPtr<uint8_t>(GpuPhysToGuest(address)), bytes);
+                }
+            }
             vc->vf[k][0] = address & 0x1FFFFFFF;
             vc->vf[k][1] = d1 & 3;
             vc->vf[k][2] = 1;
@@ -7552,6 +7580,19 @@ void PrecompileAll()
 
 void RendererOnSwapImpl(uint64_t frameNumber, uint32_t frontBuffer)
 {
+    {
+        // FM2_TRACE_DIRECT: buffers recorded last frame that the game has rewritten since.
+        std::lock_guard lock(g_directTrace.mutex);
+        for (auto& [address, e] : g_directTrace.seen)
+            if (e.frame + 1 == g_r.frame)
+            {
+                g_directTrace.checked++;
+                const uint64_t now = ContentHash(GuestPtr<uint8_t>(GpuPhysToGuest(address)), e.bytes);
+                if (now != e.hash && g_directTrace.changed++ < 200)
+                    Log("direct: %08X %u bytes (vs %016llx) rewritten after frame %llu's depth-only draw (%u of %u checked)", address, e.bytes,
+                        (unsigned long long)e.vs, (unsigned long long)e.frame, g_directTrace.changed, g_directTrace.checked);
+            }
+    }
     void MemScanOnSwap(uint64_t frame);
     MemScanOnSwap(g_r.frame);
     if (!g_r.ok)
