@@ -7242,6 +7242,8 @@ void BenchmarkWriteReport(const char* path)
         jitter += std::fabs(double(frames[i]) - double(frames[i - 1]));
     fprintf(out, "Pacing:     %.2f ms average change between frames, median frame %.2f ms\n", jitter / double(frames.size() - 1),
         double(sorted[sorted.size() / 2]));
+    fprintf(out, "Shaders:    %u compiled, %u from cache; pipelines %u built, %u from cache\n", g_stats.shadersBuilt.load(), g_stats.shadersCached.load(),
+        g_stats.pipelinesBuilt.load(), g_stats.pipelinesLoaded.load());
     // Timeline: average and slowest frame per 5 s (does the first stretch run slower?).
     fprintf(out, "Timeline:  ");
     double windowMs = 0, windowMax = 0;
