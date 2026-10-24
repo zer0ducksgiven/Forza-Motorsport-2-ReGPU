@@ -17,6 +17,8 @@
 #include "render/presenter.h"
 #include "settings.h"
 
+void LogSystemInfo(ID3D12Device* device); // sysinfo.cpp
+
 using Microsoft::WRL::ComPtr;
 
 void DealerOnChar(wchar_t c); // hooks/dealer.cpp: a typed easter-egg code
@@ -100,6 +102,7 @@ void EnsureDevice()
             debug->EnableDebugLayer();
     }
     Check(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_12_0, IID_PPV_ARGS(&g_device)), "D3D12CreateDevice");
+    LogSystemInfo(g_device.Get());
     D3D12_COMMAND_QUEUE_DESC qd{};
     qd.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
     Check(g_device->CreateCommandQueue(&qd, IID_PPV_ARGS(&g_queue)), "CreateCommandQueue");
