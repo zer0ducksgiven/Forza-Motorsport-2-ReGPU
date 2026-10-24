@@ -90,8 +90,6 @@ The keyboard only works while the game window has focus.
   Driver text overflows after a few selections, a blue stripe appears on tyres at random, and a
   soft glow sits above bright car roofs (the bloom). Use F12 on each. The "not translated"
   shaders in out/play.log are never drawn (no "draw dropped" lines), so they are not a lead.
-- Car dynamic shadows are missing (issue #4): the cars cast none of the moving shadows they do
-  on the console. The most important fix of this list.
 - Blue stripe on tyres: very visible again on New York with a blue car (on the console it only
   shows with the contrast turned up in Photo Mode).
 - A dark or bright shadowy mass sits ahead of the camera whichever way it faces, on some tracks
