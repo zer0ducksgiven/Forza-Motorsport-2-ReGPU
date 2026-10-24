@@ -18,6 +18,13 @@ struct Settings
     // Low performance mode: for old CPUs, turns off renderer changes that help fast PCs but cost
     // slow ones (staged draw constants: an FX-8350 lost time copying them).
     bool lowPerformance = false;
+    // Racing wheels (input/wheel.cpp): force feedback strength and the centring spring and damper
+    // on top of it (percent), the steering force reversed, and the rotation the wheel is set to in
+    // its own software (degrees; the game steers as the 360 wheel's 270 from it; 0 uses the
+    // wheel's range as it is).
+    uint32_t wheelStrength = 50, wheelSpring = 50;
+    bool wheelReverse = false;
+    uint32_t wheelRotation = 0;
     uint32_t language = 1;               // the console language the game sees (XGetLanguage: 1 English, 3 German, ...)
     uint32_t msaa = 1;                   // anti-aliasing samples per pixel: 1 (off), 2, 4 or 8
     // Upscaling: the 3D scene renders smaller and is upscaled before post-processing and

@@ -170,7 +170,11 @@ function render() {
   $("lang-note").textContent = o.missingLanguages.length
     ? `Your disc also has ${o.missingLanguages.join(", ")} text. Those can't be picked yet.` : ""
   for (const b of $("display").children) b.classList.toggle("on", (b.dataset.full === "1") === set.fullscreen)
-  for (const k of ["vsync", "enhance", "skipIntro", "lowPerformance"]) $(k).classList.toggle("on", !!set[k])
+  for (const k of ["vsync", "enhance", "skipIntro", "lowPerformance", "wheelReverse"]) $(k).classList.toggle("on", !!set[k])
+  const percents = Array.from({ length: 21 }, (_, i) => ({ value: i * 5, name: i * 5 + "%" }))
+  fill($("wheelStrength"), percents, set.wheelStrength)
+  fill($("wheelSpring"), percents, set.wheelSpring)
+  fill($("wheelRotation"), [{ value: 0, name: "As set on the wheel" }, ...[270, 360, 540, 720, 900, 1080, 1440, 2520].map((d) => ({ value: d, name: d + "°" }))], set.wheelRotation)
 
   const lang = o.languages.find((l) => l.id === set.language)
   const aspect = o.aspects.find((a) => a.value === set.aspect)
@@ -289,7 +293,8 @@ $("maxFps").onchange = (e) => change({ maxFps: +e.target.value })
 $("msaa").onchange = (e) => change({ msaa: +e.target.value })
 $("language").onchange = (e) => change({ language: +e.target.value })
 $("display").onclick = (e) => { const b = e.target.closest("button"); if (b) change({ fullscreen: b.dataset.full === "1" }) }
-for (const k of ["vsync", "enhance", "skipIntro", "lowPerformance"]) $(k).onclick = () => change({ [k]: !state.settings[k] })
+for (const k of ["vsync", "enhance", "skipIntro", "lowPerformance", "wheelReverse"]) $(k).onclick = () => change({ [k]: !state.settings[k] })
+for (const k of ["wheelStrength", "wheelSpring", "wheelRotation"]) $(k).onchange = (e) => change({ [k]: +e.target.value })
 
 // ---- actions
 

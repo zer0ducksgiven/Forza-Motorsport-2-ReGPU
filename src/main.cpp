@@ -18,7 +18,6 @@ void D3DDebugLog();
 int main(int argc, char** argv)
 {
     CrashHandlerInit();
-    WheelStart(); // early: the game asks what player 1 holds a second in
     std::filesystem::path gameDir = argc > 1 ? argv[1] : "game";
     Log("fm2: game folder %s", std::filesystem::absolute(gameDir).string().c_str());
 
@@ -34,6 +33,7 @@ int main(int argc, char** argv)
         }
     }
     RuntimeInit(gameDir);
+    WheelStart(); // early (the game asks what player 1 holds a second in), after the settings' folder is known
     DebugServerStart(); // FM2_DEBUG=1: tools/fm2ctl.py drives the running game
     if (getenv("FM2_BOOTSCREEN_PREVIEW"))
     {

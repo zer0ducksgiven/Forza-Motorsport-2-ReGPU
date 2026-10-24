@@ -55,6 +55,7 @@ button:disabled { opacity: .45; cursor: default; }
 /* pages */
 .page { flex: 1; min-height: 0; padding: 10px 22px 22px; gap: 14px; }
 .grid3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.stack { display: flex; flex-direction: column; gap: 14px; min-height: 0; }
 .grid-updates { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.8fr); }
 .grid-report { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); }
 .panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; display: flex; flex-direction: column; min-height: 0; overflow-y: auto; }

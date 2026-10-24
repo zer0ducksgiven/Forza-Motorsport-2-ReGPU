@@ -7,12 +7,10 @@
 // jumping to it. Forces fade in when they start, fade out while the game's window is not in front
 // or the game has stopped updating them (a hang, a pause), and stop for good on exit (WheelStop).
 //
-// Settings (environment, until the launcher has them):
-//   FM2_WHEEL_STRENGTH=50     everything, percent
-//   FM2_WHEEL_SPRING=50       the centring spring and the damper on top of that, percent
-//   FM2_WHEEL_REVERSE=1       the steering force the other way round
-//   FM2_WHEEL_STEER_SCALE=1   steering multiplied by this (a wheel set to 1080 degrees: 4 for the
-//                             360 wheel's 270)
+// Settings (settings.ini, from the launcher; FM2_WHEEL_STRENGTH, _SPRING, _REVERSE and _ROTATION
+// override them): the strength, the spring and damper on top of it, the steering force reversed,
+// and the rotation the wheel is set to (steering is scaled to the 360 wheel's 270 degrees from it).
+// Environment only:
 //   FM2_WHEEL_GAS=p0, FM2_WHEEL_BRAKE=p1  the pedal axes: w (the wheel) or p (the pedals) and the
 //                             axis number. By default the pedals' first two axes, or the wheel's
 //                             axes after steering when the pedals plug into the wheel.
@@ -35,6 +33,7 @@
 #include <vector>
 
 #include "log.h"
+#include "settings.h"
 
 namespace
 {
@@ -46,12 +45,6 @@ constexpr auto kStaleAfter = milliseconds(250); // no steering force update for 
 // The game's steering force turns the wheel right when positive; an SDL level on the steering
 // axis pulls left when positive (FH1's wheel_input_driver.cpp).
 constexpr float kConstantToSdl = -1.0f;
-
-float EnvFloat(const char* name, float fallback)
-{
-    const char* v = getenv(name);
-    return v && *v ? float(atof(v)) : fallback;
-}
 
 // Vendors whose devices are wheels or pedals when SDL doesn't say (DirectInput often doesn't).
 bool WheelVendor(uint16_t vid)
@@ -109,10 +102,8 @@ struct Driver
     steady_clock::time_point updated; // the game's last steering force
     float fade = 0;
 
-    float strength = EnvFloat("FM2_WHEEL_STRENGTH", 50) / 100.0f;
-    float spring = EnvFloat("FM2_WHEEL_SPRING", 50) / 100.0f;
-    float reverse = getenv("FM2_WHEEL_REVERSE") ? -1.0f : 1.0f;
-    float steerScale = EnvFloat("FM2_WHEEL_STEER_SCALE", 1);
+    // From the settings when the thread starts.
+    float strength = 0.5f, spring = 0.5f, reverse = 1, steerScale = 1;
 };
 Driver g_wheel;
 std::atomic<bool> g_started{ false }, g_present{ false }, g_ff{ false };
@@ -266,8 +257,8 @@ void OpenHaptic(Driver& d)
         d.features & SDL_HAPTIC_INERTIA ? " inertia" : "", d.features & SDL_HAPTIC_FRICTION ? " friction" : "",
         d.features & SDL_HAPTIC_GAIN ? " gain" : "", d.features & SDL_HAPTIC_AUTOCENTER ? " autocentre" : "",
         SDL_GetMaxHapticEffectsPlaying(d.haptic));
-    Log("wheel: strength %.0f%%, spring and damper %.0f%% of that%s", d.strength * 100, d.spring * 100,
-        d.reverse < 0 ? ", steering force reversed" : "");
+    Log("wheel: strength %.0f%%, spring and damper %.0f%% of that%s, steering x%.2f", d.strength * 100, d.spring * 100,
+        d.reverse < 0 ? ", steering force reversed" : "", d.steerScale);
     g_ff = true;
 }
 
@@ -436,6 +427,16 @@ void Thread()
     SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI, "0");
     SDL_SetHint(SDL_HINT_JOYSTICK_RAWINPUT, "0");
     SDL_SetHint(SDL_HINT_XINPUT_ENABLED, "0");
+    Driver& d = g_wheel;
+    {
+        const Settings& st = GetSettings();
+        std::lock_guard lock(d.mutex);
+        d.strength = st.wheelStrength / 100.0f;
+        d.spring = st.wheelSpring / 100.0f;
+        d.reverse = st.wheelReverse ? -1.0f : 1.0f;
+        // The 360 wheel turns 270 degrees: a wheel set to 1080 needs a quarter of its turn for full lock.
+        d.steerScale = st.wheelRotation ? st.wheelRotation / 270.0f : 1.0f;
+    }
     if (!SDL_Init(SDL_INIT_JOYSTICK | SDL_INIT_HAPTIC))
     {
         Log("wheel: SDL did not start: %s", SDL_GetError());
@@ -443,7 +444,6 @@ void Thread()
     }
     Log("wheel: SDL %d.%d.%d, looking for wheels", SDL_VERSIONNUM_MAJOR(SDL_GetVersion()), SDL_VERSIONNUM_MINOR(SDL_GetVersion()),
         SDL_VERSIONNUM_MICRO(SDL_GetVersion()));
-    Driver& d = g_wheel;
     auto last = steady_clock::now();
     for (;;)
     {

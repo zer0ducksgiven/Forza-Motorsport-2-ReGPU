@@ -72,6 +72,14 @@ void Load()
             g_settings.skipIntro = value == "1";
         else if (key == "low_performance")
             g_settings.lowPerformance = value == "1";
+        else if (key == "wheel_strength")
+            g_settings.wheelStrength = uint32_t(atoi(value.c_str()));
+        else if (key == "wheel_spring")
+            g_settings.wheelSpring = uint32_t(atoi(value.c_str()));
+        else if (key == "wheel_reverse")
+            g_settings.wheelReverse = value == "1";
+        else if (key == "wheel_rotation")
+            g_settings.wheelRotation = uint32_t(atoi(value.c_str()));
         else if (key == "msaa")
             g_settings.msaa = uint32_t(atoi(value.c_str()));
         else if (key == "upscaler")
@@ -116,6 +124,17 @@ void Load()
         g_settings.skipIntro = atoi(v) != 0;
     if (const char* v = getenv("FM2_LOW_PERFORMANCE"))
         g_settings.lowPerformance = atoi(v) != 0;
+    if (const char* v = getenv("FM2_WHEEL_STRENGTH"))
+        g_settings.wheelStrength = uint32_t(atoi(v));
+    if (const char* v = getenv("FM2_WHEEL_SPRING"))
+        g_settings.wheelSpring = uint32_t(atoi(v));
+    if (const char* v = getenv("FM2_WHEEL_REVERSE"))
+        g_settings.wheelReverse = atoi(v) != 0;
+    if (const char* v = getenv("FM2_WHEEL_ROTATION"))
+        g_settings.wheelRotation = uint32_t(atoi(v));
+    g_settings.wheelStrength = std::min<uint32_t>(g_settings.wheelStrength, 100);
+    g_settings.wheelSpring = std::min<uint32_t>(g_settings.wheelSpring, 100);
+    g_settings.wheelRotation = std::min<uint32_t>(g_settings.wheelRotation, 3600);
     if (const char* v = getenv("FM2_MSAA"))
         g_settings.msaa = uint32_t(atoi(v));
     g_settings.msaa = g_settings.msaa >= 8 ? 8 : g_settings.msaa >= 4 ? 4 : g_settings.msaa >= 2 ? 2 : 1;
@@ -178,6 +197,10 @@ void SaveSettings()
     out << "enhance=" << (s.enhance ? 1 : 0) << "\n";
     out << "skip_intro=" << (s.skipIntro ? 1 : 0) << "\n";
     out << "low_performance=" << (s.lowPerformance ? 1 : 0) << "\n";
+    out << "wheel_strength=" << s.wheelStrength << "\n";
+    out << "wheel_spring=" << s.wheelSpring << "\n";
+    out << "wheel_reverse=" << (s.wheelReverse ? 1 : 0) << "\n";
+    out << "wheel_rotation=" << s.wheelRotation << "\n";
     out << "language=" << s.language << "\n";
     out << "msaa=" << s.msaa << "\n";
     out << "upscaler=" << UpscalerName(s.upscaler) << "\n";

@@ -51,9 +51,13 @@ public sealed class GameSettings
     public bool Enhance { get; set; }
     public bool SkipIntro { get; set; }
     public bool LowPerformance { get; set; }
+    public int WheelStrength { get; set; } = 50;
+    public int WheelSpring { get; set; } = 50;
+    public bool WheelReverse { get; set; }
+    public int WheelRotation { get; set; }
     public int Language { get; set; } = 1;
 
-    static readonly string[] Known = ["profile", "resolution", "aspect", "fullscreen", "vsync", "max_fps", "msaa", "enhance", "skip_intro", "low_performance", "language"];
+    static readonly string[] Known = ["profile", "resolution", "aspect", "fullscreen", "vsync", "max_fps", "msaa", "enhance", "skip_intro", "low_performance", "wheel_strength", "wheel_spring", "wheel_reverse", "wheel_rotation", "language"];
 
     public static GameSettings Load()
     {
@@ -71,6 +75,10 @@ public sealed class GameSettings
                 case "enhance": s.Enhance = v == "1"; break;
                 case "skip_intro": s.SkipIntro = v == "1"; break;
                 case "low_performance": s.LowPerformance = v == "1"; break;
+                case "wheel_strength": s.WheelStrength = int.TryParse(v, out var ws) ? ws : 50; break;
+                case "wheel_spring": s.WheelSpring = int.TryParse(v, out var wp) ? wp : 50; break;
+                case "wheel_reverse": s.WheelReverse = v == "1"; break;
+                case "wheel_rotation": s.WheelRotation = int.TryParse(v, out var wr) ? wr : 0; break;
                 case "language": s.Language = int.TryParse(v, out var l) && l > 0 ? l : 1; break;
             }
         return s;
@@ -84,6 +92,7 @@ public sealed class GameSettings
         sb.Append($"profile={(profile.Length > 0 ? profile : "Player")}\n");
         sb.Append($"resolution={Resolution}\naspect={Aspect}\nfullscreen={B(Fullscreen)}\nvsync={B(Vsync)}\n");
         sb.Append($"max_fps={Math.Clamp(MaxFps, 30, 360)}\nmsaa={Msaa}\nenhance={B(Enhance)}\nskip_intro={B(SkipIntro)}\nlow_performance={B(LowPerformance)}\nlanguage={Language}\n");
+        sb.Append($"wheel_strength={Math.Clamp(WheelStrength, 0, 100)}\nwheel_spring={Math.Clamp(WheelSpring, 0, 100)}\nwheel_reverse={B(WheelReverse)}\nwheel_rotation={Math.Clamp(WheelRotation, 0, 3600)}\n");
         foreach (var (k, v) in keep) sb.Append($"{k}={v}\n");
         Directory.CreateDirectory(Paths.User);
         File.WriteAllText(Paths.SettingsFile, sb.ToString());
