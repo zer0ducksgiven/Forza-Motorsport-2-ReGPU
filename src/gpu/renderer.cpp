@@ -5585,6 +5585,8 @@ struct Perf
     std::chrono::steady_clock::time_point windowStart = std::chrono::steady_clock::now();
     double drawSeconds = 0, swapSeconds = 0;
     double section[8] = {};
+    double sub[6] = {}; // the constants section split up (Sub)
+    std::chrono::steady_clock::time_point subMark;
     uint64_t tablesBuilt = 0, tablesReused = 0;
     std::chrono::steady_clock::time_point mark;
     uint64_t frames = 0, draws = 0, slowFrames = 0;
@@ -6204,6 +6206,17 @@ void Section(int i)
     g_perf.mark = now;
 }
 
+// The constants section split up: Sub(-1) starts it, Sub(i) adds the time since the last call to part i.
+void Sub(int i)
+{
+    if (!g_perfTiming)
+        return;
+    const auto now = std::chrono::steady_clock::now();
+    if (i >= 0)
+        g_perf.sub[i] += std::chrono::duration<double>(now - g_perf.subMark).count();
+    g_perf.subMark = now;
+}
+
 void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
 {
     Section(0);
@@ -6392,6 +6405,7 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
     FrameResources& f = Frame();
 
     Section(3);
+    Sub(-1);
     // Index list.
     UINT64 listOffset = 0;
     if (!directIndex)
@@ -6440,6 +6454,7 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
         float tbias[32][4];
         float forceLod[4]; // x: forced absolute LOD (FM2_FORCE_LOD), -1 = implicit
     };
+    Sub(0);
     const UINT64 vsOffset = RingAlloc(sizeof(VSConstants)), psOffset = RingAlloc(sizeof(PSConstants));
     if (vsOffset == ~0ull || psOffset == ~0ull)
     {
@@ -6513,6 +6528,7 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
             vc->vjitter[2] = vc->vjitter[3] = 0;
         }
     }
+    Sub(1);
     for (uint32_t i = 0; i < 8; i++)
         vc->b[i] = pc->b[i] = gpureg::Get(gpureg::BoolConstants + i);
     for (uint32_t i = 0; i < 32; i++)
@@ -6528,7 +6544,12 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
             vc->b[index >> 5] = pc->b[index >> 5] = value ? (pc->b[index >> 5] | bit) : (pc->b[index >> 5] & ~bit);
         }
     }
-    memset(vc->vf, 0, sizeof(vc->vf));
+    Sub(4);
+    // Only the entries this shader reads are written (all four fields): clearing all 96 (1.5 KB of
+    // write-combined memory a draw) was most of the vertex fetch time on an FX-8350.
+    static LiveSwitch clearFetch("FM2_CLEAR_FETCH_TABLE"); // A/B
+    if (clearFetch)
+        memset(vc->vf, 0, sizeof(vc->vf));
     for (uint32_t k : vs.info.vertexFetchConstants)
     {
         const uint32_t d0 = gpureg::Get(gpureg::FetchConstants + k * 2), d1 = gpureg::Get(gpureg::FetchConstants + k * 2 + 1);
@@ -6542,6 +6563,7 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
             vc->vf[k][0] = address & 0x1FFFFFFF;
             vc->vf[k][1] = d1 & 3;
             vc->vf[k][2] = 1;
+            vc->vf[k][3] = 0;
             continue;
         }
         // FM2_TRACE_MIDSIZE=1: log copied buffers of 16-64 KB that change within a frame (they must stay copied)
@@ -6561,7 +6583,9 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
                 Log("midsize: %08X %u bytes changed since frame %llu (vs %016llx ps %016llx)", address, bytes, (unsigned long long)e.first, (unsigned long long)C().vsHash, (unsigned long long)C().psHash);
             e = { g_r.frame, h };
         }
+        Sub(2);
         const UINT64 dataOffset = UploadGuest(GpuPhysToGuest(address), bytes);
+        Sub(5);
         if (dataOffset == ~0ull)
         {
             TraceSkip("ring full", initiator);
@@ -6569,7 +6593,9 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
         }
         vc->vf[k][0] = uint32_t(dataOffset);
         vc->vf[k][1] = d1 & 3;
+        vc->vf[k][2] = vc->vf[k][3] = 0;
     }
+    Sub(2);
     // Perspective geometry in a wide pass (see ViewExtent): the game's camera already projects
     // at the wider aspect once hooks/camera_aspect.cpp widened it, so only the vertical zoom
     // for FM2_WIDE_FOV < 100 remains; otherwise the view is narrowed here (Hor+ without the
@@ -6708,6 +6734,7 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
     static const float forceLod = getenv("FM2_FORCE_LOD") ? float(atof(getenv("FM2_FORCE_LOD"))) : -1.0f;
     pc->forceLod[0] = forceLod;
     pc->forceLod[1] = pc->forceLod[2] = pc->forceLod[3] = 0.0f;
+    Sub(3);
 
     Section(4);
     // Textures are bindless: each one has a permanent descriptor in the heap's
@@ -7276,6 +7303,9 @@ void RendererOnSwap(uint64_t frameNumber, uint32_t frontBuffer)
             Log("perf:   shaders %.2f | indices %.2f | pipeline %.2f | constants %.2f | textures %.2f | submit %.2f ms/frame",
                 g_perf.section[0] * 1000.0 / g_perf.frames, g_perf.section[1] * 1000.0 / g_perf.frames, g_perf.section[2] * 1000.0 / g_perf.frames,
                 g_perf.section[3] * 1000.0 / g_perf.frames, g_perf.section[4] * 1000.0 / g_perf.frames, g_perf.section[5] * 1000.0 / g_perf.frames);
+        if (perf && g_perf.frames)
+            Log("perf:   constants split: index list %.2f | constant banks %.2f | vertex fetch %.2f (bools and loops %.2f, uploads %.2f) | the rest %.2f ms/frame",
+                g_perf.sub[0] * 1000.0 / g_perf.frames, g_perf.sub[1] * 1000.0 / g_perf.frames, g_perf.sub[2] * 1000.0 / g_perf.frames, g_perf.sub[4] * 1000.0 / g_perf.frames, g_perf.sub[5] * 1000.0 / g_perf.frames, g_perf.sub[3] * 1000.0 / g_perf.frames);
         if (perf)
             Log("perf:   cpu%s | slowest frame %.1f ms, %llu over 20 ms", GuestThreadCpuUsage(window).c_str(), g_perf.maxFrame,
                 (unsigned long long)g_perf.slowFrames);

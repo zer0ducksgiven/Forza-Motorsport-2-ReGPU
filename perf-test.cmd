@@ -12,6 +12,11 @@ if not exist out mkdir out
 if not exist out\runs mkdir out\runs
 call "%~dp0install-content.cmd"
 
+rem perf-test.cmd one <label> ["SWITCH=1"]: one run, no pause (for remote runs)
+if /i "%~1"=="one" (
+    call :run %2 %3
+    goto :eof
+)
 if /i not "%~1"=="ab" (
     call :run normal
     goto done
