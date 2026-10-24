@@ -121,6 +121,28 @@ where the GPU and the command processor are close to equal limits; menus reach t
 Saves work: the signed-in gamer profile is the profile name from the launcher (`Player`
 by default), and its saves live in `Documents\fm2\profiles\<name>\content`.
 
+## Racing wheels (beta)
+
+A racing wheel with force feedback works as an Xbox 360 wheel: steering, pedals, buttons and
+the game's own force feedback (its steering force, centring spring and damper), which is
+faded out in menus, pauses and replays. Plug the wheel in before starting the game. Wheels
+are read through [SDL3](https://github.com/libsdl-org/SDL) on Windows' DirectInput, so most
+Thrustmaster, Logitech, Fanatec, Moza and similar wheels should be found. For direct drive
+wheels the steering force is smoothed between the game's frames.
+
+The launcher's Settings page has a **Racing wheel** panel: the wheel the game found last time,
+force feedback strength, the centring spring and damper, the rotation your wheel is set to
+(the game was made for the 360 wheel's 270 degrees and scales steering from it), and a switch
+for a steering force that pulls the wrong way. `play.log` names the wheel, its axes and its
+force feedback near the start.
+
+It has only been tested on a Thrustmaster T598 so far (buttons mapped for its PlayStation
+layout; other wheels get a generic layout). **Please try yours and report back** from the
+launcher's Report tab: which wheel, and whether steering, pedals, buttons and force
+feedback work. The force feedback model is from the
+[Forza Horizon recomp](https://github.com/Dyotson/ForzaHorizon1-ReImagined) (same engine;
+BSD 3-Clause).
+
 ## Reporting bugs and sharing logs
 
 The launcher's **Report** tab sends a report straight to the developers: a title, what happened, an
