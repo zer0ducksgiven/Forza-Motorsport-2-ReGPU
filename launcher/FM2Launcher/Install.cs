@@ -183,7 +183,12 @@ public static class Game
         };
         psi.Environment["FM2_NO_LAUNCHER"] = "1"; // the settings come from settings.ini, saved by this launcher
         if (coldStart) psi.Environment["FM2_PERF"] = "1";
-        Process.Start(psi);
+        var game = Process.Start(psi);
+        if (game is null) return;
+        // The session's play.log goes as soon as the game closes (with sharing on), not only at the next
+        // launcher start: most people keep the launcher open while they play.
+        game.EnableRaisingEvents = true;
+        game.Exited += (_, _) => _ = Reports.SendLastLogAsync();
     }
 
     // robocopy /XC /XN /XO in install-content.cmd: what is already there is left alone. A DLC package the game has
