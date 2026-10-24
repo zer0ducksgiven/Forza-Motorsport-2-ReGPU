@@ -1029,6 +1029,7 @@ TranslatedShader TranslateShader(const Shader& shader)
              "    // rectangle clears and filter passes, authored for D3D9's integer pixel centres,\n"
              "    // e.g. -0.5 .. 255.5) must cover the last row and column too: shift by half a pixel.\n"
              "    if ((vte.x & 0x30Fu) == 0x300u) p.xy += 0.5;\n"
+             "    else if (vte.x & 0x10000u) p.xy += 0.5;\n"
              "    // vscale.w/voffset.w: pixel scale of MSAA clear rectangles (renderer.cpp).\n"
              "    if (vscale.w > 0.0) p.xy *= float2(vscale.w, voffset.w);\n"
              "    p.xy += pointOffset;\n"
