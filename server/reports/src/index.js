@@ -68,7 +68,9 @@ export default {
       return json({ id });
     } catch (e) {
       console.log("github", e.message);
-      return json({ error: "The reports server couldn't save it: try again later." }, 502);
+      // GitHub's status only (401: token, 403/404: its repo or permissions), never its text.
+      const status = /: (\d{3}) /.exec(e.message)?.[1] || "unreachable";
+      return json({ error: `The reports server couldn't save it (GitHub ${status}): try again later.` }, 502);
     }
   },
 };
