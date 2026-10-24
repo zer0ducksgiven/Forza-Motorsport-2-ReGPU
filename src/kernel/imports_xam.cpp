@@ -12,6 +12,7 @@
 std::atomic<int64_t> g_inputEpochNs{ 0 };
 
 #include "gpu/renderer.h"
+#include "kernel/wheel_ff.h"
 #include "debug.h"
 #include "kernel/imports.h"
 #include "kernel/runtime.h"
@@ -530,7 +531,8 @@ bool ReadPad(uint32_t user, PadState& s)
         // FM2_TOUR=<steps>: hands-off route through the menus and races (shader tour).
         // Steps (comma separated): a button name (A, B, X, Y, START, BACK, UP, DOWN, LEFT,
         // RIGHT, LB, RB), "WAIT:<seconds>", "IDLE" (wait until the renderer has no compile
-        // running; at least 2 s), "RT:<seconds>" (hold the right trigger), "RACE:<seconds>"
+        // running; at least 2 s), "RT:<seconds>" (hold the right trigger), "STEER:<seconds>" (throttle,
+        // steering right then left), "RACE:<seconds>"
         // (the benchmark: the right trigger held, A tapped every 2 s for the first 10 s in case a slow
         // PC was still loading when the race start was pressed, measured from 12 s), "QUIT" (save
         // caches and exit). Each button press lasts at least 150 ms and 3 reads, then a 600 ms gap.
@@ -616,6 +618,15 @@ bool ReadPad(uint32_t user, PadState& s)
                     // "LS:2" / "RS:2": left stick up / right stick right, held that long (moves Photo Mode's camera)
                     (step[0] == 'L' ? s.ly : s.rx) = 24000;
                     advance = elapsed >= atof(step.c_str() + 3);
+                }
+                else if (step.rfind("STEER:", 0) == 0)
+                {
+                    // "STEER:5": throttle held and steering right, then left, half the time each
+                    // (the wheel's steering force in a race)
+                    const double length = atof(step.c_str() + 6);
+                    s.rightTrigger = 255;
+                    s.lx = elapsed < length / 2 ? 20000 : -20000;
+                    advance = elapsed >= length;
                 }
                 else
                 {
@@ -748,6 +759,13 @@ GUEST_EXPORT(XamInputGetCapabilities)
     memset(GuestPtr(caps), 0, 0x14);
     *GuestPtr<uint8_t>(caps + 0) = 1; // XINPUT_DEVTYPE_GAMEPAD
     *GuestPtr<uint8_t>(caps + 1) = 1; // XINPUT_DEVSUBTYPE_GAMEPAD
+    if (ctx.r3.u32 == 0 && WheelFakeEnabled())
+    {
+        // FM2_FAKE_WHEEL: an Xbox 360 wheel with force feedback, so the game starts its
+        // XInputdFF* effects (kernel/wheel_ff.cpp).
+        *GuestPtr<uint8_t>(caps + 1) = 2; // XINPUT_DEVSUBTYPE_WHEEL
+        *GuestPtr<uint8_t>(caps + 3) = 1; // flags (big-endian): XINPUT_CAPS_FFB_SUPPORTED
+    }
     Return(ctx, X_ERROR_SUCCESS);
 }
 
