@@ -13,7 +13,7 @@ call "%~dp0install-content.cmd"
 call :run normal
 if /i not "%~1"=="ab" goto done
 call :run copy-path "FM2_NO_GUEST_HEAP=1"
-call :run constants-in-ring "FM2_CONSTANTS_IN_RING=1"
+call :run low-performance "FM2_LOW_PERFORMANCE=1"
 call :run no-prehash "FM2_NO_TEXTURE_PREHASH=1"
 goto done
 

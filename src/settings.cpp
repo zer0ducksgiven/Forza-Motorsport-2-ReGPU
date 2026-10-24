@@ -70,6 +70,8 @@ void Load()
             g_settings.language = uint32_t(atoi(value.c_str()));
         else if (key == "skip_intro")
             g_settings.skipIntro = value == "1";
+        else if (key == "low_performance")
+            g_settings.lowPerformance = value == "1";
         else if (key == "msaa")
             g_settings.msaa = uint32_t(atoi(value.c_str()));
         else if (key == "upscaler")
@@ -112,6 +114,8 @@ void Load()
         g_settings.language = 1;
     if (const char* v = getenv("FM2_SKIP_INTRO"))
         g_settings.skipIntro = atoi(v) != 0;
+    if (const char* v = getenv("FM2_LOW_PERFORMANCE"))
+        g_settings.lowPerformance = atoi(v) != 0;
     if (const char* v = getenv("FM2_MSAA"))
         g_settings.msaa = uint32_t(atoi(v));
     g_settings.msaa = g_settings.msaa >= 8 ? 8 : g_settings.msaa >= 4 ? 4 : g_settings.msaa >= 2 ? 2 : 1;
@@ -173,6 +177,7 @@ void SaveSettings()
     out << "max_fps=" << s.maxFps << "\n";
     out << "enhance=" << (s.enhance ? 1 : 0) << "\n";
     out << "skip_intro=" << (s.skipIntro ? 1 : 0) << "\n";
+    out << "low_performance=" << (s.lowPerformance ? 1 : 0) << "\n";
     out << "language=" << s.language << "\n";
     out << "msaa=" << s.msaa << "\n";
     out << "upscaler=" << UpscalerName(s.upscaler) << "\n";

@@ -6448,9 +6448,11 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
     }
     // The draw's constants are built in ordinary memory and copied to the ring in a few sequential
     // blocks just before the draw: the ring is write-combined upload memory, where scattered small
-    // writes and any reads back are slow (an FX-8350 spent 6-35 ms a frame on them, against under
-    // 1 ms here). FM2_CONSTANTS_IN_RING=1 writes straight into the ring as before (A/B).
-    static LiveSwitch inRing("FM2_CONSTANTS_IN_RING");
+    // writes and any reads back are slow (0.86 -> 0.64 ms a frame on a Ryzen 7 5800X). Not in low
+    // performance mode: on an FX-8350 the bigger block copies cost more than they saved (submit
+    // 3 -> 13-19 ms). FM2_CONSTANTS_IN_RING=1 writes straight into the ring (A/B).
+    static LiveSwitch inRingSwitch("FM2_CONSTANTS_IN_RING");
+    const bool inRing = inRingSwitch || GetSettings().lowPerformance;
     thread_local std::unique_ptr<VSConstants> vcStage(new VSConstants);
     thread_local std::unique_ptr<PSConstants> pcStage(new PSConstants);
     const bool staged = !inRing;

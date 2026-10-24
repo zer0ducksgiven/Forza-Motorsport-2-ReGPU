@@ -168,7 +168,7 @@ function render() {
   $("lang-note").textContent = o.missingLanguages.length
     ? `Your disc also has ${o.missingLanguages.join(", ")} text. Those can't be picked yet.` : ""
   for (const b of $("display").children) b.classList.toggle("on", (b.dataset.full === "1") === set.fullscreen)
-  for (const k of ["vsync", "enhance", "skipIntro"]) $(k).classList.toggle("on", !!set[k])
+  for (const k of ["vsync", "enhance", "skipIntro", "lowPerformance"]) $(k).classList.toggle("on", !!set[k])
 
   const lang = o.languages.find((l) => l.id === set.language)
   const aspect = o.aspects.find((a) => a.value === set.aspect)
@@ -287,7 +287,7 @@ $("maxFps").onchange = (e) => change({ maxFps: +e.target.value })
 $("msaa").onchange = (e) => change({ msaa: +e.target.value })
 $("language").onchange = (e) => change({ language: +e.target.value })
 $("display").onclick = (e) => { const b = e.target.closest("button"); if (b) change({ fullscreen: b.dataset.full === "1" }) }
-for (const k of ["vsync", "enhance", "skipIntro"]) $(k).onclick = () => change({ [k]: !state.settings[k] })
+for (const k of ["vsync", "enhance", "skipIntro", "lowPerformance"]) $(k).onclick = () => change({ [k]: !state.settings[k] })
 
 // ---- actions
 

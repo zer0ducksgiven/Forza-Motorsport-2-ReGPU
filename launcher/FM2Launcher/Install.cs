@@ -50,9 +50,10 @@ public sealed class GameSettings
     public int Msaa { get; set; } = 1;
     public bool Enhance { get; set; }
     public bool SkipIntro { get; set; }
+    public bool LowPerformance { get; set; }
     public int Language { get; set; } = 1;
 
-    static readonly string[] Known = ["profile", "resolution", "aspect", "fullscreen", "vsync", "max_fps", "msaa", "enhance", "skip_intro", "language"];
+    static readonly string[] Known = ["profile", "resolution", "aspect", "fullscreen", "vsync", "max_fps", "msaa", "enhance", "skip_intro", "low_performance", "language"];
 
     public static GameSettings Load()
     {
@@ -69,6 +70,7 @@ public sealed class GameSettings
                 case "msaa": s.Msaa = int.TryParse(v, out var m) ? m : 1; break;
                 case "enhance": s.Enhance = v == "1"; break;
                 case "skip_intro": s.SkipIntro = v == "1"; break;
+                case "low_performance": s.LowPerformance = v == "1"; break;
                 case "language": s.Language = int.TryParse(v, out var l) && l > 0 ? l : 1; break;
             }
         return s;
@@ -81,7 +83,7 @@ public sealed class GameSettings
         var sb = new StringBuilder("# Forza Motorsport 2 (fm2) settings; the launcher edits this file.\n");
         sb.Append($"profile={(profile.Length > 0 ? profile : "Player")}\n");
         sb.Append($"resolution={Resolution}\naspect={Aspect}\nfullscreen={B(Fullscreen)}\nvsync={B(Vsync)}\n");
-        sb.Append($"max_fps={Math.Clamp(MaxFps, 30, 360)}\nmsaa={Msaa}\nenhance={B(Enhance)}\nskip_intro={B(SkipIntro)}\nlanguage={Language}\n");
+        sb.Append($"max_fps={Math.Clamp(MaxFps, 30, 360)}\nmsaa={Msaa}\nenhance={B(Enhance)}\nskip_intro={B(SkipIntro)}\nlow_performance={B(LowPerformance)}\nlanguage={Language}\n");
         foreach (var (k, v) in keep) sb.Append($"{k}={v}\n");
         Directory.CreateDirectory(Paths.User);
         File.WriteAllText(Paths.SettingsFile, sb.ToString());
