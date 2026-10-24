@@ -125,8 +125,9 @@ by default), and its saves live in `Documents\fm2\profiles\<name>\content`.
 
 The launcher's **Report** tab sends a report straight to the developers: a title, what happened, an
 optional Discord name for a reply, and (on by default, switchable) your last `out\play.log`. The same tab
-has an opt-in, **off by default**: **Share play.log after each session**, which sends each session's log
-when you next open the launcher, so problems on hardware we don't have get found.
+has **Share play.log after each session**, which sends each session's log when you next open the launcher,
+so problems on hardware we don't have get found. It's **on by default**: the launcher says so in a window
+the first time it opens, before anything is sent, and you opt out by switching it off on the Report tab.
 
 What's in a log: your Windows version, CPU, RAM, GPU and driver, displays, game settings, frame rates
 and anything that went wrong. Your **Windows user name and PC name are removed** before anything leaves

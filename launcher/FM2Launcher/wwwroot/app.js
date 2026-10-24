@@ -60,6 +60,7 @@ function askBox(title, text, yes, opts) {
     $("confirm-title").textContent = title
     $("confirm-text").textContent = text
     $("confirm-yes").textContent = yes || "OK"
+    $("confirm").querySelector("[data-choice=no]").textContent = opts.no || "Cancel"
     const input = $("confirm-input"), select = $("confirm-select")
     input.hidden = opts.input === undefined
     select.hidden = !opts.options
@@ -597,5 +598,17 @@ async function refresh() {
   await guarded(async () => { state = await call("state"); render(); renderUpdate() })
 }
 
-refresh().then(() => checkUpdates(true))
+// First start: log sharing is on unless turned off, so say so before anything is sent.
+async function sharingNotice() {
+  const r = await call("report.state")
+  if (r.noticeShown) return
+  const stay = (await askBox("Sharing play.log",
+    "To help find bugs on PCs like yours, the launcher sends each session's play.log to the developers: your hardware, drivers, settings, frame rates and errors. Your Windows user name and PC name are removed first. " +
+    "This is on by default. To opt out, open the Report tab and switch off \"Share play.log after each session\".",
+    "Got it", { no: "Open Report tab" })) !== null
+  await call("report.noticeShown")
+  if (!stay) document.querySelector("[data-tab=report]").click()
+}
+
+refresh().then(() => guarded(sharingNotice)).then(() => checkUpdates(true))
 setInterval(() => { if (!document.hidden && $("confirm").hidden && !["SELECT", "INPUT"].includes(document.activeElement.tagName)) refresh() }, 5000)

@@ -159,7 +159,7 @@ public sealed class Bridge(CoreWebView2 web, Form owner)
             case "report.state":
                 {
                     var o = Reports.Options.Load();
-                    return new { shareLogs = o.ShareLogs, installId = o.InstallId, hasLog = Reports.LogPreview() is not null };
+                    return new { shareLogs = o.ShareLogs, noticeShown = o.NoticeShown, installId = o.InstallId, hasLog = Reports.LogPreview() is not null };
                 }
             case "report.shareLogs":
                 {
@@ -169,6 +169,13 @@ public sealed class Bridge(CoreWebView2 web, Form owner)
                     o.LastSentLog = DateTime.UtcNow;
                     o.Save();
                     return new { shareLogs = o.ShareLogs };
+                }
+            case "report.noticeShown":
+                {
+                    var o = Reports.Options.Load();
+                    o.NoticeShown = true;
+                    o.Save();
+                    return null;
                 }
             case "report.preview": return Reports.LogPreview() ?? "";
             case "report.send":

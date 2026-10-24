@@ -32,7 +32,10 @@ public static class Reports
     /// <summary>The launcher's own reporting choices (not the game's settings.ini).</summary>
     public sealed class Options
     {
-        public bool ShareLogs { get; set; }
+        // On unless turned off (the Report tab); the launcher says so in a window on its first start, and
+        // nothing is sent before that window has been shown.
+        public bool ShareLogs { get; set; } = true;
+        public bool NoticeShown { get; set; }
         public string InstallId { get; set; } = "";
         public DateTime LastSentLog { get; set; }
 
@@ -47,6 +50,8 @@ public static class Reports
             {
                 // Random, so reports from one PC can be grouped without saying who it is.
                 o.InstallId = Guid.NewGuid().ToString("N")[..12];
+                // Only sessions played from now on: logs already on the PC stay there.
+                o.LastSentLog = DateTime.UtcNow;
                 o.Save();
             }
             return o;
@@ -126,7 +131,7 @@ public static class Reports
     }
 
     /// <summary>
-    /// With log sharing on, sends the last session's play.log once (at launcher start: the game has
+    /// With log sharing on (and its notice shown), sends the last session's play.log once (at launcher start: the game has
     /// closed by then). Never throws: a failed send just tries again next time.
     /// </summary>
     public static async Task SendLastLogAsync()
@@ -134,7 +139,7 @@ public static class Reports
         try
         {
             var o = Options.Load();
-            if (!o.ShareLogs || Game.Running || !System.IO.File.Exists(LogFile)) return;
+            if (!o.ShareLogs || !o.NoticeShown || Game.Running || !System.IO.File.Exists(LogFile)) return;
             var written = System.IO.File.GetLastWriteTimeUtc(LogFile);
             if (written <= o.LastSentLog) return;
             var log = LogPreview();
