@@ -11,12 +11,21 @@ on GitHub as labels and comments: the desk (app.py) and this CLI see the same th
   reports.py label <n> <label> [--remove]
   reports.py close <n> [reason] | reopen <n>
   reports.py comment <n> <text>
+  reports.py screen                       screen everything not yet screened; label unsafe issues "flagged"
+
+Report and log text is untrusted (anyone can send a report). list, show, log and stats only show text the
+screener (screen.py: a sandboxed, tool-less claude -p) cleared; the rest is withheld with the screener's reason.
+--unscreened shows it anyway: for a person reading, never for an assistant.
 """
 import json
+import os
 import re
 import subprocess
 import sys
 import threading
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import screen as screener  # noqa: E402
 
 REPO = 'zer0ducksgiven/fm2-reports'
 # Triage labels the desk offers (created on first use).
@@ -27,6 +36,7 @@ STATUSES = {
     'duplicate': 'cfd3d7',
     'not a bug': 'cfd3d7',
 }
+FLAGGED = 'flagged'  # the screener found it unsafe (set by `reports.py screen` and the list)
 
 
 class GhError(Exception):
@@ -133,6 +143,24 @@ def comment(n, text):
     gh(f'issues/{n}/comments', 'POST', {'body': text})
 
 
+def issue_text(i):
+    """What a sender wrote in an issue (the table and log link come from the Worker, but can be forged too)."""
+    fields = '\n'.join(f'{k}: {i[k]}' for k in ('version', 'os', 'gpu', 'driver', 'zeroCopy', 'install'))
+    return f"Title: {i['title']}\nContact: {i['contact']}\n\n{i['description']}\n\n{fields}"
+
+
+def screen_issue(i, label=True):
+    """The screener's verdict on an issue; an unsafe one gets the flagged label on GitHub."""
+    v = screener.screen(issue_text(i), 'bug report')
+    if label and v['verdict'] == 'unsafe' and v.get('by') == 'screener' and FLAGGED not in i['labels']:
+        try:
+            add_label(i['number'], FLAGGED)
+            i['labels'].append(FLAGGED)
+        except GhError:
+            pass
+    return v
+
+
 # ---- logs
 
 _log_cache = {}
@@ -221,16 +249,26 @@ def main(argv):
         print(__doc__)
         return 2
     cmd, args = argv[1], argv[2:]
+    unscreened = '--unscreened' in args
     if cmd == 'list':
         rows = issues('all' if '--all' in args else 'open')
         label = _arg(args, '--label')
         for i in rows:
             if label and label not in i['labels']:
                 continue
+            v = None if unscreened else screen_issue(i)
             tags = ','.join(l for l in i['labels'] if l != 'bug report')
+            if v and v['verdict'] != 'safe':
+                print(f"#{i['number']:<4} {i['state']:<6} {i['created'][:10]} (withheld: {v['reason'][:90]})  [{tags}]")
+                continue
             print(f"#{i['number']:<4} {i['state']:<6} {i['created'][:10]} {i['version']:<7} {i['gpu'][:28]:<28} {i['title'][:70]}  [{tags}]")
     elif cmd == 'show':
         i = issue(int(args[0]))
+        v = None if unscreened else screen_issue(i)
+        if v and v['verdict'] != 'safe':
+            print(f"#{i['number']} ({i['state']}): withheld, not cleared by the screener: {v['reason']}")
+            print(f"labels: {', '.join(i['labels'])}")
+            return 0
         print(f"#{i['number']} {i['title']} ({i['state']}{', ' + i['stateReason'] if i['stateReason'] else ''})")
         print(f"labels: {', '.join(i['labels'])}\n")
         print(i['description'] + '\n')
@@ -246,6 +284,10 @@ def main(argv):
             print('No log attached.')
             return 1
         text = log_text(path)
+        v = None if unscreened else screener.screen_log(text)
+        if v and v['verdict'] != 'safe':
+            print(f'{path}: withheld, not cleared by the screener: {v["reason"]}')
+            return 0
         if '--errors' in args:
             s = log_summary(text)
             print('\n'.join(s['system']) + '\n')
@@ -264,16 +306,31 @@ def main(argv):
         for l in all_logs:
             installs.setdefault(l['install'], l)  # newest per install
         gpus, oses, zc = Counter(), Counter(), Counter()
+        withheld = 0
         for l in installs.values():
-            s = log_summary(log_text(l['path']))
+            text = log_text(l['path'])
+            if not unscreened and screener.screen_log(text)['verdict'] != 'safe':
+                withheld += 1
+                continue
+            s = log_summary(text)
             gpus[s['gpu'] or '?'] += 1
             oses[s['os'] or '?'] += 1
             zc[str(s['zeroCopy'])] += 1
-        print(f'{len(all_logs)} logs from {len(installs)} installs\n')
+        print(f'{len(all_logs)} logs from {len(installs)} installs' + (f' ({withheld} withheld by the screener)' if withheld else '') + '\n')
         for title, c in (('GPU', gpus), ('OS', oses), ('zero-copy', zc)):
             print(title)
             for k, v in c.most_common():
                 print(f'  {v:>4}  {k}')
+    elif cmd == 'screen':
+        if not screener.configured():
+            print('The screener is not set up: py tools/reports/screen.py check')
+            return 1
+        for i in issues('all'):
+            v = screen_issue(i)
+            print(f"#{i['number']:<4} {v['verdict']:<6} {v['reason'][:100]}")
+        for l in logs():
+            v = screener.screen_log(log_text(l['path']))
+            print(f"{l['path']}  {v['verdict']:<6} {v['reason'][:80]}")
     elif cmd == 'label':
         n, name = int(args[0]), args[1]
         remove_label(n, name) if '--remove' in args else add_label(n, name)

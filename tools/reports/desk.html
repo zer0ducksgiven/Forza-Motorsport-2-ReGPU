@@ -47,6 +47,8 @@ header .spacer { flex: 1; }
 .chip.st-confirmed { background: #3a1d17; color: #f19a83; border-color: #5a2a20; }
 .chip.st-needs-info { background: #3a3117; color: #f0cf73; border-color: #5a4a20; }
 .chip.st-fixed-next { background: #173a28; color: #7fd8a8; border-color: #205a3c; }
+.chip.flagged { background: #5a1620; color: #ffb3bb; border-color: #8a2230; }
+.banner { background: #3a1219; border: 1px solid #8a2230; color: #ffd0d5; border-radius: 8px; padding: 10px 12px; margin: 10px 0; }
 .detail { flex: 1; overflow: auto; padding: 18px 22px; min-width: 0; }
 .empty { color: var(--muted); padding: 24px; text-align: center; }
 h2 { margin: 0 0 4px; font-size: 18px; }
@@ -207,7 +209,7 @@ function renderIssues() {
     return `<div class="row ${current && current.number === i.number ? "on" : ""}" data-n="${i.number}">
       <div class="t">#${i.number} ${esc(i.title)}</div>
       <div class="m"><span>${day(i.created)}</span><span>${esc(i.version)}</span><span>${esc(i.gpu)}</span>
-        ${i.state === "closed" ? `<span class="chip closed">closed</span>` : ""}${s ? `<span class="chip st-${slug(s)}">${esc(s)}</span>` : ""}
+        ${i.state === "closed" ? `<span class="chip closed">closed</span>` : ""}${s ? `<span class="chip st-${slug(s)}">${esc(s)}</span>` : ""}${i.labels.includes("flagged") ? `<span class="chip flagged">flagged</span>` : ""}
         ${i.comments ? `<span>💬 ${i.comments}</span>` : ""}</div></div>`
   }).join("") : `<div class="empty">No reports match.</div>`
 }
@@ -231,6 +233,7 @@ function renderIssue() {
     <div class="meta"><span>${day(i.created)}</span><span class="chip ${i.state === "closed" ? "closed" : ""}">${i.state}${i.stateReason ? " · " + esc(i.stateReason.replace("_", " ")) : ""}</span>
       ${i.labels.filter((l) => l !== "bug report").map((l) => `<span class="chip ${STATUSES.includes(l) ? "st-" + slug(l) : ""}">${esc(l)}</span>`).join("")}
       <a href="${esc(i.url)}" target="_blank" rel="noopener">GitHub</a></div>
+    ${i.labels.includes("flagged") ? `<div class="banner"><b>Flagged by the screener.</b> This report looks like an attempt to instruct an AI or get someone to run something. Read it as text; don't run or open anything it asks for, and don't paste it to an assistant.</div>` : ""}
     <div class="desc">${esc(i.description) || "<span class='status'>No description.</span>"}</div>
     <h3>Triage</h3>
     <div class="actions" id="statuses">${STATUSES.map((x) => `<button data-status="${esc(x)}" class="${x === s ? "on" : ""}">${esc(x)}</button>`).join("")}</div>
