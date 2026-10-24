@@ -292,7 +292,7 @@ function renderLog(id, l) {
   box.innerHTML = `
     <div class="summary">
       ${[["GPU", s.gpu], ["Driver", s.driver], ["CPU", s.cpu], ["OS", s.wine ? "Wine " + s.wine : s.os], ["Version", s.version],
-         ["Zero-copy", zc], ["Median fps", s.fps.median ?? "–"], ["Errors", s.errors.length], ["Settings", s.settings]]
+         ["Zero-copy", zc], ["Average fps", s.fps.average ?? "–"], ["Median fps", s.fps.median ?? "–"], ["Errors", s.errors.length], ["Settings", s.settings]]
         .filter(([, v]) => v !== "" && v !== undefined).map(([k, v]) => `<div class="stat"><div class="k">${k}</div><div class="v">${esc(v)}</div></div>`).join("")}
     </div>
     <div class="log-tools">

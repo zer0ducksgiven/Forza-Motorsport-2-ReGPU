@@ -203,7 +203,7 @@ ERROR = re.compile(r'error|fail|crash|exception|assert|not mappable|dropped|time
 
 def log_summary(text):
     """What a log says about its PC and session: the boot's system lines, errors, fps."""
-    system, errors, fps = [], [], []
+    system, errors, fps, swaps = [], [], [], []
     for line in text.splitlines():
         body = line[line.find(']') + 1:].strip() if line.startswith('[') else line
         if body.startswith('system:') and len(system) < 40:
@@ -213,6 +213,19 @@ def log_summary(text):
         m = re.match(r'perf: ([\d.]+) fps', body)
         if m:
             fps.append(float(m.group(1)))
+        m = re.match(r'gpu: VdSwap #(\d+)', body)
+        if m and line.startswith('['):
+            swaps.append((float(line[1:line.find(']')]), int(m.group(1))))
+    # Logs without FM2_PERF: the game logs every 60th frame, so the fps of each stretch between them
+    # (stretches over 10 s are pauses or a window in the background, not frames).
+    average = None
+    if not fps:
+        spans = [(t1 - t0, n1 - n0) for (t0, n0), (t1, n1) in zip(swaps, swaps[1:]) if 0 < t1 - t0 <= 10 and n1 > n0]
+        fps = [n / t for t, n in spans]
+        if spans:
+            average = sum(n for _, n in spans) / sum(t for t, _ in spans)
+    elif fps:
+        average = sum(fps) / len(fps)
     def field(prefix):
         for s in system:
             if s.lower().startswith(prefix):
@@ -233,7 +246,8 @@ def log_summary(text):
         'version': field('forza motorsport 2 regpu'),
         'settings': field('settings'),
         'zeroCopy': None if 'guest memory' not in text else ('not mappable' not in text),
-        'fps': {'samples': len(fps), 'median': sorted(fps)[len(fps) // 2] if fps else None},
+        'fps': {'samples': len(fps), 'median': round(sorted(fps)[len(fps) // 2], 1) if fps else None,
+                'average': round(average, 1) if average else None},
         'lines': text.count('\n'),
     }
 
