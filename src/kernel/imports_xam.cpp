@@ -531,7 +531,7 @@ bool ReadPad(uint32_t user, PadState& s)
         // Steps (comma separated): a button name (A, B, X, Y, START, BACK, UP, DOWN, LEFT,
         // RIGHT, LB, RB), "WAIT:<seconds>", "IDLE" (wait until the renderer has no compile
         // running; at least 2 s), "RT:<seconds>" (hold the right trigger), "QUIT" (save
-        // caches and exit). Each button press lasts 150 ms followed by a 600 ms gap.
+        // caches and exit). Each button press lasts at least 150 ms and 3 reads, then a 600 ms gap.
         {
             static const char* tourEnv = getenv("FM2_TOUR");
             struct Tour
@@ -540,6 +540,8 @@ bool ReadPad(uint32_t user, PadState& s)
                 size_t index = 0;
                 Clock::time_point stepStart{};
                 bool started = false;
+                int downPolls = 0, upPolls = 0; // reads of the current button press
+                double releasedAt = 0;
                 std::string Step() const { return index < steps.size() ? steps[index] : std::string(); }
             };
             static Tour tour = [&] {
@@ -607,15 +609,25 @@ bool ReadPad(uint32_t user, PadState& s)
                 }
                 else
                 {
-                    for (auto& [n, b] : names)
-                        if (step == n && elapsed < 0.15)
-                            s.buttons |= b;
-                    advance = elapsed >= 0.75;
+                    // Held until the game has read it down a few times, then released until it has
+                    // read it up a few times: a slow PC can stall past a fixed 150 ms and miss it.
+                    if (tour.downPolls < 3 || elapsed < 0.15)
+                    {
+                        for (auto& [n, b] : names)
+                            if (step == n)
+                                s.buttons |= b;
+                        tour.downPolls++;
+                        tour.releasedAt = elapsed;
+                    }
+                    else
+                        tour.upPolls++;
+                    advance = tour.upPolls >= 3 && elapsed - tour.releasedAt >= 0.6;
                 }
                 if (advance)
                 {
                     tour.index++;
                     tour.stepStart = now;
+                    tour.downPolls = tour.upPolls = 0;
                     Log("tour: step %zu/%zu %s", tour.index, tour.steps.size(), tour.Step().c_str());
                 }
             }
