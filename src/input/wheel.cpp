@@ -29,6 +29,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include <span>
 #include <string>
 #include <thread>
 #include <vector>
@@ -209,13 +210,28 @@ void ReadInput(Driver& d)
         PedalAxes(d, gas, brake);
         in.gas = Pedal(d, gas);
         in.brake = Pedal(d, brake);
-        // The usual wheel order (FH1's generic layout): face buttons, the right and left paddle
-        // (the 360 wheel's shift up and down on the bumpers), then Back and Start.
-        static const uint16_t buttons[] = { XINPUT_GAMEPAD_A, XINPUT_GAMEPAD_B, XINPUT_GAMEPAD_X, XINPUT_GAMEPAD_Y,
-            XINPUT_GAMEPAD_RIGHT_SHOULDER, XINPUT_GAMEPAD_LEFT_SHOULDER, XINPUT_GAMEPAD_BACK, XINPUT_GAMEPAD_START };
-        for (int i = 0; i < w.buttons && i < 8; i++)
-            if (SDL_GetJoystickButton(w.joystick, i))
-                in.buttons |= buttons[i];
+        // Known wheels' buttons (SDL button, pad button); the bumpers are the 360 wheel's shift
+        // down (LB) and up (RB).
+        struct Button
+        {
+            int sdl;
+            uint16_t pad;
+        };
+        // T598 in PC mode, a PlayStation layout: Cross, Circle, Square, Triangle as A, B, X, Y,
+        // the paddles and L2/R2 shift, Share and Options as Back and Start.
+        static const Button t598[] = { { 5, XINPUT_GAMEPAD_A }, { 4, XINPUT_GAMEPAD_B }, { 3, XINPUT_GAMEPAD_X },
+            { 2, XINPUT_GAMEPAD_Y }, { 6, XINPUT_GAMEPAD_LEFT_SHOULDER }, { 7, XINPUT_GAMEPAD_RIGHT_SHOULDER },
+            { 21, XINPUT_GAMEPAD_LEFT_SHOULDER }, { 22, XINPUT_GAMEPAD_RIGHT_SHOULDER }, { 0, XINPUT_GAMEPAD_BACK },
+            { 1, XINPUT_GAMEPAD_START } };
+        // Others, the usual wheel order (FH1's generic layout): face buttons, the right and left
+        // paddle, then Back and Start.
+        static const Button generic[] = { { 0, XINPUT_GAMEPAD_A }, { 1, XINPUT_GAMEPAD_B }, { 2, XINPUT_GAMEPAD_X },
+            { 3, XINPUT_GAMEPAD_Y }, { 4, XINPUT_GAMEPAD_RIGHT_SHOULDER }, { 5, XINPUT_GAMEPAD_LEFT_SHOULDER },
+            { 6, XINPUT_GAMEPAD_BACK }, { 7, XINPUT_GAMEPAD_START } };
+        const bool isT598 = w.vid == 0x044F && w.pid == 0xB696;
+        for (const Button& b : isT598 ? std::span<const Button>(t598) : std::span<const Button>(generic))
+            if (b.sdl < w.buttons && SDL_GetJoystickButton(w.joystick, b.sdl))
+                in.buttons |= b.pad;
         if (w.hats)
         {
             const Uint8 hat = SDL_GetJoystickHat(w.joystick, 0);
