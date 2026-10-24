@@ -1112,7 +1112,7 @@ void Init()
     // Guest physical memory for the GPU, in place: vertex fetches read it
     // without copies.
     ComPtr<ID3D12Device13> d13;
-    HRESULT hr = d->QueryInterface(IID_PPV_ARGS(&d13));
+    HRESULT hr = getenv("FM2_FORCE_DEVICE3") ? E_NOINTERFACE : d->QueryInterface(IID_PPV_ARGS(&d13)); // (FM2_FORCE_DEVICE3: test the fallback)
     if (SUCCEEDED(hr))
         hr = d13->OpenExistingHeapFromFileMapping(PhysicalSection(), IID_PPV_ARGS(&g_r.physicalHeap));
     if (FAILED(hr) && d13)
@@ -1120,9 +1120,23 @@ void Init()
         Log("renderer: OpenExistingHeapFromFileMapping failed %08X; trying the view address", unsigned(hr));
         hr = d13->OpenExistingHeapFromAddress1(GuestPtr(0xA0000000), 0x20000000, IID_PPV_ARGS(&g_r.physicalHeap));
     }
-    if (FAILED(hr))
-        Log("renderer: mapping guest memory: %s failed %08X", d13 ? "OpenExistingHeapFromAddress1" : "ID3D12Device13", unsigned(hr));
-    else
+    // Older runtimes (Windows 10, older drivers) have no ID3D12Device13, but ID3D12Device3 (Windows 10
+    // 1709+) opens a heap over the whole allocation an address is in: the 512 MB view of guest
+    // physical memory at 0xA0000000 is exactly that. The self-test below checks the GPU sees it.
+    if (FAILED(hr) && !d13)
+    {
+        ComPtr<ID3D12Device3> d3;
+        if (SUCCEEDED(hr = d->QueryInterface(IID_PPV_ARGS(&d3))))
+            hr = d3->OpenExistingHeapFromAddress(GuestPtr(0xA0000000), IID_PPV_ARGS(&g_r.physicalHeap));
+        if (SUCCEEDED(hr))
+            Log("renderer: guest memory opened through ID3D12Device3 (no ID3D12Device13), %llu MB",
+                (unsigned long long)(g_r.physicalHeap->GetDesc().SizeInBytes >> 20));
+        else
+            Log("renderer: mapping guest memory: no ID3D12Device13, and ID3D12Device3 failed %08X", unsigned(hr));
+    }
+    else if (FAILED(hr))
+        Log("renderer: mapping guest memory: OpenExistingHeapFromAddress1 failed %08X", unsigned(hr));
+    if (SUCCEEDED(hr))
     {
         D3D12_RESOURCE_DESC bd{};
         bd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
@@ -1148,6 +1162,12 @@ void Init()
         g_r.physicalHeap.Reset();
     }
     Log("renderer: guest memory %s", g_r.physical ? "mapped for the GPU (zero-copy vertex fetch)" : "not mappable; vertex data is copied");
+    // For the launcher's "Reduced performance" warning: what this PC actually got.
+    if (FILE* f = _wfopen((UserDir() / "zero_copy.txt").c_str(), L"w"))
+    {
+        fputs(g_r.physical ? "1" : "0", f);
+        fclose(f);
+    }
 
     // Views for the EDRAM surfaces (created on first use).
     hd.NumDescriptors = kMaxSurfaces;

@@ -169,7 +169,7 @@ void LogD3D12(ID3D12Device* device)
     const bool device13 = SUCCEEDED(device->QueryInterface(IID_PPV_ARGS(&d13)));
     Log("system: D3D12 feature level %u.%u, shader model %u.%u, resource binding tier %d, tiled resources tier %d, ID3D12Device13 %s",
         unsigned(fl.MaxSupportedFeatureLevel >> 12), unsigned((fl.MaxSupportedFeatureLevel >> 8) & 15), unsigned(sm.HighestShaderModel >> 4), unsigned(sm.HighestShaderModel & 15),
-        int(o.ResourceBindingTier), int(o.TiledResourcesTier), device13 ? "yes" : "no (zero-copy vertex data unavailable)");
+        int(o.ResourceBindingTier), int(o.TiledResourcesTier), device13 ? "yes" : "no (the ID3D12Device3 fallback is tried: see the renderer's guest memory line)");
 }
 }
 

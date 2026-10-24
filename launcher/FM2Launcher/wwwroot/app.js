@@ -156,7 +156,7 @@ function render() {
   chip(s.checks.game ? "ok" : "bad", s.checks.game ? "Game files" : "Game files missing", "The game built from your disc, in the install's game folder.")
   chip(s.checks.update ? "ok" : "warn", s.checks.update ? "Title update" : "No title update", "The title update (needed for DLC), in Documents\\fm2\\update.")
   chip(s.checks.running ? "warn" : "ok", s.checks.running ? "Game running" : "Not running")
-  const zeroCopyTip = "Fast memory sharing between the game and your GPU (Direct3D 12 ID3D12Device13). It needs Windows 11 version 23H2 or newer and a GPU driver from 2024 or newer. Without it the game copies data every frame, which lowers performance and can cause hitches."
+  const zeroCopyTip = "Fast memory sharing between the game and your GPU (Direct3D 12 zero-copy). The game found it could not use it, so it copies data every frame: lower performance and hitches. Updating Windows and your GPU driver usually fixes it (Windows 11 23H2 or newer with a 2024 or newer driver works best)."
   if (s.system && !s.system.zeroCopy) chip("warn", "Reduced performance", zeroCopyTip)
 
   // play page
@@ -188,7 +188,7 @@ function render() {
   item(s.checks.game, s.checks.game ? "Game files ready" : "Game files missing: run the installer again")
   item(s.shaders.exists, s.shaders.exists ? `Shaders compiled (${s.shaders.shaders.toLocaleString()})` : "First start compiles shaders (a few minutes)")
   if (s.system && !s.system.zeroCopy)
-    item(false, `Your PC may get reduced performance and hitches: update to Windows 11 23H2 or newer and a 2024 or newer GPU driver (you have ${s.system.os}${s.system.driver ? ", driver " + s.system.driver : ""})`)
+    item(false, `Your PC may get reduced performance and hitches: the game can't share memory with your GPU. Update Windows and your GPU driver (you have ${s.system.os}${s.system.driver ? ", driver " + s.system.driver : ""})`)
   if (s.dlc.length) item(true, `${s.dlc.filter((d) => d.enabled).length} of ${s.dlc.length} DLC packs on`)
   $("launch").disabled = !s.checks.exe || !s.checks.game || s.checks.running
   $("launch").textContent = s.checks.running ? "Running" : "Play"
