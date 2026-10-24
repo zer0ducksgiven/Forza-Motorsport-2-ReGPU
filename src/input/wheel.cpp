@@ -4,8 +4,9 @@
 //
 // For direct drive wheels, which show every step of a force: the game sets its steering force
 // once or twice a frame, and the thread eases towards each new value (kSmoothSeconds) instead of
-// jumping to it. Forces fade in when they start, fade out while the game's window is not in front
-// or the game has stopped updating them (a hang, a pause), and stop for good on exit (WheelStop).
+// jumping to it. Forces fade in when they start, fade out while the player is not driving (menus,
+// pauses and replays: hooks/wheel_driving.cpp), the game's window is not in front or the game has
+// stopped updating them (a hang), and stop for good on exit (WheelStop).
 //
 // Settings (settings.ini, from the launcher; FM2_WHEEL_STRENGTH, _SPRING, _REVERSE and _ROTATION
 // override them): the strength, the spring and damper on top of it, the steering force reversed,
@@ -101,6 +102,7 @@ struct Driver
     float steering = 0;              // the eased steering force, -1 to 1
     steady_clock::time_point updated; // the game's last steering force
     float fade = 0;
+    bool driving = false; // from the game: off in menus, pauses and replays
 
     // From the settings when the thread starts.
     float strength = 0.5f, spring = 0.5f, reverse = 1, steerScale = 1;
@@ -463,7 +465,7 @@ void Thread()
             ReadInput(d);
             if (d.haptic)
             {
-                const bool live = Focused() && now - d.updated < kStaleAfter;
+                const bool live = d.driving && Focused() && now - d.updated < kStaleAfter;
                 d.fade = live ? std::min(1.0f, d.fade + dt / kFadeInSeconds) : std::max(0.0f, d.fade - dt / kFadeOutSeconds);
                 for (uint32_t b = 1; b <= wheel::kMaxBlocks; b++)
                     Apply(d, b, dt);
@@ -526,6 +528,12 @@ void WheelFfControl(uint32_t command)
 {
     std::lock_guard lock(g_wheel.mutex);
     g_wheel.game.Control(command);
+}
+
+void WheelSetDriving(bool driving)
+{
+    std::lock_guard lock(g_wheel.mutex);
+    g_wheel.driving = driving;
 }
 
 void WheelFfDeviceGain(uint32_t gain)

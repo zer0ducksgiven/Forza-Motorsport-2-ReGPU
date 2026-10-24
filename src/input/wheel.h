@@ -25,3 +25,5 @@ void WheelFfDefine(const wheel::Effect& e);
 void WheelFfOperate(uint32_t block, uint32_t op);
 void WheelFfControl(uint32_t command);
 void WheelFfDeviceGain(uint32_t gain);
+// Whether the player is driving, from the game (hooks/wheel_driving.cpp): forces fade out when not.
+void WheelSetDriving(bool driving);
