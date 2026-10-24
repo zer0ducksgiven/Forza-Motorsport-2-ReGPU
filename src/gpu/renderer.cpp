@@ -534,8 +534,10 @@ ComPtr<ID3D12QueryHeap> g_timestamps;
 
 // FM2_GPU_PASSES=1: GPU time per pass (between render target switches and resolves),
 // summed by pass and logged every 2 s, to find where GPU time goes.
-const bool g_gpuPasses = getenv("FM2_GPU_PASSES") != nullptr;
-constexpr UINT kPassMarks = 1024;
+// FM2_GPU_SHADERS=1 also marks every draw, labelled by its shaders (approximate: the GPU overlaps draws).
+const bool g_gpuShaders = getenv("FM2_GPU_SHADERS") != nullptr;
+const bool g_gpuPasses = getenv("FM2_GPU_PASSES") != nullptr || g_gpuShaders;
+constexpr UINT kPassMarks = 4096;
 ComPtr<ID3D12QueryHeap> g_passQueries;
 ComPtr<ID3D12Resource> g_passReadback;
 struct PassMarkInfo
@@ -1407,7 +1409,7 @@ FrameResources& Frame();
 
 void PassMark(const char* fmt, uint32_t a, uint32_t b)
 {
-    if (!g_gpuPasses || !g_passQueries)
+    if (!g_gpuPasses || !g_passQueries || !C().list)
         return;
     const UINT frameIndex = UINT(&Frame() - g_r.frames);
     auto& marks = g_passMarks[frameIndex];
@@ -1584,6 +1586,8 @@ void BeginFrameIfNeeded()
             const uint64_t* ts = t + size_t(frameIndex) * kPassMarks;
             for (size_t i = 0; i + 1 < marks.size(); i++)
             {
+                if (ts[i + 1] < ts[i])
+                    continue; // marks from lists that ran out of order
                 auto& total = g_passTotals[marks[i].label];
                 total.first += double(ts[i + 1] - ts[i]) * 1000.0 / double(frequency);
                 total.second += marks[i].draws;
@@ -1606,7 +1610,7 @@ void BeginFrameIfNeeded()
             }
             std::sort(top.rbegin(), top.rend());
             Log("gpu passes: %.2f ms/frame over %llu frames", sum / g_passFrames, (unsigned long long)g_passFrames);
-            for (size_t i = 0; i < top.size() && i < 14; i++)
+            for (size_t i = 0; i < top.size() && i < (g_gpuShaders ? 30u : 14u); i++)
                 Log("gpu passes: %6.3f ms  %5.0f draws  %s", top[i].first / g_passFrames, double(g_passTotals[top[i].second].second) / g_passFrames,
                     top[i].second.c_str());
             g_passTotals.clear();
@@ -6175,6 +6179,8 @@ void RendererRunPieces(uint32_t n, const std::function<void(uint32_t)>& translat
 
 void RendererOnDraw(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
 {
+    if (g_gpuShaders)
+        PassMark("vs %08X ps %08X", uint32_t(C().vsHash), uint32_t(C().psHash));
     if (!g_perfTiming)
     {
         DrawImpl(initiator, dmaBase, dmaSize);
@@ -6188,6 +6194,7 @@ void RendererOnDraw(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
     g_perf.drawSeconds += seconds;
     g_frameEvents.worstDrawMs = std::max(g_frameEvents.worstDrawMs, seconds * 1000.0);
     g_perf.draws++;
+    g_passDraws++;
 }
 
 namespace
