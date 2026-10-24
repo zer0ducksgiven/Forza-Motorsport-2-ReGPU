@@ -19,6 +19,7 @@
       <button data-tab="profiles">Profiles</button>
       <button data-tab="photos">Photos</button>
       <button data-tab="settings">Settings</button>
+      <button data-tab="report">Report a bug</button>
       <button data-tab="updates">Updates <span class="dot-badge" id="update-badge" hidden></span></button>
     </nav>
     <button class="ghost small" id="discord" data-tip="Join the FM2 ReGPU Discord server.">Discord</button>
@@ -205,6 +206,35 @@
         <button class="ghost" data-open="install" data-tip="The installed game and this launcher.">Open install folder</button>
         <button class="ghost" data-open="log" data-tip="out\play.log: send it with bug reports.">Open logs</button>
       </div>
+    </section>
+  </main>
+
+  <!-- REPORT -->
+  <main class="page grid-report" id="page-report" hidden>
+    <section class="panel">
+      <div class="panel-head"><h2>Report a bug</h2></div>
+      <p class="hint">Goes straight to the developers. Your Windows user name and PC name are removed from everything sent.</p>
+      <label class="field"><span>What went wrong, in a few words</span><input id="bug-title" maxlength="120" spellcheck="true" placeholder="Black screen after the race loads at Laguna Seca"></label>
+      <label class="field"><span>What happened, and what you were doing</span><textarea id="bug-text" rows="8" maxlength="8000" spellcheck="true" placeholder="Steps to make it happen again help the most."></textarea></label>
+      <label class="field"><span>Discord name, if you'd like a reply (optional)</span><input id="bug-contact" maxlength="64" spellcheck="false"></label>
+      <div class="toggle-row" data-tip="Adds out\play.log from your last session: your hardware, drivers, settings and what the game did. It's the most useful part of a report. Check what's in it on the right.">
+        <div><div class="toggle-title">Attach play.log</div><div class="toggle-sub">From your last session</div></div>
+        <button class="switch on" id="bug-log" role="switch"></button>
+      </div>
+      <div class="buttons-row">
+        <button class="primary" id="bug-send">Send report</button>
+      </div>
+      <div class="status" id="bug-status"></div>
+    </section>
+    <section class="panel">
+      <div class="panel-head"><h2>Help testing</h2></div>
+      <div class="toggle-row" data-tip="After each session, the launcher sends that session's play.log (hardware, drivers, settings, frame rates and errors, with your user and PC names removed) so problems on PCs like yours get found. Off by default; turn it off again any time.">
+        <div><div class="toggle-title">Share play.log after each session</div><div class="toggle-sub">Opt-in: off unless you turn it on</div></div>
+        <button class="switch" id="share-logs" role="switch"></button>
+      </div>
+      <div class="panel-head"><h2>What gets sent</h2></div>
+      <p class="hint">Your last play.log exactly as it would be sent.</p>
+      <pre class="log-preview" id="log-preview">Loading…</pre>
     </section>
   </main>
 

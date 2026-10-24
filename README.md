@@ -73,16 +73,25 @@ notes menus locked to half rate and 144 Hz running slower than 60 Hz. Details in
 
 ## System requirements
 
-| | Minimum (estimated) | Tested on |
+| | Minimum (tested: about 60 fps at 720p) | Recommended (tested) |
 |---|---|---|
-| OS | Windows 10 64-bit (version 1803 or later) | Windows 11 |
-| CPU | 4 cores / 8 threads, x64 with SSSE3 | AMD Ryzen 7 5800X (8 cores / 16 threads) |
-| GPU | DirectX 12, feature level 12_0; an up-to-date driver (see zero-copy below) | NVIDIA GeForce RTX 4070 |
-| RAM | 8 GB | 64 GB |
-| Disk | 6 GB (extracted game ~4.7 GB, plus shader and pipeline caches) | |
+| OS | Windows 10 64-bit, 22H2 | Windows 11 23H2 or newer |
+| CPU | AMD FX-8350 (4 modules / 8 threads, 2012) | AMD Ryzen 7 5800X (8 cores / 16 threads) |
+| GPU | NVIDIA GeForce GTX 970 (4 GB), DirectX 12 feature level 12_0 | NVIDIA GeForce RTX 4070 |
+| RAM | 8 GB (16 GB tested) | 16 GB or more (64 GB tested) |
+| Disk | 6 GB (extracted game ~4.7 GB, plus shader and pipeline caches) | an SSD shortens the first start |
 
-The first start compiles every shader once; it takes longer with fewer CPU threads.
-The minimum column has not been tested yet.
+**What the minimum PC gets.** The FX-8350 + GTX 970 PC above (Windows 10 22H2, 1280x720, **Low performance
+mode** on) averages **71-74 fps** in the benchmark race, with 1% lows of **49-51 fps**: a steady 60 most of
+the time, with dips in the busiest moments. Its first start compiles shaders for a few minutes longer than a
+modern PC. Anything slower than this is untested; older CPUs than an FX-8350 are likely below 60.
+
+**Low performance mode** (launcher, Play tab) is for CPUs of that age: on the FX-8350 it was worth about
+20% (69.5 vs 57.3 fps). Leave it off on a modern CPU, where the optimisation it turns off is faster.
+
+**Windows 11 users: update to 23H2 or newer** (Settings, Windows Update), with a GPU driver from 2024 or
+newer. Windows 10 now gets zero-copy memory too (below), but Windows 11 23H2+ uses the newer, more direct
+path, and it's the configuration most of the testing was done on.
 
 ### For full performance: zero-copy memory
 
@@ -111,6 +120,19 @@ where the GPU and the command processor are close to equal limits; menus reach t
 
 Saves work: the signed-in gamer profile is the profile name from the launcher (`Player`
 by default), and its saves live in `Documents\fm2\profiles\<name>\content`.
+
+## Reporting bugs and sharing logs
+
+The launcher's **Report a bug** tab sends a report straight to the developers: a title, what happened, an
+optional Discord name for a reply, and (on by default, switchable) your last `out\play.log`. The same tab
+has an opt-in, **off by default**: **Share play.log after each session**, which sends each session's log
+when you next open the launcher, so problems on hardware we don't have get found.
+
+What's in a log: your Windows version, CPU, RAM, GPU and driver, displays, game settings, frame rates
+and anything that went wrong. Your **Windows user name and PC name are removed** before anything leaves
+your PC (the tab shows the log exactly as it would be sent), and again on the server. Reports go to a
+private repository only the developers can read; they're never public. The server
+(`server/reports`) is a small Cloudflare Worker, in this repository.
 
 ## Launcher and settings
 

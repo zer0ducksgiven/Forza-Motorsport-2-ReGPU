@@ -127,9 +127,10 @@ $("tabs").onclick = (e) => {
   const b = e.target.closest("button")
   if (!b) return
   for (const t of $("tabs").children) t.classList.toggle("on", t === b)
-  for (const p of ["play", "profiles", "photos", "settings", "updates"]) $("page-" + p).hidden = p !== b.dataset.tab
+  for (const p of ["play", "profiles", "photos", "settings", "report", "updates"]) $("page-" + p).hidden = p !== b.dataset.tab
   if (b.dataset.tab === "photos") loadPhotos()
   else if (b.dataset.tab === "profiles") loadProfiles()
+  else if (b.dataset.tab === "report") loadReport()
   else if (b.dataset.tab !== "play") refresh()
 }
 
@@ -559,6 +560,38 @@ $("photo-copy").onclick = () => guarded(async () => { await call("photos.copy", 
 $("photo-save").onclick = () => guarded(async () => { if (await call("photos.save", photoId)) toast("Photo saved.", true) })
 $("photo-reveal").onclick = () => guarded(() => call("photos.reveal", photoId))
 $("photos-folder").onclick = () => guarded(() => call("photos.reveal", null))
+
+// ---- report a bug
+
+async function loadReport() {
+  const r = await call("report.state")
+  $("share-logs").classList.toggle("on", r.shareLogs)
+  const log = await call("report.preview")
+  // the end matters most (where it went wrong); the whole log is sent
+  $("log-preview").textContent = log ? (log.length > 60000 ? "…\n" + log.slice(-60000) : log) : "No play.log yet: it's written when the game runs."
+  if (log) $("log-preview").scrollTop = $("log-preview").scrollHeight
+}
+$("bug-log").onclick = () => $("bug-log").classList.toggle("on")
+$("share-logs").onclick = () => guarded(async () => {
+  const r = await call("report.shareLogs", !$("share-logs").classList.contains("on"))
+  $("share-logs").classList.toggle("on", r.shareLogs)
+  toast(r.shareLogs ? "Thanks! Your play.log will be sent after each session." : "Log sharing is off.", true)
+})
+$("bug-send").onclick = () => guarded(async () => {
+  $("bug-send").disabled = true
+  $("bug-status").textContent = "Sending…"
+  try {
+    const r = await call("report.send", { title: $("bug-title").value, description: $("bug-text").value, contact: $("bug-contact").value, withLog: $("bug-log").classList.contains("on") })
+    $("bug-title").value = $("bug-text").value = ""
+    $("bug-status").textContent = `Sent: report ${r.id}. Thanks!`
+    toast("Report sent. Thanks!", true)
+  } catch (e) {
+    $("bug-status").textContent = ""
+    throw e
+  } finally {
+    $("bug-send").disabled = false
+  }
+})
 
 async function refresh() {
   await guarded(async () => { state = await call("state"); render(); renderUpdate() })

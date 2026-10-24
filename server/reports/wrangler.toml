@@ -1,0 +1,13 @@
+name = "fm2-reports"
+main = "src/index.js"
+compatibility_date = "2025-06-01"
+
+[vars]
+# The private repo reports are filed in ("owner/name").
+REPORTS_REPO = "OWNER/fm2-reports"
+
+# 10 reports a minute per address (bug reports and logs together).
+[[ratelimits]]
+name = "LIMITER"
+namespace_id = "1001"
+simple = { limit = 10, period = 60 }

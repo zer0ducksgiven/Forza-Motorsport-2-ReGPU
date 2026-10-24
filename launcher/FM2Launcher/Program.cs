@@ -89,6 +89,7 @@ internal sealed class MainForm : Form
         core.SetVirtualHostNameToFolderMapping(Photos.Host, Directory.CreateDirectory(Photos.Root).FullName, CoreWebView2HostResourceAccessKind.DenyCors);
         var bridge = new Bridge(core, this);
         core.WebMessageReceived += bridge.OnMessage;
+        _ = Reports.SendLastLogAsync(); // opted in: the last session's play.log
         // only its own page; links go to the browser
         core.NavigationStarting += (_, e) =>
         {

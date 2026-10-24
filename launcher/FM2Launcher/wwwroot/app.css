@@ -56,6 +56,7 @@ button:disabled { opacity: .45; cursor: default; }
 .page { flex: 1; min-height: 0; padding: 10px 22px 22px; gap: 14px; }
 .grid3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .grid-updates { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.8fr); }
+.grid-report { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); }
 .panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; display: flex; flex-direction: column; min-height: 0; overflow-y: auto; }
 .panel-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; min-height: 26px; }
 h2 { margin: 0; font-size: 13px; letter-spacing: 1px; text-transform: uppercase; color: #cfd2da; }
@@ -64,12 +65,14 @@ h2 { margin: 0; font-size: 13px; letter-spacing: 1px; text-transform: uppercase;
 /* fields */
 .field { display: flex; flex-direction: column; gap: 5px; margin-bottom: 10px; }
 .field > span { color: var(--muted); font-size: 12.5px; }
-select, input {
+select, input, textarea {
   background: var(--panel-2); color: var(--text); border: 1px solid var(--line); border-radius: 8px;
   padding: 7px 10px; font: inherit; outline: none; user-select: text;
 }
-select:hover, input:hover { border-color: #333947; }
-select:focus, input:focus { border-color: var(--accent); }
+select:hover, input:hover, textarea:hover { border-color: #333947; }
+select:focus, input:focus, textarea:focus { border-color: var(--accent); }
+textarea { resize: vertical; min-height: 120px; }
+.log-preview { margin: 0; padding: 10px; max-height: 360px; overflow: auto; background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; font: 11.5px/1.45 Consolas, monospace; color: #b9bdc7; white-space: pre-wrap; word-break: break-all; user-select: text; }
 .segmented { display: grid; grid-template-columns: 1fr 1fr; background: var(--panel-2); border-radius: 8px; padding: 3px; }
 .segmented button { background: transparent; padding: 7px; color: var(--muted); }
 .segmented button.on { background: #2b303b; color: var(--text); }
