@@ -211,8 +211,13 @@
     </section>
 
     <section class="panel">
-      <div class="panel-head"><h2>Racing wheel</h2></div>
+      <div class="panel-head"><h2>Racing wheel <span class="badge">beta</span></h2></div>
       <p class="hint">For a wheel with force feedback (Thrustmaster, Logitech, Fanatec, Moza and others), plugged in before the game starts. The game sees it as an Xbox 360 wheel.</p>
+      <div class="check-item" id="wheel-status"></div>
+      <p class="hint">New and only tested on a Thrustmaster T598 so far. Please try yours and tell us how it went: which wheel, whether steering, pedals, buttons and force feedback work, and how the force feels.</p>
+      <div class="buttons-row">
+        <button class="ghost small" id="wheel-report" data-tip="Opens the Report tab. Your play.log says which wheel the game found and how it set it up.">Report how it went</button>
+      </div>
       <label class="field" data-tip="How strong every force is. Direct drive wheels are strong: start low and turn it up.">
         <span>Force feedback strength</span>
         <select id="wheelStrength"></select>

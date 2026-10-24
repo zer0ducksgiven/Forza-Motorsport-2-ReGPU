@@ -240,6 +240,7 @@ public sealed class Bridge(CoreWebView2 web, Form owner)
                 running = Game.Running,
             },
             system = SystemCheck.Get(),
+            wheel = WheelCheck.Get(),
             options = new
             {
                 resolutions = Options.Resolutions(),

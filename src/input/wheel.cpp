@@ -36,6 +36,7 @@
 
 #include "log.h"
 #include "settings.h"
+#include "kernel/runtime.h"
 
 namespace
 {
@@ -280,6 +281,18 @@ void OpenHaptic(Driver& d)
     g_ff = true;
 }
 
+// For the launcher's Racing wheel panel: the wheel the game found (name, vendor:product, whether it
+// has force feedback), or an empty file for none.
+void RecordWheel(const Device* w, bool ff)
+{
+    if (FILE* f = _wfopen((UserDir() / "wheel.txt").c_str(), L"w"))
+    {
+        if (w)
+            fprintf(f, "%s\n%04X:%04X\n%s\n", w->name.c_str(), w->vid, w->pid, ff ? "force feedback" : "no force feedback");
+        fclose(f);
+    }
+}
+
 void Added(Driver& d, SDL_JoystickID id)
 {
     const uint16_t vid = SDL_GetJoystickVendorForID(id), pid = SDL_GetJoystickProductForID(id);
@@ -325,6 +338,7 @@ void Added(Driver& d, SDL_JoystickID id)
         PedalAxes(d, gas, brake);
         Log("wheel: steering %s axis 0, gas %c%d, brake %c%d", d.devices[d.wheel].name.c_str(), gas.device, gas.index, brake.device,
             brake.index);
+        RecordWheel(&d.devices[d.wheel], d.haptic != nullptr);
     }
     g_present = d.wheel >= 0;
 }
@@ -463,7 +477,7 @@ void Thread()
     Log("wheel: SDL %d.%d.%d, looking for wheels", SDL_VERSIONNUM_MAJOR(SDL_GetVersion()), SDL_VERSIONNUM_MINOR(SDL_GetVersion()),
         SDL_VERSIONNUM_MICRO(SDL_GetVersion()));
     auto last = steady_clock::now();
-    for (;;)
+    for (bool first = true;; first = false)
     {
         const auto now = steady_clock::now();
         const float dt = duration<float>(now - last).count();
@@ -478,6 +492,12 @@ void Thread()
                     Added(d, ev.jdevice.which);
                 else if (ev.type == SDL_EVENT_JOYSTICK_REMOVED)
                     Removed(d, ev.jdevice.which);
+            // The devices already plugged in come as events on the first pass.
+            if (first && d.wheel < 0)
+            {
+                Log("wheel: no racing wheel connected");
+                RecordWheel(nullptr, false);
+            }
             ReadInput(d);
             if (d.haptic)
             {

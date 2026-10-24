@@ -174,6 +174,11 @@ function render() {
   const percents = Array.from({ length: 21 }, (_, i) => ({ value: i * 5, name: i * 5 + "%" }))
   fill($("wheelStrength"), percents, set.wheelStrength)
   fill($("wheelSpring"), percents, set.wheelSpring)
+  const wheel = s.wheel, ws = $("wheel-status")
+  ws.className = "check-item " + (wheel && wheel.found ? (wheel.forceFeedback ? "ok" : "warn") : "")
+  ws.replaceChildren(el("span", "dot"), !wheel ? "No wheel seen yet: the game checks when it starts"
+    : !wheel.found ? "No wheel found the last time the game started"
+    : `${wheel.name} (${wheel.id})${wheel.forceFeedback ? ", force feedback" : ", no force feedback the game can use"}`)
   fill($("wheelRotation"), [{ value: 0, name: "As set on the wheel" }, ...[270, 360, 540, 720, 900, 1080, 1440, 2520].map((d) => ({ value: d, name: d + "°" }))], set.wheelRotation)
 
   const lang = o.languages.find((l) => l.id === set.language)
@@ -186,6 +191,7 @@ function render() {
   line("Anti-aliasing", (o.msaa.find((m) => m.value === set.msaa) || { name: "Off" }).name)
   line("Language", lang ? lang.name : "English")
   line("Intro", set.skipIntro ? "skipped" : "plays")
+  if (s.wheel && s.wheel.found) line("Wheel", `${s.wheel.name}, force feedback ${set.wheelStrength}%`)
 
   const cl = $("checklist")
   cl.replaceChildren()
@@ -294,6 +300,7 @@ $("msaa").onchange = (e) => change({ msaa: +e.target.value })
 $("language").onchange = (e) => change({ language: +e.target.value })
 $("display").onclick = (e) => { const b = e.target.closest("button"); if (b) change({ fullscreen: b.dataset.full === "1" }) }
 for (const k of ["vsync", "enhance", "skipIntro", "lowPerformance", "wheelReverse"]) $(k).onclick = () => change({ [k]: !state.settings[k] })
+$("wheel-report").onclick = () => document.querySelector("[data-tab=report]").click()
 for (const k of ["wheelStrength", "wheelSpring", "wheelRotation"]) $(k).onchange = (e) => change({ [k]: +e.target.value })
 
 // ---- actions
