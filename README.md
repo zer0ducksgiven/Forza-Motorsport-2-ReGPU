@@ -123,7 +123,7 @@ by default), and its saves live in `Documents\fm2\profiles\<name>\content`.
 
 ## Reporting bugs and sharing logs
 
-The launcher's **Report a bug** tab sends a report straight to the developers: a title, what happened, an
+The launcher's **Report** tab sends a report straight to the developers: a title, what happened, an
 optional Discord name for a reply, and (on by default, switchable) your last `out\play.log`. The same tab
 has an opt-in, **off by default**: **Share play.log after each session**, which sends each session's log
 when you next open the launcher, so problems on hardware we don't have get found.
