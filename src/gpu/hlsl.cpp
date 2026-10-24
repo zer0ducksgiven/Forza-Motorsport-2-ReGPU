@@ -316,6 +316,10 @@ struct Emitter
     std::string Constant(uint32_t index, uint32_t relative = 0) const
     {
         result.constantsUsed = relative ? 256 : std::max(result.constantsUsed, (index & 255) + 1);
+        if (relative)
+            result.constantMask.fill(~0ull);
+        else
+            result.constantMask[(index & 255) >> 6] |= 1ull << (index & 63);
         char b[48];
         if (relative)
             snprintf(b, sizeof(b), "%s[(%u + %s) & 255]", pixel ? "pc" : "vc", index & 255, relative == 1 ? "a0" : "aL");

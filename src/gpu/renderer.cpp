@@ -802,6 +802,138 @@ uint64_t ContentHash(const uint8_t* data, size_t bytes, size_t stride = 256)
     return h;
 }
 
+// Texture checks hashed ahead on worker threads: each frame starts by hashing the textures the
+// last one checked, and the draw takes that hash when 32 spot reads (taken by the worker before
+// its hash) still match memory, else hashes there as before. Hashing every texture in use on the
+// command processor took ~5 ms a frame (PGR4; FM2 on an FX-8350: 21-34 ms a frame in textures); the staggered checks that avoided it showed
+// streamed textures late. FM2_NO_TEXTURE_PREHASH hashes on the command processor (A/B).
+namespace prehash
+{
+struct Job
+{
+    uint64_t key = 0;
+    const uint8_t* source = nullptr;
+    size_t bytes = 0, stride = 0;
+    uint64_t spots = 0, hash = 0;
+    std::atomic<uint32_t> state{ 0 }; // 0 waiting, 1 being hashed, 2 done
+};
+std::unique_ptr<Job[]> g_jobs;
+uint32_t g_count = 0;
+std::unordered_map<uint64_t, uint32_t> g_index; // key -> job, this frame (command processor only)
+struct Pending
+{
+    uint64_t key;
+    const uint8_t* source;
+    size_t bytes, stride;
+};
+std::vector<Pending> g_next; // the textures this frame checks (for the next)
+std::atomic<uint32_t> g_cursor{ 0 }, g_busy{ 0 };
+std::atomic<uint64_t> g_generation{ 0 };
+std::mutex g_mutex;
+std::condition_variable g_cv;
+
+uint64_t Spots(const uint8_t* data, size_t bytes)
+{
+    uint64_t h = bytes;
+    for (uint32_t i = 0; i < 32 && bytes >= 8; i++)
+    {
+        uint64_t v;
+        memcpy(&v, data + (bytes - 8) * i / 31, 8);
+        h = (h ^ v) * 0x100000001B3ull;
+    }
+    return h;
+}
+
+uint64_t ContentHashFwd(const uint8_t* data, size_t bytes, size_t stride) { return ContentHash(data, bytes, stride); }
+
+void Work(Job& job)
+{
+    uint32_t expected = 0;
+    if (!job.state.compare_exchange_strong(expected, 1))
+        return;
+    job.spots = Spots(job.source, job.bytes);
+    job.hash = ContentHashFwd(job.source, job.bytes, job.stride);
+    job.state.store(2, std::memory_order_release);
+}
+
+void Worker()
+{
+    uint64_t seen = 0;
+    for (;;)
+    {
+        {
+            std::unique_lock lock(g_mutex);
+            g_cv.wait(lock, [&] { return g_generation.load() != seen; });
+            seen = g_generation.load();
+            g_busy++;
+        }
+        for (uint32_t i; (i = g_cursor.fetch_add(1)) < g_count;)
+            Work(g_jobs[i]);
+        g_busy--;
+    }
+}
+
+bool Enabled()
+{
+    static LiveSwitch off("FM2_NO_TEXTURE_PREHASH");
+    return !off;
+}
+
+// At the start of a frame: last frame's textures go to the workers.
+void StartFrame()
+{
+    static std::once_flag started;
+    std::call_once(started, [] {
+        for (int i = 0; i < 3; i++)
+            std::thread(Worker).detach();
+    });
+    // The workers stop taking jobs and finish the one in hand before the jobs are replaced.
+    g_cursor.store(~0u >> 1);
+    while (g_busy.load())
+        _mm_pause();
+    g_index.clear();
+    g_count = Enabled() ? uint32_t(g_next.size()) : 0;
+    g_jobs.reset(g_count ? new Job[g_count] : nullptr);
+    for (uint32_t i = 0; i < g_count; i++)
+    {
+        Job& j = g_jobs[i];
+        j.key = g_next[i].key;
+        j.source = g_next[i].source;
+        j.bytes = g_next[i].bytes;
+        j.stride = g_next[i].stride;
+        g_index[j.key] = i;
+    }
+    g_next.clear();
+    {
+        std::lock_guard lock(g_mutex);
+        g_cursor.store(0);
+        g_generation++;
+    }
+    g_cv.notify_all();
+}
+
+// The texture's hash, from the workers when they have it and memory still matches.
+uint64_t Hash(uint64_t key, const uint8_t* source, size_t bytes, size_t stride)
+{
+    if (!Enabled())
+        return ContentHashFwd(source, bytes, stride);
+    g_next.push_back({ key, source, bytes, stride });
+    if (const auto it = g_index.find(key); it != g_index.end())
+    {
+        Job& job = g_jobs[it->second];
+        if (job.source == source && job.bytes == bytes && job.stride == stride)
+        {
+            Work(job); // not reached yet: hashed here (and spot-checked, harmlessly)
+            while (job.state.load(std::memory_order_acquire) != 2)
+                _mm_pause();
+            if (Spots(source, bytes) == job.spots)
+                return job.hash;
+        }
+    }
+    return ContentHashFwd(source, bytes, stride);
+}
+}
+
 D3D12_CPU_DESCRIPTOR_HANDLE Cpu(ID3D12DescriptorHeap* heap, UINT index, UINT stride)
 {
     D3D12_CPU_DESCRIPTOR_HANDLE h = heap->GetCPUDescriptorHandleForHeapStart();
@@ -1112,7 +1244,10 @@ void Init()
     // Guest physical memory for the GPU, in place: vertex fetches read it
     // without copies.
     ComPtr<ID3D12Device13> d13;
-    HRESULT hr = getenv("FM2_FORCE_DEVICE3") ? E_NOINTERFACE : d->QueryInterface(IID_PPV_ARGS(&d13)); // (FM2_FORCE_DEVICE3: test the fallback)
+    // FM2_NO_GUEST_HEAP=1 maps nothing: vertex data is copied (A/B: whether the CPU's own reads of guest
+    // memory slow down once it is shared with the GPU on a given driver).
+    const bool noGuestHeap = getenv("FM2_NO_GUEST_HEAP") != nullptr;
+    HRESULT hr = noGuestHeap || getenv("FM2_FORCE_DEVICE3") ? E_NOINTERFACE : d->QueryInterface(IID_PPV_ARGS(&d13)); // (FM2_FORCE_DEVICE3: test the fallback)
     if (SUCCEEDED(hr))
         hr = d13->OpenExistingHeapFromFileMapping(PhysicalSection(), IID_PPV_ARGS(&g_r.physicalHeap));
     if (FAILED(hr) && d13)
@@ -1123,7 +1258,7 @@ void Init()
     // Older runtimes (Windows 10, older drivers) have no ID3D12Device13, but ID3D12Device3 (Windows 10
     // 1709+) opens a heap over the whole allocation an address is in: the 512 MB view of guest
     // physical memory at 0xA0000000 is exactly that. The self-test below checks the GPU sees it.
-    if (FAILED(hr) && !d13)
+    if (FAILED(hr) && !d13 && !noGuestHeap)
     {
         ComPtr<ID3D12Device3> d3;
         if (SUCCEEDED(hr = d->QueryInterface(IID_PPV_ARGS(&d3))))
@@ -2238,6 +2373,7 @@ const CompiledShader& GetShaderLocked(uint64_t hash, const std::vector<uint32_t>
                 cs.info.ok = true;
                 cs.info.usedTextureSlots = base.info.usedTextureSlots;
                 cs.info.constantsUsed = base.info.constantsUsed; // same ALU code
+                cs.info.constantMask = base.info.constantMask;
                 cs.info.interpolatorsWritten = base.info.interpolatorsWritten;
                 cs.info.vertexFetchLayout = std::move(layout.vertexFetchLayout);
                 cs.info.vertexFetchConstants = std::move(layout.vertexFetchConstants);
@@ -3349,7 +3485,7 @@ ID3D12Resource* GetTextureLocked(const TextureFetch& fetch, DXGI_FORMAT& format,
     // Small textures (icons, thumbnails) are hashed densely, big ones sampled: a change confined
     // to a few dwords must not slip between the samples.
     const size_t hashStride = sourceBytes <= (64u << 10) ? 4 : sourceBytes <= (512u << 10) ? 64 : 256;
-    const uint64_t hash = ContentHash(source, sourceBytes, hashStride) ^ (bc ? 0 : uint64_t(fetch.Swizzle()) << 8) ^ (uint64_t(fetch.Pitch()) << 24) ^
+    const uint64_t hash = prehash::Hash(textureKey, source, sourceBytes, hashStride) ^ (bc ? 0 : uint64_t(fetch.Swizzle()) << 8) ^ (uint64_t(fetch.Pitch()) << 24) ^
         (uint64_t(fetch.Tiled()) << 40) ^ (uint64_t(fetch.Endian()) << 44);
     if (cached.resource && cached.contentHash == hash && !forceDecode)
     {
@@ -6321,10 +6457,27 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
         auto* dp = reinterpret_cast<__m128i*>(pc->c);
         static LiveSwitch allConstants("FM2_ALL_CONSTANTS"); // A/B
         const uint32_t nv = allConstants ? 256 : std::min(vs.info.constantsUsed, 256u), np = allConstants ? 256 : std::min(ps.info.constantsUsed, 256u);
-        for (uint32_t i = 0; i < nv; i++)
-            _mm_storeu_si128(dv + i, _mm_shuffle_epi8(_mm_loadu_si128(src + i), swap));
-        for (uint32_t i = 0; i < np; i++)
-            _mm_storeu_si128(dp + i, _mm_shuffle_epi8(_mm_loadu_si128(src + 256 + i), swap));
+        // Only the constants each shader reads, by its mask (from ReGPU 8a8bfa3). Car draws copy them
+        // all: hooks/dealer.cpp reads the car's constants itself. FM2_CONSTANTS_BY_COUNT copies all
+        // up to the highest one again (A/B).
+        static LiveSwitch byCount("FM2_CONSTANTS_BY_COUNT");
+        auto copy = [&](__m128i* dst, const __m128i* from, const std::array<uint64_t, 4>& mask, uint32_t n, bool all) {
+            if (all || byCount)
+            {
+                for (uint32_t i = 0; i < n; i++)
+                    _mm_storeu_si128(dst + i, _mm_shuffle_epi8(_mm_loadu_si128(from + i), swap));
+                return;
+            }
+            for (uint32_t w = 0; w < 4; w++)
+                for (uint64_t bits = mask[w]; bits; bits &= bits - 1)
+                {
+                    const uint32_t i = w * 64 + uint32_t(_tzcnt_u64(bits));
+                    _mm_storeu_si128(dst + i, _mm_shuffle_epi8(_mm_loadu_si128(from + i), swap));
+                }
+        };
+        const bool carDraw = vs.carBody || vs.carPart;
+        copy(dv, src, vs.info.constantMask, carDraw ? 256 : nv, allConstants || carDraw);
+        copy(dp, src + 256, ps.info.constantMask, np, allConstants);
         if (motion)
         {
             // This draw's constants for the next frame, and last frame's for its motion. The
@@ -6617,7 +6770,11 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
                 if (sel == 0 || sel == 2)
                     swizzle ^= (sel ^ (2 - sel)) << (3 * c);
             }
-        pc->tinfo[slot][3] = (cube ? 3 : 1) | (onGpu ? (1u << 31) | (swizzle << 8) : 0);
+        // Built here and written once: the constants live in upload memory, which is slow to read
+        // back (from ReGPU e9e5e2c).
+        uint32_t ti[4]{};
+        float tb[4]{};
+        ti[3] = (cube ? 3 : 1) | (onGpu ? (1u << 31) | (swizzle << 8) : 0);
         // Clamp X and Y (dword 0 bits 10-12, 13-15): 0 wrap, else clamp. Filter: dword 3 bits
         // 19-20 (mag): 0 point. With only one axis clamped (kerbs: clamped across, repeating
         // along) the wrapping sampler is used and the shader clamps that axis (bits 18, 19).
@@ -6625,31 +6782,33 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
         static LiveSwitch oldClamp("FM2_OLD_CLAMP"); // A/B: X's mode for both axes (before the kerb fix)
         const bool clamp = oldClamp ? clampX != 0 : clampX != 0 && clampY != 0;
         const bool point = ((fetch.dwords[3] >> 19) & 3) == 0;
-        pc->tinfo[slot][0] = (point ? (clamp ? 2 : 3) : (clamp ? 1 : 0)) | ((uint32_t(fetch.ExpAdjust()) & 0x3F) << 8);
+        ti[0] = (point ? (clamp ? 2 : 3) : (clamp ? 1 : 0)) | ((uint32_t(fetch.ExpAdjust()) & 0x3F) << 8);
         if (!clamp && !oldClamp)
-            pc->tinfo[slot][0] |= (clampX ? 1u << 18 : 0u) | (clampY ? 1u << 19 : 0u);
+            ti[0] |= (clampX ? 1u << 18 : 0u) | (clampY ? 1u << 19 : 0u);
         // Clamp to border on both axes (modes 6, 7): the shader returns the border colour
         // outside the image (dword 5 bits 0-1: 1 white, else black).
         if (clampX >= 6 && clampY >= 6)
-            pc->tinfo[slot][0] |= (1u << 16) | ((fetch.dwords[5] & 3) == 1 ? 1u << 17 : 0u);
-        pc->tbias[slot][0] = fetch.LodBias();
-        memcpy(&pc->tbias[slot][1], &index, 4);
+            ti[0] |= (1u << 16) | ((fetch.dwords[5] & 3) == 1 ? 1u << 17 : 0u);
+        tb[0] = fetch.LodBias();
+        memcpy(&tb[1], &index, 4);
         // A resolved texture is as wide as the pitch it was resolved with; the fetch
         // constant may declare a narrower image inside it (e.g. 163 of 192 columns):
         // the shader scales UVs so 0..1 spans the declared image, not the padding.
-        pc->tbias[slot][2] = pc->tbias[slot][3] = 1.0f;
+        tb[2] = tb[3] = 1.0f;
         if (onGpu && resolvedPtr && !cube && resolvedPtr->width && resolvedPtr->height && resolvedPtr->resource)
         {
-            pc->tbias[slot][2] = std::min(1.0f, float(fetch.Width()) / float(resolvedPtr->width));
-            pc->tbias[slot][3] = std::min(1.0f, float(fetch.Height()) / float(resolvedPtr->height));
+            tb[2] = std::min(1.0f, float(fetch.Width()) / float(resolvedPtr->width));
+            tb[3] = std::min(1.0f, float(fetch.Height()) / float(resolvedPtr->height));
         }
-        pc->tinfo[slot][1] = fetch.Width();
-        pc->tinfo[slot][2] = fetch.Height();
+        ti[1] = fetch.Width();
+        ti[2] = fetch.Height();
         memcpy(memo.fetch, fetch.dwords, sizeof(memo.fetch));
         memo.frame = g_r.frame;
         memo.epoch = g_resolveEpoch;
-        memcpy(memo.tinfo, pc->tinfo[slot], sizeof(memo.tinfo));
-        memcpy(memo.tbias, pc->tbias[slot], sizeof(memo.tbias));
+        memcpy(memo.tinfo, ti, sizeof(memo.tinfo));
+        memcpy(memo.tbias, tb, sizeof(memo.tbias));
+        memcpy(pc->tinfo[slot], ti, sizeof(ti));
+        memcpy(pc->tbias[slot], tb, sizeof(tb));
         memo.samplesResolve = g_drawSamplesResolve;
         g_drawSamplesResolve |= samplesBefore;
     }
@@ -7415,6 +7574,7 @@ void RendererOnSwapImpl(uint64_t frameNumber, uint32_t frontBuffer)
         }
     }
     ++g_r.frame;
+    prehash::StartFrame();
     DebugOnSwap(g_r.frame);
     if (int st = g_drawStats.load(); st) // drawstats: arm at one swap, stop at the next
         g_drawStats = st == 1 ? 2 : 0;
