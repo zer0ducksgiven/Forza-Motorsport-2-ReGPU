@@ -14,7 +14,7 @@ set FM2_PROFILE=Benchmark
 set FM2_MAX_FPS=360
 set FM2_VSYNC=0
 set FM2_BENCHMARK=out\benchmark.txt
-set FM2_TOUR=WAIT:7,START,IDLE,A,IDLE,A,IDLE,A,IDLE,A,IDLE,A,IDLE,A,IDLE,A,IDLE,A,IDLE,A,IDLE,WAIT:2,A,IDLE,WAIT:3,RT:25,QUIT
+set FM2_TOUR=WAIT:7,START,IDLE,A,IDLE,A,IDLE,A,IDLE,A,IDLE,A,IDLE,A,IDLE,A,IDLE,A,IDLE,A,IDLE,WAIT:2,A,IDLE,WAIT:3,RACE:34,QUIT
 build\tu\fm2.exe > out\benchmark.log 2>&1
 echo.
 if exist out\benchmark.txt (type out\benchmark.txt) else (echo The benchmark did not finish: see out\benchmark.log)

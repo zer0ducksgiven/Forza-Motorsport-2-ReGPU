@@ -530,7 +530,9 @@ bool ReadPad(uint32_t user, PadState& s)
         // FM2_TOUR=<steps>: hands-off route through the menus and races (shader tour).
         // Steps (comma separated): a button name (A, B, X, Y, START, BACK, UP, DOWN, LEFT,
         // RIGHT, LB, RB), "WAIT:<seconds>", "IDLE" (wait until the renderer has no compile
-        // running; at least 2 s), "RT:<seconds>" (hold the right trigger), "QUIT" (save
+        // running; at least 2 s), "RT:<seconds>" (hold the right trigger), "RACE:<seconds>"
+        // (the benchmark: the right trigger held, A tapped every 2 s for the first 10 s in case a slow
+        // PC was still loading when the race start was pressed, measured from 12 s), "QUIT" (save
         // caches and exit). Each button press lasts at least 150 ms and 3 reads, then a 600 ms gap.
         {
             static const char* tourEnv = getenv("FM2_TOUR");
@@ -593,6 +595,14 @@ bool ReadPad(uint32_t user, PadState& s)
                 else if (step == "IDLE")
                 {
                     advance = elapsed >= 2.0 && RendererCompileIdle();
+                }
+                else if (step.rfind("RACE:", 0) == 0)
+                {
+                    s.rightTrigger = 255;
+                    if (elapsed < 10.0 && fmod(elapsed, 2.0) < 0.2)
+                        s.buttons |= XINPUT_GAMEPAD_A;
+                    advance = elapsed >= atof(step.c_str() + 5);
+                    BenchmarkRecord(!advance && elapsed >= 12.0);
                 }
                 else if (step.rfind("RT:", 0) == 0)
                 {

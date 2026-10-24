@@ -34,7 +34,7 @@ set FM2_MAX_FPS=360
 set FM2_VSYNC=0
 set FM2_PERF=1
 set FM2_BENCHMARK=out\benchmark.txt
-set FM2_TOUR=WAIT:7,START,IDLE,A,IDLE,A,IDLE,A,IDLE,A,IDLE,A,IDLE,A,IDLE,A,IDLE,A,IDLE,A,IDLE,WAIT:2,A,IDLE,WAIT:3,RT:25,QUIT
+set FM2_TOUR=WAIT:7,START,IDLE,A,IDLE,A,IDLE,A,IDLE,A,IDLE,A,IDLE,A,IDLE,A,IDLE,A,IDLE,A,IDLE,WAIT:2,A,IDLE,WAIT:3,RACE:34,QUIT
 if exist out\benchmark.txt del out\benchmark.txt
 for /f %%t in ('powershell -NoProfile -Command "Get-Date -Format yyyyMMdd-HHmmss"') do set stamp=%%t
 set dir=out\runs\%stamp%_%label%
