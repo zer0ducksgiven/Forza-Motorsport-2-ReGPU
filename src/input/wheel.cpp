@@ -218,11 +218,11 @@ void ReadInput(Driver& d)
             uint16_t pad;
         };
         // T598 in PC mode, a PlayStation layout: Cross, Circle, Square, Triangle as A, B, X, Y,
-        // the paddles and L2/R2 shift, Share and Options as Back and Start.
+        // the paddles and L2/R2 shift, Share and Options as Back and Start, L3/R3 as the stick clicks.
         static const Button t598[] = { { 5, XINPUT_GAMEPAD_A }, { 4, XINPUT_GAMEPAD_B }, { 3, XINPUT_GAMEPAD_X },
             { 2, XINPUT_GAMEPAD_Y }, { 6, XINPUT_GAMEPAD_LEFT_SHOULDER }, { 7, XINPUT_GAMEPAD_RIGHT_SHOULDER },
-            { 21, XINPUT_GAMEPAD_LEFT_SHOULDER }, { 22, XINPUT_GAMEPAD_RIGHT_SHOULDER }, { 0, XINPUT_GAMEPAD_BACK },
-            { 1, XINPUT_GAMEPAD_START } };
+            { 9, XINPUT_GAMEPAD_LEFT_SHOULDER }, { 8, XINPUT_GAMEPAD_RIGHT_SHOULDER }, { 0, XINPUT_GAMEPAD_BACK },
+            { 1, XINPUT_GAMEPAD_START }, { 21, XINPUT_GAMEPAD_LEFT_THUMB }, { 22, XINPUT_GAMEPAD_RIGHT_THUMB } };
         // Others, the usual wheel order (FH1's generic layout): face buttons, the right and left
         // paddle, then Back and Start.
         static const Button generic[] = { { 0, XINPUT_GAMEPAD_A }, { 1, XINPUT_GAMEPAD_B }, { 2, XINPUT_GAMEPAD_X },
