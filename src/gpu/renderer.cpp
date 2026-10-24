@@ -6503,14 +6503,14 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
     pc->info[1] = (gpureg::Get(SQ_PROGRAM_CNTL) >> 18) & 1 ? (gpureg::Get(SQ_CONTEXT_MISC) >> 8) & 0xFF : 0xFF;
 
     const uint32_t colorControl = gpureg::Get(RB_COLORCONTROL);
-    // Depth-only passes (EDRAM mode 5) keep the alpha test: the showroom's car shadow map has
-    // cut-out geometry that otherwise lands in it as solid blocks (jagged shadow under the
-    // car). Except when the vertex shader writes no interpolator: the pixel shader's alpha is
-    // then an unwritten register (leftover on the console, 0 here), and the test discarded
-    // every caster of the race's sun shadow map (no car shadows, #4).
+    // Depth-only passes (EDRAM mode 5) keep the alpha test only when the alpha comes from a texture:
+    // the showroom's car shadow map has cut-out geometry that otherwise lands in it as solid blocks.
+    // A pass-through alpha (an interpolator, often unwritten) is tested here but not in effect on
+    // the console: the race's sun shadow map lost every caster (no car shadows, #4), and the clear
+    // rectangles before it, so its depth piled up over frames (a smeared blob that moved).
     // FM2_NO_DEPTH_ALPHATEST=1 skips it in every depth-only pass.
     static const bool depthAlphaTest = getenv("FM2_NO_DEPTH_ALPHATEST") == nullptr;
-    const bool alphaTestHere = edramMode != 5 || (depthAlphaTest && vs.info.interpolatorsWritten != 0);
+    const bool alphaTestHere = edramMode != 5 || (depthAlphaTest && ps.info.usedTextureSlots != 0);
     pc->info[0] = (colorControl >> 3) & 1 && alphaTestHere ? (colorControl & 7) : 7;
     pc->info2[0] = RegFloat(RB_ALPHA_REF);
     pc->info2[1] = 1.0f / ScaleX();
