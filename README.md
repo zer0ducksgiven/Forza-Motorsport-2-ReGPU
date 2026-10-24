@@ -75,14 +75,27 @@ notes menus locked to half rate and 144 Hz running slower than 60 Hz. Details in
 
 | | Minimum (estimated) | Tested on |
 |---|---|---|
-| OS | Windows 10 64-bit (version 1803 or later) | Windows 11 |
+| OS | Windows 10 64-bit (version 1803 or later); **Windows 11 23H2 or newer for full performance** | Windows 11 |
 | CPU | 4 cores / 8 threads, x64 with SSSE3 | AMD Ryzen 7 5800X (8 cores / 16 threads) |
-| GPU | DirectX 12, feature level 12_0 | NVIDIA GeForce RTX 4070 |
+| GPU | DirectX 12, feature level 12_0; **a 2024 or newer driver for full performance** | NVIDIA GeForce RTX 4070 |
 | RAM | 8 GB | 64 GB |
 | Disk | 6 GB (extracted game ~4.7 GB, plus shader and pipeline caches) | |
 
 The first start compiles every shader once; it takes longer with fewer CPU threads.
 The minimum column has not been tested yet.
+
+### For full performance: Windows 11 23H2+ and a 2024+ GPU driver
+
+The renderer lets your GPU read the game's memory directly, with no copying (Direct3D 12's
+`ID3D12Device13`, which maps the game's memory as a GPU heap). That needs **Windows 11 version 23H2 or
+newer** and a **GPU driver from 2024 or newer**. On older Windows (including Windows 10) or older
+drivers the game still runs, but copies its vertex data to the GPU every frame instead: lower frame
+rates and more hitches, especially on slower CPUs.
+
+The launcher checks this when it starts. If your PC doesn't support it, it shows **Reduced
+performance** at the top and says what you have. The game's `out\play.log` says it too, near the
+start: `system: D3D12 ... ID3D12Device13 no (zero-copy vertex data unavailable)`. To fix it, update
+Windows (Settings, Windows Update) and install the latest driver from NVIDIA, AMD or Intel.
 
 ## Status
 

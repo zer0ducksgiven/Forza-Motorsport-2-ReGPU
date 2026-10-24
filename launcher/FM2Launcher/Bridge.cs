@@ -211,6 +211,7 @@ public sealed class Bridge(CoreWebView2 web, Form owner)
                 update = File.Exists(Path.Combine(Paths.Update, "default.xexp")),
                 running = Game.Running,
             },
+            system = SystemCheck.Get(),
             options = new
             {
                 resolutions = Options.Resolutions(),
