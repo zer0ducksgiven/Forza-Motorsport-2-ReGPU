@@ -6705,13 +6705,6 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
     vc->voffset[1] = RegFloat(PA_CL_VPORT_YOFFSET);
     vc->voffset[2] = RegFloat(PA_CL_VPORT_ZOFFSET);
     vc->vte[0] = gpureg::Get(PA_CL_VTE_CNTL);
-    // D3D9 pixel centres (PA_SU_VTX_CNTL bit 0 clear): every draw lands half a pixel off D3D12's, as
-    // Xenia's half_pixel_offset applies (bit 16 tells the vertex shader). Without it a shadow map sat
-    // half a texel off the game's lookups into it, which assume those centres: the showroom floor's
-    // variance shadow broke into shards at the car's edges (Career > My Cars). FM2_NO_HALF_PIXEL=1: off.
-    static LiveSwitch noHalfPixel("FM2_NO_HALF_PIXEL");
-    if (!noHalfPixel && (gpureg::Get(0x2302) & 1) == 0)
-        vc->vte[0] |= 1u << 16;
     vc->vte[1] = vc->vte[2] = vc->vte[3] = 0;
     // Triangle lists and restart-free strips from an index buffer: a real indexed draw.
     static LiveSwitch noIndexed("FM2_NO_INDEXED");
