@@ -15,7 +15,7 @@ namespace FM2Launcher;
 public static class Reports
 {
     // FM2_REPORTS_URL points the launcher at a local Worker (wrangler dev) for testing.
-    static readonly string Endpoint = Environment.GetEnvironmentVariable("FM2_REPORTS_URL") ?? "https://fm2-reports.fm2port.workers.dev/v1/report";
+    static readonly string Endpoint = Environment.GetEnvironmentVariable("FM2_REPORTS_URL") ?? "https://fm2-reports.fm2-reports.workers.dev/v1/report";
     const int MaxLogBytes = 4 << 20; // the tail of a longer log
 
     static readonly HttpClient Http = MakeClient();
