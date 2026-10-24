@@ -6446,8 +6446,16 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
         TraceSkip("ring full", initiator);
         return;
     }
-    auto* vc = reinterpret_cast<VSConstants*>(f.ringCpu + vsOffset);
-    auto* pc = reinterpret_cast<PSConstants*>(f.ringCpu + psOffset);
+    // The draw's constants are built in ordinary memory and copied to the ring in a few sequential
+    // blocks just before the draw: the ring is write-combined upload memory, where scattered small
+    // writes and any reads back are slow (an FX-8350 spent 6-35 ms a frame on them, against under
+    // 1 ms here). FM2_CONSTANTS_IN_RING=1 writes straight into the ring as before (A/B).
+    static LiveSwitch inRing("FM2_CONSTANTS_IN_RING");
+    thread_local std::unique_ptr<VSConstants> vcStage(new VSConstants);
+    thread_local std::unique_ptr<PSConstants> pcStage(new PSConstants);
+    const bool staged = !inRing;
+    auto* vc = staged ? vcStage.get() : reinterpret_cast<VSConstants*>(f.ringCpu + vsOffset);
+    auto* pc = staged ? pcStage.get() : reinterpret_cast<PSConstants*>(f.ringCpu + psOffset);
     {
         // Byte-swapped block copy of both constant banks (1024 dwords each).
         const __m128i swap = _mm_setr_epi8(3, 2, 1, 0, 7, 6, 5, 4, 11, 10, 9, 8, 15, 14, 13, 12);
@@ -6915,6 +6923,21 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
             if (ms > 1.0)
                 Log("perf: SetPipelineState took %.1f ms (vs %016llx ps %016llx)", ms, (unsigned long long)C().vsHash, (unsigned long long)C().psHash);
         }
+    }
+    if (staged)
+    {
+        // Float constants up to the highest one the shader reads (all for car draws, which the
+        // dealer hook reads), then everything after them, each in one go.
+        static LiveSwitch allConstantsFlush("FM2_ALL_CONSTANTS");
+        const bool carDraw = vs.carBody || vs.carPart;
+        const size_t nv = allConstantsFlush || carDraw ? 256 : std::min(vs.info.constantsUsed, 256u);
+        const size_t np = allConstantsFlush ? 256 : std::min(ps.info.constantsUsed, 256u);
+        uint8_t* rv = f.ringCpu + vsOffset;
+        uint8_t* rp = f.ringCpu + psOffset;
+        memcpy(rv, vc->c, nv * 16);
+        memcpy(rv + sizeof(vc->c), reinterpret_cast<const uint8_t*>(vc) + sizeof(vc->c), sizeof(VSConstants) - sizeof(vc->c));
+        memcpy(rp, pc->c, np * 16);
+        memcpy(rp + sizeof(pc->c), reinterpret_cast<const uint8_t*>(pc) + sizeof(pc->c), sizeof(PSConstants) - sizeof(pc->c));
     }
     C().list->SetGraphicsRootConstantBufferView(0, f.ring->GetGPUVirtualAddress() + vsOffset);
     C().list->SetGraphicsRootConstantBufferView(1, f.ring->GetGPUVirtualAddress() + psOffset);
