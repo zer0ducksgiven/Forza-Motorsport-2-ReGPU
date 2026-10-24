@@ -2364,7 +2364,9 @@ const CompiledShader& GetShaderLocked(uint64_t hash, const std::vector<uint32_t>
     } logSlow{ getStart, cs, path };
     const ucode::Shader parsed = ucode::Parse(codeBE.data(), uint32_t(codeBE.size()), pixel);
     static LiveSwitch noCanonical("FM2_NO_CANONICAL");
-    const uint64_t canonical = pixel || noCanonical || IsPsEditAlias(hash) ? 0 : CanonicalKey(parsed);
+    // Baked vertex fetch puts each copy's layout in its code, so copies can't share one compile.
+    static LiveSwitch bakedFetch("FM2_BAKED_VFETCH");
+    const uint64_t canonical = pixel || noCanonical || bakedFetch || IsPsEditAlias(hash) ? 0 : CanonicalKey(parsed);
     if (canonical)
         path = g_canonical.count(canonical) ? (g_canonical[canonical]->IsReady() ? "full, layout fallback" : "full, base not ready") : "full, new canonical";
     if (canonical)
@@ -2759,10 +2761,16 @@ struct PipelineLibrary
         Log("renderer: pipeline library %s (%zu bytes loaded)", library ? "ready" : "unavailable", loaded.size());
     }
 
-    static std::wstring Name(const PipelineKey& k)
+    // The shaders' compiled code is part of the name: the game's shader hashes alone stay the same
+    // when the translation changes (a translator update, FM2_BAKED_VFETCH), and a stale entry under
+    // the name then failed to load and blocked storing the new one, rebuilding it every launch.
+    static std::wstring Name(const PipelineKey& k, const D3D12_GRAPHICS_PIPELINE_STATE_DESC& pd)
     {
-        wchar_t name[96];
-        swprintf(name, 96, L"%016llx_%016llx_%08x_%08x_%08x_%08x", (unsigned long long)k.vs, (unsigned long long)k.ps, k.blend, k.depth, k.stencilMaskMode, k.flags);
+        const uint64_t code = Fnv(pd.VS.pShaderBytecode, pd.VS.BytecodeLength, 3) * 0x9E3779B97F4A7C15ull ^
+            (pd.PS.pShaderBytecode ? Fnv(pd.PS.pShaderBytecode, pd.PS.BytecodeLength, 4) : 0);
+        wchar_t name[128];
+        swprintf(name, 128, L"%016llx_%016llx_%08x_%08x_%08x_%08x_%016llx", (unsigned long long)k.vs, (unsigned long long)k.ps, k.blend, k.depth,
+            k.stencilMaskMode, k.flags, (unsigned long long)code);
         return name;
     }
 
@@ -2771,7 +2779,7 @@ struct PipelineLibrary
         *hit = false;
         if (library)
         {
-            const std::wstring name = Name(key);
+            const std::wstring name = Name(key, pd);
             {
                 std::shared_lock lock(access);
                 if (SUCCEEDED(library->LoadGraphicsPipeline(name.c_str(), &pd, IID_PPV_ARGS(&pso))))
