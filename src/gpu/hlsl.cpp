@@ -569,8 +569,7 @@ struct Emitter
                 fprintf(stderr, "vfetch: fmt %u signed %d norm %d exp %d stride %u offset %u mini %d round %d\n", f.format, f.isSigned, f.isNormalized,
                     f.expAdjust, lastStride, f.offset, f.isMini, lastRound);
             const uint32_t k = uint32_t(result.vertexFetchLayout.size());
-            static LiveSwitch bakedFetch("FM2_BAKED_VFETCH");
-            const bool dynamic = !bakedFetch && k < 32 && f.src == lastSrc && f.srcSwizzle == lastSrcSwizzle;
+            const bool dynamic = !BakedVertexFetch() && k < 32 && f.src == lastSrc && f.srcSwizzle == lastSrcSwizzle;
             literalFetch = literalFetch || !dynamic;
             if (layoutOnly)
             {
@@ -868,6 +867,12 @@ struct Emitter
 const char* HlslPreamble()
 {
     return kPreamble;
+}
+
+bool BakedVertexFetch()
+{
+    static const bool baked = getenv("FM2_DYNAMIC_VFETCH") == nullptr;
+    return baked;
 }
 
 bool TranslateVertexFetchLayout(const Shader& shader, TranslatedShader& out)

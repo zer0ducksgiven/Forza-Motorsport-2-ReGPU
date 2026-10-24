@@ -44,6 +44,10 @@ TranslatedShader TranslateShader(const ucode::Shader& shader);
 // for copies of an already translated shader that differ only in their fetch fields (see
 // VFetchK). False when a fetch would have to be baked into the code (translate in full).
 bool TranslateVertexFetchLayout(const ucode::Shader& shader, TranslatedShader& out);
+// Vertex fetch layouts written into each shader as literals (the default): the compiler folds the
+// unpacking, 12.7 -> 10.0 ms of GPU time a frame on a GTX 970, at the cost of each patched copy of
+// a shader compiling on its own. FM2_DYNAMIC_VFETCH=1 reads them from the constants instead.
+bool BakedVertexFetch();
 
 // Shared HLSL declarations both stages compile against.
 const char* HlslPreamble();

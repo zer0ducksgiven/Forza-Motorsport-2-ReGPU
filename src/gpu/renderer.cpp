@@ -2365,8 +2365,7 @@ const CompiledShader& GetShaderLocked(uint64_t hash, const std::vector<uint32_t>
     const ucode::Shader parsed = ucode::Parse(codeBE.data(), uint32_t(codeBE.size()), pixel);
     static LiveSwitch noCanonical("FM2_NO_CANONICAL");
     // Baked vertex fetch puts each copy's layout in its code, so copies can't share one compile.
-    static LiveSwitch bakedFetch("FM2_BAKED_VFETCH");
-    const uint64_t canonical = pixel || noCanonical || bakedFetch || IsPsEditAlias(hash) ? 0 : CanonicalKey(parsed);
+    const uint64_t canonical = pixel || noCanonical || BakedVertexFetch() || IsPsEditAlias(hash) ? 0 : CanonicalKey(parsed);
     if (canonical)
         path = g_canonical.count(canonical) ? (g_canonical[canonical]->IsReady() ? "full, layout fallback" : "full, base not ready") : "full, new canonical";
     if (canonical)
@@ -2762,7 +2761,7 @@ struct PipelineLibrary
     }
 
     // The shaders' compiled code is part of the name: the game's shader hashes alone stay the same
-    // when the translation changes (a translator update, FM2_BAKED_VFETCH), and a stale entry under
+    // when the translation changes (a translator update, FM2_DYNAMIC_VFETCH), and a stale entry under
     // the name then failed to load and blocked storing the new one, rebuilding it every launch.
     static std::wstring Name(const PipelineKey& k, const D3D12_GRAPHICS_PIPELINE_STATE_DESC& pd)
     {
