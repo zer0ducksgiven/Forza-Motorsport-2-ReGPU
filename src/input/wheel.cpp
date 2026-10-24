@@ -154,6 +154,19 @@ void PedalAxes(Driver& d, Axis& gas, Axis& brake)
         for (int i = which == 'w' ? 1 : 0; i < dev->axes; i++)
             if (std::abs(dev->rest[i]) > 30000)
                 resting.push_back(i);
+    // Wheels whose pedals are known: vendor, product, gas axis, brake axis (on the wheel).
+    static const struct { uint16_t vid, pid; int gas, brake; } known[] = {
+        { 0x044F, 0xB696, 5, 1 }, // Thrustmaster T598 in PC mode ("Advanced Mode Racer")
+    };
+    if (which == 'w')
+        for (const auto& k : known)
+            if (d.devices[d.wheel].vid == k.vid && d.devices[d.wheel].pid == k.pid)
+            {
+                if (gas.index < 0)
+                    gas = { 'w', k.gas };
+                if (brake.index < 0)
+                    brake = { 'w', k.brake };
+            }
     if (gas.index < 0)
         gas = { which, resting.size() > 0 ? resting[0] : 1 };
     if (brake.index < 0)
