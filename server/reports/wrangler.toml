@@ -4,7 +4,7 @@ compatibility_date = "2025-06-01"
 
 [vars]
 # The private repo reports are filed in ("owner/name").
-REPORTS_REPO = "OWNER/fm2-reports"
+REPORTS_REPO = "zer0ducksgiven/fm2-reports"
 
 # 10 reports a minute per address (bug reports and logs together).
 [[ratelimits]]
