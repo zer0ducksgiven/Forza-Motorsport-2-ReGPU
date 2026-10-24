@@ -5585,7 +5585,7 @@ struct Perf
     std::chrono::steady_clock::time_point windowStart = std::chrono::steady_clock::now();
     double drawSeconds = 0, swapSeconds = 0;
     double section[8] = {};
-    double sub[6] = {}; // the constants section split up (Sub)
+    double sub[8] = {}; // the constants section split up (Sub)
     std::chrono::steady_clock::time_point subMark;
     uint64_t tablesBuilt = 0, tablesReused = 0;
     std::chrono::steady_clock::time_point mark;
@@ -6624,6 +6624,7 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
     // with MSAA on: a pixel of a 4x surface covers 2x2 samples of the linear layout we
     // render in, a pixel of a 2x surface 1x2. Scale those clear rectangles to match.
     static LiveSwitch noMsaaScale("FM2_NO_MSAA_SCALE");
+    Sub(3);
     if (!noMsaaScale && (initiator & 0x3F) == 8 && (gpureg::Get(RB_COLOR_MASK) & 0xF) == 0 && (gpureg::Get(RB_SURFACE_INFO) & 0x3FFF) < 1000)
     {
         const uint32_t msaa = (gpureg::Get(RB_SURFACE_INFO) >> 16) & 3;
@@ -6657,6 +6658,7 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
             vc->voffset[3] = float(MsaaDown(msaa)) / float(MsaaDown(uint32_t(native)));
         }
     }
+    Sub(6);
     vc->voffset[0] = RegFloat(PA_CL_VPORT_XOFFSET);
     vc->voffset[1] = RegFloat(PA_CL_VPORT_YOFFSET);
     vc->voffset[2] = RegFloat(PA_CL_VPORT_ZOFFSET);
@@ -6672,8 +6674,10 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
         const uint32_t available = dmaSize & 0xFFFFFF;
         const uint32_t count = std::min(indexCount, available);
         indexedCount = prim == 4 ? count / 3 * 3 : count;
+        Sub(3);
         if (indexedCount < 3 || !GetIndexBuffer(dmaBase & 0x1FFFFFFF & ~(is32 ? 3u : 1u), count, is32, dmaSize >> 30, indexView))
             indexedCount = 0;
+        Sub(7);
     }
     if (indexedCount)
     {
@@ -7304,8 +7308,8 @@ void RendererOnSwap(uint64_t frameNumber, uint32_t frontBuffer)
                 g_perf.section[0] * 1000.0 / g_perf.frames, g_perf.section[1] * 1000.0 / g_perf.frames, g_perf.section[2] * 1000.0 / g_perf.frames,
                 g_perf.section[3] * 1000.0 / g_perf.frames, g_perf.section[4] * 1000.0 / g_perf.frames, g_perf.section[5] * 1000.0 / g_perf.frames);
         if (perf && g_perf.frames)
-            Log("perf:   constants split: index list %.2f | constant banks %.2f | vertex fetch %.2f (bools and loops %.2f, uploads %.2f) | the rest %.2f ms/frame",
-                g_perf.sub[0] * 1000.0 / g_perf.frames, g_perf.sub[1] * 1000.0 / g_perf.frames, g_perf.sub[2] * 1000.0 / g_perf.frames, g_perf.sub[4] * 1000.0 / g_perf.frames, g_perf.sub[5] * 1000.0 / g_perf.frames, g_perf.sub[3] * 1000.0 / g_perf.frames);
+            Log("perf:   constants split: index list %.2f | constant banks %.2f | vertex fetch %.2f (bools and loops %.2f, uploads %.2f) | the rest %.2f (MSAA scale %.2f, index buffer %.2f) ms/frame",
+                g_perf.sub[0] * 1000.0 / g_perf.frames, g_perf.sub[1] * 1000.0 / g_perf.frames, g_perf.sub[2] * 1000.0 / g_perf.frames, g_perf.sub[4] * 1000.0 / g_perf.frames, g_perf.sub[5] * 1000.0 / g_perf.frames, g_perf.sub[3] * 1000.0 / g_perf.frames, g_perf.sub[6] * 1000.0 / g_perf.frames, g_perf.sub[7] * 1000.0 / g_perf.frames);
         if (perf)
             Log("perf:   cpu%s | slowest frame %.1f ms, %llu over 20 ms", GuestThreadCpuUsage(window).c_str(), g_perf.maxFrame,
                 (unsigned long long)g_perf.slowFrames);
