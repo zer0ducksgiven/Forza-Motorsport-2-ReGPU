@@ -135,6 +135,10 @@ your PC (the tab shows the log exactly as it would be sent), and again on the se
 private repository only the developers can read; they're never public. The server
 (`server/reports`) is a small Cloudflare Worker, in this repository.
 
+For the developers: `reports-desk.cmd` opens the **Reports desk** (`tools/reports`), a local page for triaging
+reports (status labels, notes, closing) and reading logs, with hardware counts across every install that shared
+one. `tools/reports/reports.py` does the same from the command line. Both go through the GitHub CLI (`gh`).
+
 ## Launcher and settings
 
 The Start menu and desktop shortcuts open the launcher (`launcher\FM2Launcher.exe`, source in

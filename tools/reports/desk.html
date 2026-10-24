@@ -1,0 +1,407 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reports Desk</title>
+<style>
+:root {
+  --bg: #0e1015; --panel: #161a21; --panel-2: #1c2129; --line: #262c37; --text: #e6e8ec; --muted: #8b93a3;
+  --accent: #e5323b; --good: #3fb37f; --warn: #e0a83a; --info: #5b9cf0; --mono: Consolas, "Cascadia Mono", monospace;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 13.5px/1.45 "Segoe UI", system-ui, sans-serif; display: flex; flex-direction: column; }
+button { font: inherit; color: var(--text); background: var(--panel-2); border: 1px solid var(--line); border-radius: 7px; padding: 6px 11px; cursor: pointer; }
+button:hover { border-color: #39404d; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.on { border-color: var(--accent); color: #fff; background: #2a1719; }
+button:disabled { opacity: .5; cursor: default; }
+input, select, textarea { font: inherit; color: var(--text); background: var(--panel-2); border: 1px solid var(--line); border-radius: 7px; padding: 6px 9px; outline: none; }
+input:focus, select:focus, textarea:focus { border-color: var(--accent); }
+textarea { width: 100%; resize: vertical; min-height: 64px; }
+a { color: var(--info); }
+
+header { display: flex; align-items: center; gap: 14px; padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel); flex-wrap: wrap; }
+header h1 { margin: 0; font-size: 15px; letter-spacing: .5px; }
+header h1 span { color: var(--accent); }
+nav { display: flex; gap: 4px; }
+nav button { background: transparent; border-color: transparent; color: var(--muted); }
+nav button.on { color: var(--text); background: var(--panel-2); border-color: var(--line); }
+header .spacer { flex: 1; }
+.status { color: var(--muted); font-size: 12px; }
+
+.view { flex: 1; min-height: 0; display: none; }
+.view.on { display: flex; }
+.list-pane { width: 400px; min-width: 300px; border-right: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; }
+.filters { padding: 10px; display: flex; flex-wrap: wrap; gap: 6px; border-bottom: 1px solid var(--line); }
+.filters input { flex: 1 1 160px; }
+.list { overflow: auto; flex: 1; }
+.row { padding: 9px 12px; border-bottom: 1px solid var(--line); cursor: pointer; }
+.row:hover { background: #141820; }
+.row.on { background: #1d1416; box-shadow: inset 3px 0 var(--accent); }
+.row .t { font-weight: 600; }
+.row .m { color: var(--muted); font-size: 12px; margin-top: 2px; display: flex; gap: 8px; flex-wrap: wrap; }
+.chip { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 99px; background: #232935; color: #c3c8d2; border: 1px solid var(--line); }
+.chip.closed { color: var(--muted); }
+.chip.st-confirmed { background: #3a1d17; color: #f19a83; border-color: #5a2a20; }
+.chip.st-needs-info { background: #3a3117; color: #f0cf73; border-color: #5a4a20; }
+.chip.st-fixed-next { background: #173a28; color: #7fd8a8; border-color: #205a3c; }
+.detail { flex: 1; overflow: auto; padding: 18px 22px; min-width: 0; }
+.empty { color: var(--muted); padding: 24px; text-align: center; }
+h2 { margin: 0 0 4px; font-size: 18px; }
+h3 { margin: 22px 0 8px; font-size: 12px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); }
+.meta { color: var(--muted); font-size: 12.5px; display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.desc { white-space: pre-wrap; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px; margin-top: 12px; }
+table.kv { border-collapse: collapse; width: 100%; max-width: 760px; }
+table.kv td { padding: 4px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+table.kv td:first-child { color: var(--muted); width: 120px; }
+.actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.comment { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin-bottom: 8px; }
+.comment .who { color: var(--muted); font-size: 12px; margin-bottom: 4px; }
+.comment .body { white-space: pre-wrap; }
+
+.log-tools { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-bottom: 8px; }
+.log-tools input { flex: 1 1 200px; }
+pre.log { margin: 0; background: #0b0d11; border: 1px solid var(--line); border-radius: 8px; padding: 10px; font: 12px/1.5 var(--mono); max-height: 560px; overflow: auto; white-space: pre-wrap; word-break: break-all; color: #b9bdc7; }
+pre.log .err { color: #ff8f8f; }
+pre.log .sys { color: #8fc1ff; }
+pre.log mark { background: #5a4a20; color: #fff; }
+.summary { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 8px; margin-bottom: 10px; }
+.stat { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 9px 11px; }
+.stat .k { color: var(--muted); font-size: 11.5px; }
+.stat .v { font-size: 13.5px; font-weight: 600; word-break: break-word; }
+
+.wide { flex-direction: column; padding: 16px 20px; overflow: auto; }
+table.grid { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+table.grid th { text-align: left; color: var(--muted); font-weight: 600; padding: 6px 8px; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--bg); cursor: pointer; white-space: nowrap; }
+table.grid td { padding: 6px 8px; border-bottom: 1px solid var(--line); }
+table.grid tr.click { cursor: pointer; }
+table.grid tr.click:hover td { background: #141820; }
+.bars { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; margin-bottom: 18px; }
+.bar-row { display: grid; grid-template-columns: 1fr 44px; gap: 8px; align-items: center; margin: 4px 0; font-size: 12.5px; }
+.bar-row .b { position: relative; padding: 2px 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bar-row .b i { position: absolute; inset: 0 auto 0 0; background: #2a1719; border-radius: 4px; z-index: 0; }
+.bar-row .b span { position: relative; }
+.bar-row .n { text-align: right; color: var(--muted); }
+.yes { color: var(--good); } .no { color: var(--accent); }
+.toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: #2a1719; border: 1px solid #5a2a20; padding: 8px 14px; border-radius: 8px; display: none; }
+.toast.good { background: #173a28; border-color: #205a3c; }
+
+@media (max-width: 760px) {
+  .view.on { flex-direction: column; }
+  .list-pane { width: auto; min-width: 0; max-height: 42vh; border-right: 0; border-bottom: 1px solid var(--line); }
+  .detail { padding: 14px 16px; }
+}
+</style>
+</head>
+<body>
+<header>
+  <h1>FM2 <span>Reports</span> Desk</h1>
+  <nav id="nav">
+    <button data-view="issues" class="on">Issues</button>
+    <button data-view="logs">Logs</button>
+    <button data-view="hardware">Hardware</button>
+  </nav>
+  <div class="spacer"></div>
+  <span class="status" id="status"></span>
+  <button id="refresh" title="Fetch again from GitHub">Refresh</button>
+</header>
+
+<main class="view on" id="view-issues">
+  <section class="list-pane">
+    <div class="filters">
+      <input id="q" placeholder="Search title, text, GPU, contact…">
+      <select id="f-state"><option value="open">Open</option><option value="closed">Closed</option><option value="all">All</option></select>
+      <select id="f-label"><option value="">Any status</option></select>
+      <select id="f-version"><option value="">Any version</option></select>
+    </div>
+    <div class="list" id="issue-list"></div>
+  </section>
+  <section class="detail" id="issue-detail"><div class="empty">Pick a report.</div></section>
+</main>
+
+<main class="view" id="view-logs">
+  <section class="list-pane">
+    <div class="filters">
+      <input id="lq" placeholder="Filter by install or date…">
+    </div>
+    <div class="list" id="log-list"></div>
+  </section>
+  <section class="detail" id="log-detail"><div class="empty">Pick a log.</div></section>
+</main>
+
+<main class="view wide" id="view-hardware">
+  <div class="bars" id="hw-bars"></div>
+  <table class="grid" id="hw-table"></table>
+</main>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const STATUSES = ["needs info", "confirmed", "fixed next", "duplicate", "not a bug"]
+const $ = (id) => document.getElementById(id)
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c])
+const day = (iso) => iso ? new Date(iso).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }) : ""
+const fromYmd = (d) => `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6)}`
+const slug = (s) => s.replace(/\s+/g, "-")
+
+let issues = [], current = null, logs = [], openLog = null
+
+function toast(text, good) {
+  const t = $("toast")
+  t.textContent = text
+  t.className = "toast" + (good ? " good" : "")
+  t.style.display = "block"
+  clearTimeout(toast.timer)
+  toast.timer = setTimeout(() => (t.style.display = "none"), 4000)
+}
+async function api(path, body) {
+  const r = await fetch(path, body ? { method: "POST", headers: { "content-type": "application/json", "x-desk": "1" }, body: JSON.stringify(body) } : {})
+  const j = await r.json()
+  if (!r.ok) throw new Error(j.error || r.statusText)
+  return j
+}
+async function busy(text, fn) {
+  $("status").textContent = text
+  try { return await fn() } catch (e) { toast(e.message) } finally { $("status").textContent = "" }
+}
+
+// ---- views
+$("nav").onclick = (e) => {
+  const b = e.target.closest("button")
+  if (!b) return
+  for (const x of $("nav").children) x.classList.toggle("on", x === b)
+  for (const v of ["issues", "logs", "hardware"]) $("view-" + v).classList.toggle("on", v === b.dataset.view)
+  if (b.dataset.view === "logs" && !logs.length) loadLogs()
+  if (b.dataset.view === "hardware") loadHardware()
+}
+$("refresh").onclick = () => {
+  const v = document.querySelector("#nav .on").dataset.view
+  if (v === "issues") loadIssues()
+  else if (v === "logs") loadLogs()
+  else loadHardware()
+}
+
+// ---- issues
+async function loadIssues() {
+  await busy("Loading reports…", async () => {
+    issues = await api("/api/issues?state=all")
+    const versions = [...new Set(issues.map((i) => i.version).filter(Boolean))].sort().reverse()
+    $("f-version").innerHTML = `<option value="">Any version</option>` + versions.map((v) => `<option>${esc(v)}</option>`).join("")
+    $("f-label").innerHTML = `<option value="">Any status</option><option value="-">No status yet</option>` + STATUSES.map((s) => `<option>${esc(s)}</option>`).join("")
+    renderIssues()
+    if (current) showIssue(current.number)
+  })
+}
+function statusOf(i) { return i.labels.find((l) => STATUSES.includes(l)) }
+function renderIssues() {
+  const q = $("q").value.toLowerCase(), st = $("f-state").value, lab = $("f-label").value, ver = $("f-version").value
+  const rows = issues.filter((i) =>
+    (st === "all" || i.state === st) &&
+    (!ver || i.version === ver) &&
+    (!lab || (lab === "-" ? !statusOf(i) : i.labels.includes(lab))) &&
+    (!q || [i.title, i.description, i.gpu, i.os, i.contact, i.install, "#" + i.number].join(" ").toLowerCase().includes(q)))
+  $("issue-list").innerHTML = rows.length ? rows.map((i) => {
+    const s = statusOf(i)
+    return `<div class="row ${current && current.number === i.number ? "on" : ""}" data-n="${i.number}">
+      <div class="t">#${i.number} ${esc(i.title)}</div>
+      <div class="m"><span>${day(i.created)}</span><span>${esc(i.version)}</span><span>${esc(i.gpu)}</span>
+        ${i.state === "closed" ? `<span class="chip closed">closed</span>` : ""}${s ? `<span class="chip st-${slug(s)}">${esc(s)}</span>` : ""}
+        ${i.comments ? `<span>💬 ${i.comments}</span>` : ""}</div></div>`
+  }).join("") : `<div class="empty">No reports match.</div>`
+}
+for (const id of ["q", "f-state", "f-label", "f-version"]) $(id).oninput = renderIssues
+$("issue-list").onclick = (e) => { const r = e.target.closest(".row"); if (r) showIssue(+r.dataset.n) }
+
+async function showIssue(n) {
+  await busy(`Loading #${n}…`, async () => {
+    current = await api(`/api/issue/${n}`)
+    renderIssues()
+    renderIssue()
+  })
+}
+function renderIssue() {
+  const i = current
+  const s = statusOf(i)
+  const rows = [["Version", i.version], ["OS", i.os], ["GPU", i.gpu], ["GPU driver", i.driver], ["Zero-copy", i.zeroCopy],
+    ["Install", i.install ? `${esc(i.install)} · <a href="#" data-install="${esc(i.install)}">its logs</a>` : ""], ["Contact", i.contact], ["Report", i.report]]
+  $("issue-detail").innerHTML = `
+    <h2>#${i.number} ${esc(i.title)}</h2>
+    <div class="meta"><span>${day(i.created)}</span><span class="chip ${i.state === "closed" ? "closed" : ""}">${i.state}${i.stateReason ? " · " + esc(i.stateReason.replace("_", " ")) : ""}</span>
+      ${i.labels.filter((l) => l !== "bug report").map((l) => `<span class="chip ${STATUSES.includes(l) ? "st-" + slug(l) : ""}">${esc(l)}</span>`).join("")}
+      <a href="${esc(i.url)}" target="_blank" rel="noopener">GitHub</a></div>
+    <div class="desc">${esc(i.description) || "<span class='status'>No description.</span>"}</div>
+    <h3>Triage</h3>
+    <div class="actions" id="statuses">${STATUSES.map((x) => `<button data-status="${esc(x)}" class="${x === s ? "on" : ""}">${esc(x)}</button>`).join("")}</div>
+    <div class="actions">${i.state === "open"
+      ? `<button data-close="completed">Close as fixed</button><button data-close="not_planned">Close: won't fix</button>`
+      : `<button data-reopen>Reopen</button>`}</div>
+    <h3>Hardware</h3>
+    <table class="kv">${rows.filter(([, v]) => v).map(([k, v]) => `<tr><td>${k}</td><td>${k === "Install" ? v : esc(v)}</td></tr>`).join("")}</table>
+    <h3>Comments</h3>
+    ${i.commentList.map((c) => `<div class="comment"><div class="who">${esc(c.author)} · ${day(c.created)}</div><div class="body">${esc(c.body)}</div></div>`).join("") || `<div class="status">None yet.</div>`}
+    <textarea id="new-comment" placeholder="Add a note (kept on the GitHub issue)…"></textarea>
+    <div class="actions"><button class="primary" id="post-comment">Add note</button></div>
+    <h3>play.log</h3>
+    <div id="issue-log">${i.log ? `<div class="status">Loading log…</div>` : `<div class="status">No log attached.</div>`}</div>`
+  if (i.log) loadLogInto("issue-log", i.log)
+}
+$("issue-detail").onclick = async (e) => {
+  const t = e.target
+  if (t.dataset.install !== undefined) { e.preventDefault(); return jumpToInstall(t.dataset.install) }
+  const n = current && current.number
+  let body = null
+  if (t.dataset.status) {
+    const s = statusOf(current)
+    body = s === t.dataset.status ? { removeLabel: s } : { addLabel: t.dataset.status }
+    if (s && s !== t.dataset.status) await api(`/api/issue/${n}`, { removeLabel: s }).catch((e) => toast(e.message))
+  } else if (t.dataset.close) body = { state: "closed", reason: t.dataset.close }
+  else if (t.dataset.reopen !== undefined) body = { state: "open" }
+  else if (t.id === "post-comment") {
+    const text = $("new-comment").value.trim()
+    if (!text) return
+    body = { comment: text }
+  }
+  if (!body) return
+  t.disabled = true
+  await busy("Saving…", async () => {
+    current = await api(`/api/issue/${n}`, body)
+    const k = issues.findIndex((x) => x.number === n)
+    if (k >= 0) issues[k] = { ...issues[k], ...current }
+    renderIssues()
+    renderIssue()
+    toast("Saved to GitHub.", true)
+  })
+}
+
+// ---- log viewer (used by issues and the logs view)
+async function loadLogInto(id, path) {
+  try {
+    const l = await api(`/api/log?path=${encodeURIComponent(path)}`)
+    renderLog(id, l)
+  } catch (e) { $(id).innerHTML = `<div class="status">${esc(e.message)}</div>` }
+}
+function renderLog(id, l) {
+  const s = l.summary
+  const zc = s.zeroCopy === null ? "unknown" : s.zeroCopy ? "yes" : "no"
+  const box = $(id)
+  box.innerHTML = `
+    <div class="summary">
+      ${[["GPU", s.gpu], ["Driver", s.driver], ["CPU", s.cpu], ["OS", s.wine ? "Wine " + s.wine : s.os], ["Version", s.version],
+         ["Zero-copy", zc], ["Median fps", s.fps.median ?? "–"], ["Errors", s.errors.length], ["Settings", s.settings]]
+        .filter(([, v]) => v !== "" && v !== undefined).map(([k, v]) => `<div class="stat"><div class="k">${k}</div><div class="v">${esc(v)}</div></div>`).join("")}
+    </div>
+    <div class="log-tools">
+      <button data-mode="errors" class="on">Errors</button><button data-mode="system">System</button><button data-mode="all">Everything</button>
+      <input placeholder="Find in log…" data-find>
+      <span class="status">${s.lines.toLocaleString()} lines · <a href="https://github.com/zer0ducksgiven/fm2-reports/blob/main/${esc(l.path)}" target="_blank" rel="noopener">${esc(l.path)}</a></span>
+    </div>
+    <pre class="log"></pre>`
+  const pre = box.querySelector("pre"), find = box.querySelector("[data-find]")
+  let mode = "errors"
+  const draw = () => {
+    const needle = find.value.toLowerCase()
+    let lines = mode === "errors" ? s.errors : mode === "system" ? s.system.map((x) => "system: " + x) : l.text.split("\n")
+    if (needle) lines = lines.filter((x) => x.toLowerCase().includes(needle))
+    const shown = lines.slice(0, 5000)
+    pre.innerHTML = shown.map((x) => {
+      let h = esc(x)
+      if (needle) h = h.replace(new RegExp(needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi"), (m) => `<mark>${m}</mark>`)
+      const cls = /error|fail|crash|exception|not mappable|dropped/i.test(x) ? "err" : /system:/.test(x) ? "sys" : ""
+      return cls ? `<span class="${cls}">${h}</span>` : h
+    }).join("\n") + (lines.length > shown.length ? `\n… ${lines.length - shown.length} more lines (narrow it with Find)` : "") || "(nothing)"
+  }
+  box.querySelector(".log-tools").onclick = (e) => {
+    const m = e.target.dataset.mode
+    if (!m) return
+    mode = m
+    for (const b of box.querySelectorAll("[data-mode]")) b.classList.toggle("on", b.dataset.mode === m)
+    draw()
+  }
+  find.oninput = draw
+  draw()
+}
+
+// ---- logs
+async function loadLogs() {
+  await busy("Loading logs…", async () => {
+    logs = await api("/api/logs")
+    renderLogs()
+  })
+}
+function renderLogs() {
+  const q = $("lq").value.toLowerCase()
+  const rows = logs.filter((l) => !q || (l.install + " " + l.date + " " + l.path).toLowerCase().includes(q))
+  $("log-list").innerHTML = rows.length ? rows.map((l) => `<div class="row ${openLog === l.path ? "on" : ""}" data-path="${esc(l.path)}">
+      <div class="t">${fromYmd(l.date)} · ${esc(l.install)}</div>
+      <div class="m"><span>${(l.size / 1024).toFixed(0)} KB</span><span>${esc(l.id)}</span></div></div>`).join("") : `<div class="empty">No logs yet.</div>`
+}
+$("lq").oninput = renderLogs
+$("log-list").onclick = (e) => {
+  const r = e.target.closest(".row")
+  if (!r) return
+  openLog = r.dataset.path
+  renderLogs()
+  $("log-detail").innerHTML = `<h2>${esc(openLog.split("/").pop())}</h2><div id="log-view"><div class="status">Loading log…</div></div>`
+  loadLogInto("log-view", openLog)
+}
+async function jumpToInstall(install) {
+  document.querySelector('#nav [data-view="logs"]').click()
+  if (!logs.length) await loadLogs()
+  $("lq").value = install
+  renderLogs()
+}
+
+// ---- hardware
+let hw = null, hwSort = "date"
+async function loadHardware() {
+  await busy("Reading the newest log of every install (first time takes a while)…", async () => {
+    hw = await api("/api/stats")
+    renderHardware()
+  })
+}
+function count(list, key) {
+  const m = new Map()
+  for (const x of list) { const k = key(x) || "unknown"; m.set(k, (m.get(k) || 0) + 1) }
+  return [...m].sort((a, b) => b[1] - a[1])
+}
+function bars(title, pairs, total) {
+  return `<div class="stat"><div class="k">${esc(title)}</div>${pairs.slice(0, 8).map(([k, n]) =>
+    `<div class="bar-row"><div class="b"><i style="width:${(100 * n / total).toFixed(0)}%"></i><span>${esc(k)}</span></div><div class="n">${n}</div></div>`).join("")}</div>`
+}
+function renderHardware() {
+  const list = hw.installs, n = list.length || 1
+  const vendor = (g) => /nvidia|geforce|rtx|gtx/i.test(g) ? "NVIDIA" : /amd|radeon/i.test(g) ? "AMD" : /intel|arc/i.test(g) ? "Intel" : g ? "Other" : ""
+  const fpsBand = (f) => f == null ? "" : f >= 60 ? "60+ fps" : f >= 45 ? "45-59 fps" : f >= 30 ? "30-44 fps" : "under 30 fps"
+  const osName = (x) => x.wine ? "Linux (Proton)" : /Windows 11/.test(x.os) ? "Windows 11" : /Windows 10/.test(x.os) ? "Windows 10" : x.os
+  $("hw-bars").innerHTML =
+    `<div class="stat"><div class="k">Shared logs</div><div class="v">${hw.logs} from ${list.length} installs</div></div>` +
+    bars("GPU vendor", count(list, (x) => vendor(x.gpu)), n) +
+    bars("Zero-copy", count(list, (x) => x.zeroCopy === null ? "" : x.zeroCopy ? "yes" : "no (copy path)"), n) +
+    bars("OS", count(list, osName), n) +
+    bars("Median fps", count(list, (x) => fpsBand(x.fps)), n) +
+    bars("Version", count(list, (x) => x.version), n) +
+    bars("GPU", count(list, (x) => x.gpu), n)
+  const cols = [["date", "Last log"], ["gpu", "GPU"], ["cpu", "CPU"], ["os", "OS"], ["version", "Version"], ["zeroCopy", "Zero-copy"], ["fps", "Fps"], ["errors", "Errors"]]
+  const sorted = [...list].sort((a, b) => {
+    const x = a[hwSort], y = b[hwSort]
+    return typeof x === "number" || typeof y === "number" ? (y ?? -1) - (x ?? -1) : String(y ?? "").localeCompare(String(x ?? ""))
+  })
+  $("hw-table").innerHTML = `<thead><tr>${cols.map(([k, t]) => `<th data-sort="${k}">${t}${hwSort === k ? " ▾" : ""}</th>`).join("")}</tr></thead><tbody>` +
+    sorted.map((x) => `<tr class="click" data-install="${esc(x.install)}">
+      <td>${fromYmd(x.date)}</td><td>${esc(x.gpu)}</td><td>${esc(x.cpu)}</td><td>${esc(x.wine ? "Wine " + x.wine : x.os)}</td><td>${esc(x.version)}</td>
+      <td class="${x.zeroCopy ? "yes" : x.zeroCopy === false ? "no" : ""}">${x.zeroCopy === null ? "?" : x.zeroCopy ? "yes" : "no"}</td>
+      <td>${x.fps ?? "–"}</td><td>${x.errors}</td></tr>`).join("") + `</tbody>`
+}
+$("hw-table").onclick = (e) => {
+  const th = e.target.closest("th")
+  if (th) { hwSort = th.dataset.sort; return renderHardware() }
+  const tr = e.target.closest("tr[data-install]")
+  if (tr) jumpToInstall(tr.dataset.install)
+}
+
+loadIssues()
+</script>
+</body>
+</html>
