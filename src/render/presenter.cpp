@@ -13,6 +13,7 @@
 #include <windows.h>
 #include <wrl/client.h>
 
+#include "input/wheel.h"
 #include "log.h"
 #include "render/presenter.h"
 #include "settings.h"
@@ -70,6 +71,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     if (msg == WM_CLOSE)
     {
         Log("presenter: window closed, exiting");
+        WheelStop();
         std::_Exit(0);
     }
     if (msg == WM_CHAR)

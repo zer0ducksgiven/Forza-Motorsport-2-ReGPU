@@ -148,7 +148,7 @@ GUEST_EXPORT(XexGetModuleHandle)
         return;
     }
     // xboxkrnl.exe and xam.xex: for the wheel's force feedback calls only (kernel/wheel_ff.cpp).
-    if ((name == "xboxkrnl.exe" || name == "xam.xex") && WheelFakeEnabled())
+    if ((name == "xboxkrnl.exe" || name == "xam.xex") && WheelFfServed())
     {
         StoreBE32(ctx.r4.u32, name == "xam.xex" ? kXamModuleHandle : kKernelModuleHandle);
         Return(ctx, X_STATUS_SUCCESS);

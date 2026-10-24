@@ -379,6 +379,8 @@ GUEST_EXPORT(DbgPrint)
 GUEST_EXPORT(HalReturnToFirmware)
 {
     Log("HalReturnToFirmware(%u): title asked to exit", ctx.r3.u32);
+    void WheelStop();
+    WheelStop();
     std::_Exit(0);
 }
 

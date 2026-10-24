@@ -11,12 +11,14 @@
 #include "memory.h"
 
 void CrashHandlerInit();
+void WheelStart();
 void GpuLogState();
 void D3DDebugLog();
 
 int main(int argc, char** argv)
 {
     CrashHandlerInit();
+    WheelStart(); // early: the game asks what player 1 holds a second in
     std::filesystem::path gameDir = argc > 1 ? argv[1] : "game";
     Log("fm2: game folder %s", std::filesystem::absolute(gameDir).string().c_str());
 

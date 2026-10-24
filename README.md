@@ -185,6 +185,11 @@ FFmpeg Windows x64 **LGPL shared** build (for XMA audio decoding), for example
 next to `fm2.exe`; FFmpeg is linked dynamically and stays under its own LGPL license
 (`thirdparty/ffmpeg/LICENSE.txt`).
 
+Racing wheels go through SDL3 (zlib license): from `SDL3-devel-3.4.18-VC.zip` on
+[libsdl-org/SDL's releases](https://github.com/libsdl-org/SDL/releases), copy `include` to
+`thirdparty/sdl3/include` and `lib/x64/SDL3.lib` and `SDL3.dll` to `thirdparty/sdl3/lib`.
+The build copies `SDL3.dll` next to `fm2.exe`.
+
 The upscalers need the AMD FidelityFX SDK and the NVIDIA DLSS SDK in `thirdparty/`
 (not committed; FSR 1's shaders are compiled from the FidelityFX headers at build time):
 

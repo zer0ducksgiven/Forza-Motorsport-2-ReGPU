@@ -7,11 +7,11 @@
 // (block, type, a word, gain 0-255, seven fixed words, then the type's parameters from word 11);
 // types 1 constant, 8 spring, 9 damper, 10 inertia, 11 friction.
 //
-// For now every call is logged and succeeds without a wheel behind it, to see what FM2 sends. It
-// sends what FH1 does: DeviceControl(3), the five effects (inertia and friction at 0, damper,
+// The calls go to the wheel driver (input/wheel.cpp); the first of each are logged. FM2 sends
+// what FH1 does: DeviceControl(3), the five effects (inertia and friction at 0, damper,
 // spring, constant) started together, then each frame the constant force's magnitude (word 11,
 // the steering force, -127 to 127) and the spring's gain (0-255, with speed and rear slip).
-// FM2_FAKE_WHEEL=1 reports a force feedback wheel on player 1 (imports_xam.cpp).
+// FM2_FAKE_WHEEL=1 reports a force feedback wheel on player 1 without one (imports_xam.cpp).
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -20,14 +20,24 @@
 #include <cstdlib>
 #include <string>
 
+#include "input/wheel.h"
 #include "kernel/imports.h"
 #include "kernel/wheel_ff.h"
 
 namespace
 {
 constexpr uint32_t kFirstOrdinal = 0x282, kOrdinals = 8;
-constexpr uint32_t kEffectWords = 29;
-constexpr uint32_t kMaxBlocks = 16; // what GetDeviceInfo reports (FH1 needs at least 5)
+using wheel::kEffectWords;
+using wheel::kMaxBlocks;
+
+// The effect at a guest address, decoded.
+wheel::Effect GuestEffect(uint32_t address)
+{
+    uint32_t words[kEffectWords];
+    for (uint32_t i = 0; i < kEffectWords; i++)
+        words[i] = LoadBE32(address + 4 * i);
+    return wheel::Decode(words);
+}
 
 // The guest addresses handed out for the eight calls: slots of the indirect-call table (one per
 // 4 bytes of code) inside the body of the game's lookup helper (sub_82453238 on the disc,
@@ -114,6 +124,8 @@ void SetEffect(PPCContext& ctx, uint8_t*)
         for (uint32_t i = 0; i < count && i < kMaxBlocks; i++)
             LogEffect("  set", effects + i * 4 * kEffectWords, 0);
     }
+    for (uint32_t i = 0; i < count && i < kMaxBlocks; i++)
+        WheelFfDefine(GuestEffect(effects + i * 4 * kEffectWords));
     Done(ctx, ctx.r6.u32);
 }
 
@@ -122,6 +134,7 @@ void UpdateEffect(PPCContext& ctx, uint8_t*)
 {
     if (ShouldLog(2))
         LogEffect("UpdateEffect", ctx.r4.u32, ctx.r5.u32);
+    WheelFfDefine(GuestEffect(ctx.r4.u32));
     // Every 2 s: how many updates and the range of the steering force (the constant force's
     // magnitude, word 11, -127 to 127) and the spring's gain.
     struct Range
@@ -182,6 +195,8 @@ void EffectOperation(PPCContext& ctx, uint8_t*)
         }
         Log("wheel ff: EffectOperation(handle %08X, block:op%s, loops %u)", ctx.r3.u32, ops.c_str(), ctx.r6.u32);
     }
+    for (uint32_t i = 0; i < ctx.r5.u32 && i < kMaxBlocks; i++)
+        WheelFfOperate(LoadBE32(ctx.r4.u32 + 8 * i), LoadBE32(ctx.r4.u32 + 8 * i + 4));
     Done(ctx, ctx.r7.u32);
 }
 
@@ -190,6 +205,7 @@ void DeviceControl(PPCContext& ctx, uint8_t*)
 {
     if (ShouldLog(4))
         Log("wheel ff: DeviceControl(handle %08X, command %u)", ctx.r3.u32, ctx.r4.u32);
+    WheelFfControl(ctx.r4.u32);
     Done(ctx, ctx.r5.u32);
 }
 
@@ -198,6 +214,7 @@ void SetDeviceGain(PPCContext& ctx, uint8_t*)
 {
     if (ShouldLog(5))
         Log("wheel ff: SetDeviceGain(handle %08X, gain %u)", ctx.r3.u32, ctx.r4.u32);
+    WheelFfDeviceGain(ctx.r4.u32);
     Done(ctx, ctx.r5.u32);
 }
 
@@ -251,9 +268,15 @@ bool WheelFakeEnabled()
     return on;
 }
 
+bool WheelFfServed()
+{
+    static const bool on = !getenv("FM2_NO_WHEEL");
+    return on;
+}
+
 uint32_t WheelFfProcedure(uint32_t module, uint32_t ordinal, uint32_t returnAddress)
 {
-    if (!WheelFakeEnabled())
+    if (!WheelFfServed())
         return 0;
     uint32_t i;
     if (module == kKernelModuleHandle && ordinal >= kFirstOrdinal && ordinal < kFirstOrdinal + kOrdinals)

@@ -6,6 +6,7 @@
 #include <atomic>
 #include <string>
 
+#include "input/wheel.h"
 #include "kernel/imports.h"
 #include "kernel/thread.h"
 #include "live_switch.h"
@@ -40,6 +41,7 @@ void Describe(DWORD64 address, char* out, size_t size)
 
 LONG WINAPI OnCrash(EXCEPTION_POINTERS* info)
 {
+    WheelStop(); // a direct drive wheel must not keep its last force
     const auto* record = info->ExceptionRecord;
     char where[300];
     Describe(DWORD64(record->ExceptionAddress), where, sizeof(where));

@@ -123,6 +123,15 @@ target_link_libraries(fm2 PRIVATE "${FM2_FFMPEG}/lib/avcodec.lib" "${FM2_FFMPEG}
 file(GLOB FM2_FFMPEG_DLLS "${FM2_FFMPEG}/bin/avcodec-*.dll" "${FM2_FFMPEG}/bin/avutil-*.dll" "${FM2_FFMPEG}/bin/swresample-*.dll")
 add_custom_command(TARGET fm2 POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different ${FM2_FFMPEG_DLLS} $<TARGET_FILE_DIR:fm2>)
 
+# Racing wheels and their force feedback through SDL3 (zlib), linked dynamically (see README).
+set(FM2_SDL3 "${CMAKE_SOURCE_DIR}/thirdparty/sdl3")
+if(NOT EXISTS "${FM2_SDL3}/include/SDL3/SDL.h")
+    message(FATAL_ERROR "thirdparty/sdl3 is missing: copy SDL3's VC development package there (see README)")
+endif()
+target_include_directories(fm2 PRIVATE "${FM2_SDL3}/include")
+target_link_libraries(fm2 PRIVATE "${FM2_SDL3}/lib/SDL3.lib")
+add_custom_command(TARGET fm2 POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different "${FM2_SDL3}/lib/SDL3.dll" $<TARGET_FILE_DIR:fm2>)
+
 # Xenos shader disassembler for captured microcode.
 # hlsl.cpp reads a live switch and logs, so the disassembler pulls those in too.
 add_executable(xenos_dis tools/xenos_dis.cpp src/gpu/ucode.cpp src/gpu/hlsl.cpp src/live_switch.cpp src/log.cpp)

@@ -12,6 +12,7 @@
 std::atomic<int64_t> g_inputEpochNs{ 0 };
 
 #include "gpu/renderer.h"
+#include "input/wheel.h"
 #include "kernel/wheel_ff.h"
 #include "debug.h"
 #include "kernel/imports.h"
@@ -277,12 +278,14 @@ GUEST_EXPORT(XamLoaderSetLaunchData)
 GUEST_EXPORT(XamLoaderLaunchTitle)
 {
     Log("XamLoaderLaunchTitle(\"%s\"): exiting", GuestString(ctx.r3.u32).c_str());
+    WheelStop();
     std::_Exit(0);
 }
 
 GUEST_EXPORT(XamLoaderTerminateTitle)
 {
     Log("XamLoaderTerminateTitle: exiting");
+    WheelStop();
     std::_Exit(0);
 }
 
@@ -500,6 +503,15 @@ bool ReadPad(uint32_t user, PadState& s)
     {
         connected = true;
         AddKeyboard(s);
+        // A racing wheel (input/wheel.cpp): its steering replaces the left stick's X, its pedals
+        // and buttons add to the pad's.
+        if (const WheelInput w = WheelRead(); w.present)
+        {
+            s.lx = w.steer;
+            s.leftTrigger = std::max(s.leftTrigger, w.brake);
+            s.rightTrigger = std::max(s.rightTrigger, w.gas);
+            s.buttons |= w.buttons;
+        }
         static LiveSwitch autoStart("FM2_AUTOSTART");
         static const auto start = Clock::now();
         // FM2_INPUT_SCRIPT="7:START,10:A,14:RIGHT,...": press each button for
@@ -588,6 +600,7 @@ bool ReadPad(uint32_t user, PadState& s)
                         }
                         RendererSaveCaches();
                         Log("tour: finished, caches saved");
+                        WheelStop();
                         fflush(nullptr);
                         ExitProcess(0);
                     }
@@ -759,12 +772,13 @@ GUEST_EXPORT(XamInputGetCapabilities)
     memset(GuestPtr(caps), 0, 0x14);
     *GuestPtr<uint8_t>(caps + 0) = 1; // XINPUT_DEVTYPE_GAMEPAD
     *GuestPtr<uint8_t>(caps + 1) = 1; // XINPUT_DEVSUBTYPE_GAMEPAD
-    if (ctx.r3.u32 == 0 && WheelFakeEnabled())
+    if (ctx.r3.u32 == 0 && (WheelFakeEnabled() || WheelRead().present))
     {
-        // FM2_FAKE_WHEEL: an Xbox 360 wheel with force feedback, so the game starts its
-        // XInputdFF* effects (kernel/wheel_ff.cpp).
+        // A racing wheel (or FM2_FAKE_WHEEL) as an Xbox 360 wheel, with force feedback when it
+        // has some: the game then starts its XInputdFF* effects (kernel/wheel_ff.cpp).
         *GuestPtr<uint8_t>(caps + 1) = 2; // XINPUT_DEVSUBTYPE_WHEEL
-        *GuestPtr<uint8_t>(caps + 3) = 1; // flags (big-endian): XINPUT_CAPS_FFB_SUPPORTED
+        if (WheelFakeEnabled() || WheelHasForceFeedback())
+            *GuestPtr<uint8_t>(caps + 3) = 1; // flags (big-endian): XINPUT_CAPS_FFB_SUPPORTED
     }
     Return(ctx, X_ERROR_SUCCESS);
 }

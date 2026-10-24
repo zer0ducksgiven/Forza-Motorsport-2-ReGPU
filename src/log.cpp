@@ -53,6 +53,8 @@ void Fatal(const char* fmt, ...)
     va_start(args, fmt);
     Write("FATAL: ", fmt, args);
     va_end(args);
+    void WheelStop();
+    WheelStop();
     std::_Exit(1);
 }
 

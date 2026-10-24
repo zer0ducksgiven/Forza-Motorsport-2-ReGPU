@@ -8,6 +8,7 @@
 
 #include <windows.h>
 
+#include "input/wheel.h"
 #include "gpu/renderer.h"
 #include "kernel/imports.h"
 #include "log.h"
@@ -18,6 +19,7 @@
 PPC_FUNC(TU_SUB(822B9990))
 {
     Log("quit: chosen from the main menu");
+    WheelStop();
     RendererSaveCaches();
     fflush(nullptr);
     ExitProcess(0);
