@@ -4082,7 +4082,14 @@ void BlitResolve(bool depth, uint32_t base, uint32_t width, uint32_t height, DXG
     ResolvedTexture& dest = g_r.resolved[base];
     const uint32_t hostWidth = uint32_t(HostX(LONG(width))), hostHeight = uint32_t(HostY(LONG(height)));
     EnsureResolved(dest, width, height, hostWidth, hostHeight, format);
-    if (dest.frame != g_r.frame) // (once per frame: tiles land in the same image)
+    // What memory holds under the image, for the stale check (ResolveCurrent): once per frame, as tiles
+    // land in the same image. An image resolved every frame (shadow maps, bloom) only needs it every
+    // 8th: the check waits until a resolve has not been repeated for 8 frames, so its baseline is
+    // never older than that. Hashing each of PGR4's 31 resolves a frame took 0.9 ms on an FX-8350.
+    // (Write-backs record our own writes as they happen.) FM2_RESOLVE_BASELINE_EVERY_FRAME=1: every frame.
+    static LiveSwitch baselineEveryFrame("FM2_RESOLVE_BASELINE_EVERY_FRAME");
+    const bool continuing = dest.frame + 1 == g_r.frame && g_r.frame - dest.memChecked < 8 && !dest.stale;
+    if (dest.frame != g_r.frame && (baselineEveryFrame || !continuing))
         NoteResolvedMemory(base, dest);
     dest.frame = g_r.frame;
     const D3D12_RECT sr{ rect.left, rect.top, std::min<LONG>(rect.right, width), std::min<LONG>(rect.bottom, height) };
@@ -5036,6 +5043,7 @@ struct Hold
 } g_hold;
 
 void HoldPresent();
+void SubmitLists(UINT n, ID3D12CommandList* const* lists);
 
 // Spins until done() is true. Presents the overlay roughly 8 times a second once the wait
 // has lasted 150 ms.
@@ -5422,7 +5430,7 @@ void HoldPresent()
     if (!ok)
         return;
     ID3D12CommandList* lists[] = { g_hold.list.Get() };
-    g_r.queue->ExecuteCommandLists(1, lists);
+    SubmitLists(1, lists);
     PresenterPresent();
     // Wait for it: the allocator and upload buffer are reused at the next hold.
     const UINT64 value = g_r.nextFence++;
@@ -5511,7 +5519,7 @@ void BootPresent(const std::vector<uint8_t>& rgba)
     if (!ok)
         return;
     ID3D12CommandList* lists[] = { g_hold.list.Get() };
-    g_r.queue->ExecuteCommandLists(1, lists);
+    SubmitLists(1, lists);
     PresenterPresent();
     const UINT64 value = g_r.nextFence++;
     g_r.queue->Signal(g_r.fence.Get(), value);
@@ -5668,7 +5676,34 @@ void ListPrologue(RecordedList& list)
     list.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 }
 
-// Executes the main list so far and continues the frame in a fresh one.
+// Command lists closed but not yet submitted, in order. Parallel segments end the main list and add
+// their pieces several dozen times a frame; submitted one segment at a time, each submission left the
+// GPU idle a moment (GPU time per frame rose by a third). They are queued here and go with the next
+// real submission (the frame's, or one that must reach the GPU now). FM2_NO_DEFER_LISTS=1: at once.
+std::mutex g_pendingMutex;
+std::vector<ID3D12CommandList*> g_pendingLists;
+
+// Submits the queued lists, then these.
+void SubmitLists(UINT n, ID3D12CommandList* const* lists)
+{
+    std::lock_guard lock(g_pendingMutex);
+    g_pendingLists.insert(g_pendingLists.end(), lists, lists + n);
+    if (!g_pendingLists.empty())
+        g_r.queue->ExecuteCommandLists(UINT(g_pendingLists.size()), g_pendingLists.data());
+    g_pendingLists.clear();
+}
+
+// Queues lists for the next submission (or submits them, with FM2_NO_DEFER_LISTS).
+void QueueLists(UINT n, ID3D12CommandList* const* lists)
+{
+    static const bool now = getenv("FM2_NO_DEFER_LISTS") != nullptr;
+    if (now)
+        return SubmitLists(n, lists);
+    std::lock_guard lock(g_pendingMutex);
+    g_pendingLists.insert(g_pendingLists.end(), lists, lists + n);
+}
+
+// Ends the main list so far (queued for submission) and continues the frame in a fresh one.
 void EndOcclusionQuery();
 
 void SplitMainList()
@@ -5679,7 +5714,7 @@ void SplitMainList()
     ID3D12GraphicsCommandList* done = g_r.recorder.Real();
     done->Close();
     ID3D12CommandList* lists[] = { done };
-    g_r.queue->ExecuteCommandLists(1, lists);
+    QueueLists(1, lists);
     g_r.recorder.Rebind(AcquireList());
     ListPrologue(g_r.recorder);
     g_drawState.Invalidate();
@@ -5689,6 +5724,7 @@ void SplitMainList()
 // Waits until everything submitted to the queue so far has finished.
 void WaitForQueueIdle()
 {
+    SubmitLists(0, nullptr); // (queued lists first: the signal follows them)
     const UINT64 value = g_r.nextFence++;
     g_r.queue->Signal(g_r.fence.Get(), value);
     if (g_r.fence->GetCompletedValue() < value)
@@ -5927,7 +5963,7 @@ void WriteResolveToGuest(uint32_t base, uint32_t width, uint32_t height, uint32_
     list->ResourceBarrier(1, &bar);
     list->Close();
     ID3D12CommandList* lists[] = { list };
-    g_r.queue->ExecuteCommandLists(1, lists);
+    SubmitLists(1, lists);
     WaitForQueueIdle();
     uint8_t* pixels = nullptr;
     buffer->Map(0, nullptr, reinterpret_cast<void**>(&pixels));
@@ -6208,7 +6244,7 @@ void RendererRunPieces(uint32_t n, const std::function<void(uint32_t)>& translat
     lists.push_back(prepReal);
     for (ID3D12GraphicsCommandList* l : g_workers.lists)
         lists.push_back(l);
-    g_r.queue->ExecuteCommandLists(UINT(lists.size()), lists.data());
+    QueueLists(UINT(lists.size()), lists.data());
 }
 
 void RendererOnDraw(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
@@ -7844,7 +7880,7 @@ void RendererOnSwapImpl(uint64_t frameNumber, uint32_t frontBuffer)
     }
     C().list->Close();
     ID3D12CommandList* lists[] = { C().list->Real() };
-    g_r.queue->ExecuteCommandLists(1, lists);
+    SubmitLists(1, lists);
     if (presenting)
         PresenterPresent();
     Frame().fence = g_r.nextFence++;
