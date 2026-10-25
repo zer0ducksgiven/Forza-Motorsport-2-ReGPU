@@ -11,10 +11,14 @@
 PPC_FUNC(sub_82360378)
 {
     const bool driving = uint8_t(ctx.r4.u32) != 0;
-    static int last = -1;
+    // The game sets it several times a frame (on and off in a race), so only the first few changes are
+    // logged; FM2_TRACE_WHEEL=1 logs them all.
+    static int last = -1, logged = 0;
+    static const bool trace = getenv("FM2_TRACE_WHEEL") != nullptr;
     if (int(driving) != last)
     {
-        Log("wheel: the game says %s", driving ? "driving" : "not driving");
+        if (trace || logged < 4)
+            Log("wheel: the game says %s%s", driving ? "driving" : "not driving", !trace && ++logged == 4 ? " (further changes not logged)" : "");
         last = driving;
     }
     WheelSetDriving(driving);
