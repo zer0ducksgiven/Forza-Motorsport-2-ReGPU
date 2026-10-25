@@ -27,6 +27,8 @@ cbuffer VSConstants : register(b0)
     // The "whysthisdealer" easter egg (hooks/dealer.cpp): every mesh of a car takes its squash in clip space,
     // opos += K (opos.xyw - o.xyw): rows 0-3 xyz = K's rows (clip x, y, z, w), rows 0-2 w = o.xyw, row 3 w = on.
     float4 vsquash[4];
+    // x: polygon offset added to window-space depth (PA_SU_POLY_OFFSET, renderer.cpp)
+    float4 vpoly;
     // xy: clip-space factors for perspective geometry in a wide pass (outputs wider than
     // 16:9; 1 otherwise): x narrows the view to the wider screen (Hor+), y zooms in when
     // FM2_WIDE_FOV limits how far the view widens; z keeps 2D (HUD, menus) at 16:9; w is 0
@@ -196,7 +198,7 @@ float3 CubeDirection(float3 stf)
     }
 }
 
-float4 TFetchRaw(uint slot, float3 coord, bool denorm, bool vertexStage, float bias, float2 texel);
+float4 TFetchRaw(uint slot, float3 coord, bool denorm, bool vertexStage, float bias, float2 texel, uint filt);
 
 // Sampling with a LOD bias is a pixel-shader-only operation: a vertex shader cannot compute an
 // implicit LOD, and dxc rejects the module outright ("sampling with implicit lod is only allowed
@@ -211,9 +213,10 @@ float4 TFetchRaw(uint slot, float3 coord, bool denorm, bool vertexStage, float b
 #define FM2_SAMPLE_BIAS_CUBE(t, s, dir, bias) ((t).SampleBias((s), (dir), (bias)))
 #endif
 
-float4 TFetch(uint slot, float3 coord, bool denorm, bool vertexStage, float bias, float2 texel)
+// filt: the fetch instruction's filter (0 point, 1 linear), or 3 for the fetch constant's.
+float4 TFetch(uint slot, float3 coord, bool denorm, bool vertexStage, float bias, float2 texel, uint filt)
 {
-    float4 v = TFetchRaw(slot, coord, denorm, vertexStage, bias, texel);
+    float4 v = TFetchRaw(slot, coord, denorm, vertexStage, bias, texel, filt);
     // Exponent adjust (fetch constant): texels scaled by 2^n, n in tinfo.x bits 8-13.
     int expAdjust = int(tinfo[slot].x << 18) >> 26;
     if (expAdjust != 0) v *= exp2(float(expAdjust));
@@ -229,7 +232,7 @@ float4 TFetch(uint slot, float3 coord, bool denorm, bool vertexStage, float bias
     return r;
 }
 
-float4 TFetchRaw(uint slot, float3 coord, bool denorm, bool vertexStage, float bias, float2 texel)
+float4 TFetchRaw(uint slot, float3 coord, bool denorm, bool vertexStage, float bias, float2 texel, uint filt)
 {
     uint index = asuint(tbias[slot].y);
     Texture2D<float4> t = gtex[index];
@@ -253,6 +256,15 @@ float4 TFetchRaw(uint slot, float3 coord, bool denorm, bool vertexStage, float b
     if ((tinfo[slot].x >> 19) & 1u) uv.y = clamp(uv.y, 0.5 / texelSize.y, 1.0 - 0.5 / texelSize.y);
     if (tbias[slot].z > 0.0) uv *= tbias[slot].zw; // declared image inside a wider resolved texture (renderer.cpp)
     uint mode = tinfo[slot].x & 3u;
+    // The instruction's filter overrides the fetch constant's (as on the hardware and in Xenia); clamp/wrap
+    // stay the constant's. The showroom's shadow blur takes linear taps at half-texel offsets from a point
+    // constant: point-sampled they landed on texel edges, the blur came out narrow, and the floor's variance
+    // shadow broke into shards.
+    if (filt <= 1u)
+    {
+        const bool clampMode = mode == 1u || mode == 2u;
+        mode = filt == 0u ? (clampMode ? 2u : 3u) : (clampMode ? 1u : 0u);
+    }
     if (vertexStage)
         return t.SampleLevel(sLinearClamp, uv, max(bias, 0));
     // FM2_FORCE_LOD: sample an absolute mip level instead of the implicit one. Diagnostic:
@@ -614,8 +626,12 @@ struct Emitter
             const std::string uv = "float3(" + reg + comp[f.srcSwizzle & 3] + ", " + reg + comp[(f.srcSwizzle >> 2) & 3] + ", " + reg +
                 comp[(f.srcSwizzle >> 4) & 3] + ")";
             char call[320];
-            snprintf(call, sizeof(call), "TFetch(%u, %s, %s, %s, %.4f + tbias[%u].x, float2(%.1f, %.1f))", f.constIndex, uv.c_str(),
-                f.denormalized ? "true" : "false", pixel ? "false" : "true", f.lodBias, f.constIndex, f.offsetX, f.offsetY);
+            // Filter override: the mag filter decides (the host samplers don't mix point and linear); 2 (base
+            // map) and 3 leave the fetch constant's. FM2_NO_FETCH_FILTER=1 ignores the instruction (A/B).
+            static LiveSwitch noFilterOverride("FM2_NO_FETCH_FILTER");
+            const uint32_t filt = noFilterOverride || f.magFilter > 1 ? 3 : f.magFilter;
+            snprintf(call, sizeof(call), "TFetch(%u, %s, %s, %s, %.4f + tbias[%u].x, float2(%.1f, %.1f), %uu)", f.constIndex, uv.c_str(),
+                f.denormalized ? "true" : "false", pixel ? "false" : "true", f.lodBias, f.constIndex, f.offsetX, f.offsetY, filt);
             // Declared, then assigned: fxc drops the value when the fetch is the initializer of a
             // declaration in some shaders ("internal error: invalid access of unbound variable",
             // the Suzuka grandstand pixel shader 0xcc2c1b5affd62985 among them).
@@ -1025,10 +1041,12 @@ TranslatedShader TranslateShader(const Shader& shader)
              "    if (vte.x & 8u) p.y += voffset.y;\n"
              "    if (vte.x & 16u) p.z *= vscale.z;\n"
              "    if (vte.x & 32u) p.z += voffset.z;\n"
+             "    p.z += vpoly.x;\n"
              "    // Positions the title gives in screen space (no viewport scale or offset: its\n"
              "    // rectangle clears and filter passes, authored for D3D9's integer pixel centres,\n"
              "    // e.g. -0.5 .. 255.5) must cover the last row and column too: shift by half a pixel.\n"
              "    if ((vte.x & 0x30Fu) == 0x300u) p.xy += 0.5;\n"
+             "    else if (vte.x & 0x10000u) p.xy += 0.5;\n"
              "    // vscale.w/voffset.w: pixel scale of MSAA clear rectangles (renderer.cpp).\n"
              "    if (vscale.w > 0.0) p.xy *= float2(vscale.w, voffset.w);\n"
              "    p.xy += pointOffset;\n"

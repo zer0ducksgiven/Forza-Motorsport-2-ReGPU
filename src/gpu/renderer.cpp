@@ -6467,6 +6467,7 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
         uint32_t vte[4];
         uint32_t vfl[32][4]; // vertex fetch layout of the bound shader
         float vsquash[4][4]; // the easter egg's squash of car meshes (hlsl.cpp); zero = off
+        float vpoly[4];      // x: polygon offset (window-space depth)
         float vwide[4];      // x: Hor+ factor (see hlsl.cpp)
         float vjitter[4];     // motion-vector variants: this frame's jitter (NDC)
     };
@@ -6705,6 +6706,31 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
     vc->voffset[1] = RegFloat(PA_CL_VPORT_YOFFSET);
     vc->voffset[2] = RegFloat(PA_CL_VPORT_ZOFFSET);
     vc->vte[0] = gpureg::Get(PA_CL_VTE_CNTL);
+    // Polygon offset (PA_SU_SC_MODE_CNTL bits 11 front, 12 back, 13 other primitives): a constant depth
+    // offset, as Xenia applies it (halved for 24-bit float depth); the slope term is not applied. The
+    // showroom's floor shadow is a decal drawn on the floor with an offset and a >= depth test: without
+    // it the decal z-fought the floor below, black wedges popping in and out as the car turned.
+    // FM2_NO_POLY_OFFSET=1 leaves it out (A/B).
+    {
+        static LiveSwitch noPolyOffset("FM2_NO_POLY_OFFSET");
+        const uint32_t sc = gpureg::Get(PA_SU_SC_MODE_CNTL);
+        const bool tri = prim == 4 || prim == 5 || prim == 6;
+        const bool enabled = tri ? (sc & (3u << 11)) != 0 : ((sc >> 13) & 1) != 0;
+        float offset = 0;
+        if (enabled && !noPolyOffset)
+        {
+            offset = (sc >> 11) & 1 ? RegFloat(0x2381) : RegFloat(0x2383);
+            if ((gpureg::Get(0x2002) >> 16) & 1)
+                offset *= 0.5f;
+        }
+        vc->vpoly[0] = offset;
+        vc->vpoly[1] = vc->vpoly[2] = vc->vpoly[3] = 0;
+    }
+    // D3D9 pixel centres (PA_SU_VTX_CNTL bit 0 clear): every draw lands half a pixel off D3D12's, as
+    // Xenia's half_pixel_offset applies (bit 16 tells the vertex shader). FM2_NO_HALF_PIXEL=1: off (A/B).
+    static LiveSwitch noHalfPixel("FM2_NO_HALF_PIXEL");
+    if (!noHalfPixel && (gpureg::Get(0x2302) & 1) == 0)
+        vc->vte[0] |= 1u << 16;
     vc->vte[1] = vc->vte[2] = vc->vte[3] = 0;
     // Triangle lists and restart-free strips from an index buffer: a real indexed draw.
     static LiveSwitch noIndexed("FM2_NO_INDEXED");

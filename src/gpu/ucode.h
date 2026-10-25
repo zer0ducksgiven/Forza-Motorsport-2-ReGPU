@@ -75,6 +75,7 @@ struct Fetch
     uint32_t dimension;
     float lodBias;       // texture fetch LOD bias (instruction)
     float offsetX = 0, offsetY = 0; // texture fetch texel offsets (signed 5 bits, half texels)
+    uint32_t magFilter = 3, minFilter = 3; // the instruction's filters: 0 point, 1 linear, 2 base map, 3 the fetch constant's
     bool predicated, predCondition;
 };
 

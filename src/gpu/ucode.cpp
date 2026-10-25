@@ -257,6 +257,8 @@ Fetch DecodeFetch(const uint32_t* w)
         f.lodBias = float(int32_t(Bits(w[2], 2, 7) << 25) >> 25) / 16.0f;
         f.offsetX = float(int32_t(Bits(w[2], 16, 5) << 27) >> 27) * 0.5f;
         f.offsetY = float(int32_t(Bits(w[2], 21, 5) << 27) >> 27) * 0.5f;
+        f.magFilter = Bits(w[1], 12, 2);
+        f.minFilter = Bits(w[1], 14, 2);
     }
     return f;
 }
