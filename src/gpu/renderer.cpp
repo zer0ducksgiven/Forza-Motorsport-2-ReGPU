@@ -4156,7 +4156,9 @@ void BlitResolve(bool depth, uint32_t base, uint32_t width, uint32_t height, DXG
     // never older than that. Hashing each of PGR4's 31 resolves a frame took 0.9 ms on an FX-8350.
     // (Write-backs record our own writes as they happen.) FM2_RESOLVE_BASELINE_EVERY_FRAME=1: every frame.
     static LiveSwitch baselineEveryFrame("FM2_RESOLVE_BASELINE_EVERY_FRAME");
-    const bool continuing = dest.frame + 1 == g_r.frame && g_r.frame - dest.memChecked < 8 && !dest.stale;
+    // (Resolved within the last 4 frames counts: images refreshed every second or third frame, like
+    // reflection faces, were hashed on every resolve.)
+    const bool continuing = dest.frame != ~0ull && dest.frame + 4 >= g_r.frame && g_r.frame - dest.memChecked < 8 && !dest.stale;
     if (dest.frame != g_r.frame && (baselineEveryFrame || !continuing))
         NoteResolvedMemory(base, dest);
     dest.frame = g_r.frame;
