@@ -14,6 +14,7 @@ struct DebugPad
     int16_t lx = 0, ly = 0, rx = 0, ry = 0;
     bool sticks = false, triggers = false; // replace the pad's sticks / triggers
 };
+// True once the server has sent input (player 1 then stays connected, for a PC with no pad).
 bool DebugPadState(DebugPad& pad);
 
 // The renderer's side: each swap, and screenshots (a pending one names its file).

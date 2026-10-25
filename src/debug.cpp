@@ -56,6 +56,7 @@ struct Timed
 DebugPad g_held;
 std::vector<Timed> g_timed;
 std::atomic<bool> g_inputActive{ false };
+std::atomic<bool> g_inputUsed{ false };
 
 std::string g_shotPath;
 uint64_t g_shotsDone = 0;
@@ -520,7 +521,8 @@ void DebugServerStart()
 bool DebugPadState(DebugPad& pad)
 {
     if (!g_inputActive.load(std::memory_order_relaxed))
-        return false;
+        return g_inputUsed.load(std::memory_order_relaxed);
+    g_inputUsed = true;
     std::lock_guard lock(g_mutex);
     const auto now = Clock::now();
     std::erase_if(g_timed, [&](const Timed& t) { return now >= t.until; });
@@ -544,7 +546,7 @@ bool DebugPadState(DebugPad& pad)
     const bool any = pad.buttons || pad.sticks || pad.triggers;
     if (!any && g_timed.empty())
         g_inputActive = g_held.buttons || g_held.sticks || g_held.triggers;
-    return any;
+    return true;
 }
 
 void DebugOnSwap(uint64_t frame)
