@@ -2929,6 +2929,8 @@ std::shared_ptr<PipelineEntry> EnsurePipeline(const CompiledShader& vs, const Co
     pd.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
     pd.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
     pd.RasterizerState.DepthClipEnable = TRUE;
+    // Polygon offset slope (MakePipelineKey): the scale is in 1/16 subpixel units, as in Xenia.
+    pd.RasterizerState.SlopeScaledDepthBias = float(int16_t((key.flags >> 8) & 0xFFFF)) / 16.0f / 16.0f;
     pd.DepthStencilState.DepthEnable = (depth >> 1) & 1;
     pd.DepthStencilState.DepthWriteMask = ((depth >> 2) & 1) ? D3D12_DEPTH_WRITE_MASK_ALL : D3D12_DEPTH_WRITE_MASK_ZERO;
     pd.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC(((depth >> 4) & 7) + 1);
@@ -3041,7 +3043,19 @@ PipelineKey MakePipelineKey(uint64_t vsHash, uint64_t psHash, bool depthOnly, bo
     const uint32_t stencil = gpureg::Get(RB_STENCILREFMASK) & 0xFFFF00, mode = gpureg::Get(PA_SU_SC_MODE_CNTL) & 7;
     // Alpha-to-mask (RB_COLORCONTROL bit 4): cut-out foliage and fences.
     const bool alphaToMask = (gpureg::Get(RB_COLORCONTROL) >> 4) & 1;
-    return PipelineKey{ vsHash, psHash, blend, depth, stencil | (mask << 24) | (mode << 28), uint32_t(alphaToMask) | (uint32_t(cullable) << 1) };
+    // Polygon offset's slope term (the constant one is in the vertex shader): the scale in 1/16-subpixel
+    // units, kept in flags bits 8-23 (pipeline state). FM2_NO_POLY_OFFSET=1 leaves it out.
+    uint32_t slope = 0;
+    {
+        static LiveSwitch noPolyOffset("FM2_NO_POLY_OFFSET");
+        const uint32_t sc = gpureg::Get(PA_SU_SC_MODE_CNTL);
+        if (!noPolyOffset && cullable && (sc & (3u << 11)))
+        {
+            const float scale = (sc >> 11) & 1 ? RegFloat(0x2380) : RegFloat(0x2382);
+            slope = uint32_t(std::clamp(scale * 16.0f, -32768.0f, 32767.0f)) & 0xFFFF;
+        }
+    }
+    return PipelineKey{ vsHash, psHash, blend, depth, stencil | (mask << 24) | (mode << 28), uint32_t(alphaToMask) | (uint32_t(cullable) << 1) | (slope << 8) };
 }
 
 // Alpha-blended colour draws (smoke, sparks, glows) are skippable for the moment it

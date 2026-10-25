@@ -260,19 +260,20 @@ float4 TFetchRaw(uint slot, float3 coord, bool denorm, bool vertexStage, float b
     // stay the constant's. The showroom's shadow blur takes linear taps at half-texel offsets from a point
     // constant: point-sampled they landed on texel edges, the blur came out narrow, and the floor's variance
     // shadow broke into shards.
-    if (filt <= 1u)
+    if ((filt & 3u) <= 1u)
     {
         const bool clampMode = mode == 1u || mode == 2u;
-        mode = filt == 0u ? (clampMode ? 2u : 3u) : (clampMode ? 1u : 0u);
+        mode = (filt & 3u) == 0u ? (clampMode ? 2u : 3u) : (clampMode ? 1u : 0u);
     }
     if (vertexStage)
         return t.SampleLevel(sLinearClamp, uv, max(bias, 0));
     // FM2_FORCE_LOD: sample an absolute mip level instead of the implicit one. Diagnostic:
     // separates "mips never selected" (this fixes the distance noise) from "mips never
     // uploaded" (this stays noisy / reads the clamped tail).
-    if (pforceLod.x >= 0.0)
+    // filt bit 2: an explicit LOD in bias (setTextureLOD with the computed LOD off).
+    if (pforceLod.x >= 0.0 || (filt & 4u))
     {
-        const float lod = clamp(pforceLod.x, 0.0, 16.0);
+        const float lod = clamp((filt & 4u) ? bias : pforceLod.x, 0.0, 16.0);
         if (mode == 1) return t.SampleLevel(sLinearClamp, uv, lod);
         if (mode == 2) return t.SampleLevel(sPointClamp, uv, lod);
         if (mode == 3) return t.SampleLevel(sPointWrap, uv, lod);
@@ -629,9 +630,13 @@ struct Emitter
             // Filter override: the mag filter decides (the host samplers don't mix point and linear); 2 (base
             // map) and 3 leave the fetch constant's. FM2_NO_FETCH_FILTER=1 ignores the instruction (A/B).
             static LiveSwitch noFilterOverride("FM2_NO_FETCH_FILTER");
-            const uint32_t filt = noFilterOverride || f.magFilter > 1 ? 3 : f.magFilter;
-            snprintf(call, sizeof(call), "TFetch(%u, %s, %s, %s, %.4f + tbias[%u].x, float2(%.1f, %.1f), %uu)", f.constIndex, uv.c_str(),
-                f.denormalized ? "true" : "false", pixel ? "false" : "true", f.lodBias, f.constIndex, f.offsetX, f.offsetY, filt);
+            uint32_t filt = noFilterOverride || f.magFilter > 1 ? 3 : f.magFilter;
+            // setTextureLOD's register LOD: the LOD itself with the computed LOD off, else added to it.
+            const char* regLod = f.useRegisterLod ? "regLod + " : "";
+            if (f.useRegisterLod && !f.useComputedLod)
+                filt |= 4;
+            snprintf(call, sizeof(call), "TFetch(%u, %s, %s, %s, %s%.4f + tbias[%u].x, float2(%.1f, %.1f), %uu)", f.constIndex, uv.c_str(),
+                f.denormalized ? "true" : "false", pixel ? "false" : "true", regLod, f.lodBias, f.constIndex, f.offsetX, f.offsetY, filt);
             // Declared, then assigned: fxc drops the value when the fetch is the initializer of a
             // declaration in some shaders ("internal error: invalid access of unbound variable",
             // the Suzuka grandstand pixel shader 0xcc2c1b5affd62985 among them).
@@ -649,8 +654,21 @@ struct Emitter
             body = "{ float4 t = float4(ddx(" + a + "), ddy(" + a + "), ddx(" + b + "), ddy(" + b + ")); " +
                 DestSwizzleWrite(f.dest, f.destSwizzle, "t") + "}";
         }
+        else if (f.opcode == 24)
+        {
+            // setTextureLOD: the LOD later fetches with "use register LOD" take (source component x).
+            static const char comp[] = "xyzw";
+            body = std::string("regLod = r[") + std::to_string(f.src) + "]." + comp[f.srcSwizzle & 3] + ";";
+        }
         else
+        {
+            // FM2_TRACE_FETCHOPS=1: log each fetch opcode the translator doesn't handle, once.
+            static const bool trace = getenv("FM2_TRACE_FETCHOPS") != nullptr;
+            static std::atomic<uint32_t> seen{ 0 };
+            if (trace && !(seen.fetch_or(1u << (f.opcode & 31)) & (1u << (f.opcode & 31))))
+                fprintf(stderr, "fetchops: unhandled fetch opcode %u (%s shader)\n", f.opcode, pixel ? "pixel" : "vertex");
             body = DestSwizzleWrite(f.dest, f.destSwizzle, "float4(0, 0, 0, 0)"); // other texture queries
+        }
         if (f.predicated)
             body = std::string("if (") + (f.predCondition ? "p" : "!p") + ") { " + body + " }";
         Line(body);
@@ -685,6 +703,14 @@ struct Emitter
     // instruction, blocks run in order within an iteration, jumps set pc.
     void EmitProgram()
     {
+        {
+            static const bool trace = getenv("FM2_TRACE_FETCHOPS") != nullptr;
+            static std::atomic<bool> exportSeen{ false };
+            if (trace)
+                for (const Cf& cf : shader.cf)
+                    if (cf.op() == CfOp::Alloc && cf.allocType() == 3 && !exportSeen.exchange(true))
+                        fprintf(stderr, "fetchops: memory export alloc in a %s shader\n", pixel ? "pixel" : "vertex");
+        }
         bool linear = true;
         bool loops = false;
         for (const Cf& cf : shader.cf)
@@ -935,7 +961,7 @@ TranslatedShader TranslateShader(const Shader& shader)
         h += "void GuestVS(uint vindex, out float4 opos, out float4 o[16], out float4 opts)\n{\n"
              "    float4 r[64];\n    [unroll] for (int i = 0; i < 64; i++) r[i] = 0;\n"
              "    [unroll] for (int j = 0; j < 16; j++) o[j] = 0;\n"
-             "    r[0].x = float(vindex); opos = float4(0, 0, 0, 1); opts = 0; float ps = 0; bool p = false; int a0 = 0, aL = 0;\n";
+             "    r[0].x = float(vindex); opos = float4(0, 0, 0, 1); opts = 0; float ps = 0; bool p = false; int a0 = 0, aL = 0; float regLod = 0;\n";
         h += e.out;
         h += "}\n"
              "void GuestVS(uint vindex, out float4 opos, out float4 o[16])\n{\n"
@@ -1067,7 +1093,7 @@ TranslatedShader TranslateShader(const Shader& shader)
              "    float4 r[64];\n    [unroll] for (int i = 0; i < 64; i++) r[i] = 0;\n"
              "    [unroll] for (int j = 0; j < 16; j++) r[j] = input.o[j];\n"
              "    float4 oC[4]; [unroll] for (int k = 0; k < 4; k++) oC[k] = 0;\n"
-             "    float ps = 0; bool p = false; int a0 = 0, aL = 0;\n"
+             "    float ps = 0; bool p = false; int a0 = 0, aL = 0; float regLod = 0;\n"
              "    // Generated parameter: pixel position, point sprite coordinate.\n"
              "    if (pinfo.y < 16u) r[pinfo.y] = float4(input.pos.xy * pinfo2.yz, input.pcoord);\n";
         h += e.out;
