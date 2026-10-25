@@ -1453,6 +1453,36 @@ void SelectSurfaces(bool force)
 // dropped textures) go back to the free list; their resources are released
 // once the GPU is done with the frame that last used them.
 UINT BindlessIndexLocked(ID3D12Resource* resource, DXGI_FORMAT format, bool cube);
+// The per-draw functions' switches, at namespace scope: as function-local statics each one checked
+// its initialisation guard on every draw (dozens a draw).
+LiveSwitch g_sw_FM2_ALL_CONSTANTS("FM2_ALL_CONSTANTS");
+LiveSwitch g_sw_FM2_ASYNC_SHADERS("FM2_ASYNC_SHADERS");
+LiveSwitch g_sw_FM2_CHECK_TEXTURES_ALWAYS("FM2_CHECK_TEXTURES_ALWAYS");
+LiveSwitch g_sw_FM2_CLEAR_FETCH_TABLE("FM2_CLEAR_FETCH_TABLE");
+LiveSwitch g_sw_FM2_CONSTANTS_BY_COUNT("FM2_CONSTANTS_BY_COUNT");
+LiveSwitch g_sw_FM2_CONSTANTS_IN_RING("FM2_CONSTANTS_IN_RING");
+LiveSwitch g_sw_FM2_DUMP_TEXTURES("FM2_DUMP_TEXTURES");
+LiveSwitch g_sw_FM2_FULL_CONSTANT_BLOCKS("FM2_FULL_CONSTANT_BLOCKS");
+LiveSwitch g_sw_FM2_NO_DIRECT_FETCH("FM2_NO_DIRECT_FETCH");
+LiveSwitch g_sw_FM2_NO_DIRECT_INDEX("FM2_NO_DIRECT_INDEX");
+LiveSwitch g_sw_FM2_NO_GPU_SWIZZLE("FM2_NO_GPU_SWIZZLE");
+LiveSwitch g_sw_FM2_NO_HALF_PIXEL("FM2_NO_HALF_PIXEL");
+LiveSwitch g_sw_FM2_NO_HUD_SQUEEZE("FM2_NO_HUD_SQUEEZE");
+LiveSwitch g_sw_FM2_NO_INDEXED("FM2_NO_INDEXED");
+LiveSwitch g_sw_FM2_NO_LIVE_CUBE("FM2_NO_LIVE_CUBE");
+LiveSwitch g_sw_FM2_NO_MIPS("FM2_NO_MIPS");
+LiveSwitch g_sw_FM2_NO_MSAA_SCALE("FM2_NO_MSAA_SCALE");
+LiveSwitch g_sw_FM2_NO_NATIVE_BC("FM2_NO_NATIVE_BC");
+LiveSwitch g_sw_FM2_NO_POLY_OFFSET("FM2_NO_POLY_OFFSET");
+LiveSwitch g_sw_FM2_NO_RENDER("FM2_NO_RENDER");
+LiveSwitch g_sw_FM2_NO_SHADER_SCAN("FM2_NO_SHADER_SCAN");
+LiveSwitch g_sw_FM2_NO_STALE_RESOLVES("FM2_NO_STALE_RESOLVES");
+LiveSwitch g_sw_FM2_OLD_CLAMP("FM2_OLD_CLAMP");
+LiveSwitch g_sw_FM2_TEXTURE_CHECK_EVERY4("FM2_TEXTURE_CHECK_EVERY4");
+LiveSwitch g_sw_FM2_TRACE_CAR_DRAWS("FM2_TRACE_CAR_DRAWS");
+LiveSwitch g_sw_FM2_TRACE_DIRECT("FM2_TRACE_DIRECT");
+LiveSwitch g_sw_FM2_TRACE_MIDSIZE("FM2_TRACE_MIDSIZE");
+
 // Each thread remembers this frame's descriptors (eviction only takes ones unused for frames).
 UINT BindlessIndex(ID3D12Resource* resource, DXGI_FORMAT format, bool cube)
 {
@@ -3400,7 +3430,7 @@ const ResolvedTexture* ResolvedFor(const TextureFetch& fetch)
     // A resolve not repeated lately whose memory has changed since: the title reused the address for a
     // texture of its own (the event screens' eligibility icons sat on an old menu resolve: white boxes).
     // Checked every 32 frames; a new resolve there makes it current again.
-    static LiveSwitch noStaleCheck("FM2_NO_STALE_RESOLVES"); // A/B
+    LiveSwitch &noStaleCheck = g_sw_FM2_NO_STALE_RESOLVES; // A/B
     ResolvedTexture& r = it->second;
     if (!noStaleCheck && r.frame + 8 < g_r.frame && r.frame != ~0ull)
     {
@@ -3475,7 +3505,7 @@ ID3D12Resource* GetTextureLocked(const TextureFetch& fetch, DXGI_FORMAT& format,
     }
     const uint32_t w = fetch.Width(), h = fetch.Height();
     auto& cached = g_r.textures[TextureKey(fetch.Address(), fetch.Format(), w, h)];
-    static LiveSwitch dumpAll("FM2_DUMP_TEXTURES");
+    LiveSwitch &dumpAll = g_sw_FM2_DUMP_TEXTURES;
     const bool forceDecode = dumpAll && RendererTracing();
     if (cached.resource && cached.checkedFrame == g_r.frame && !forceDecode)
     {
@@ -3486,11 +3516,11 @@ ID3D12Resource* GetTextureLocked(const TextureFetch& fetch, DXGI_FORMAT& format,
     // A texture unchanged for many checks (most of them: loaded once) is checked every 4th
     // frame (staggered), not every frame: hashing all textures in use cost ~0.5 ms a frame.
     // Ones that change (video, render-to-texture on the CPU) never get here.
-    static LiveSwitch checkAlways("FM2_CHECK_TEXTURES_ALWAYS"); // A/B
+    LiveSwitch &checkAlways = g_sw_FM2_CHECK_TEXTURES_ALWAYS; // A/B
     const uint64_t textureKey = TextureKey(fetch.Address(), fetch.Format(), w, h);
     // Unchanged for 300 checks (a few seconds): every 16th frame (a CPU-side update shows up at most
     // ~0.1 s late). FM2_TEXTURE_CHECK_EVERY4=1 keeps every 4th (A/B).
-    static LiveSwitch every4("FM2_TEXTURE_CHECK_EVERY4");
+    LiveSwitch &every4 = g_sw_FM2_TEXTURE_CHECK_EVERY4;
     const uint64_t checkMask = !every4 && cached.unchanged >= 300 ? 15 : 3;
     if (cached.resource && !checkAlways && !forceDecode && cached.unchanged >= 30 && ((g_r.frame + (textureKey >> 32)) & checkMask) != 0)
     {
@@ -3502,7 +3532,7 @@ ID3D12Resource* GetTextureLocked(const TextureFetch& fetch, DXGI_FORMAT& format,
     cached.checkedFrame = g_r.frame;
     // DXT formats stay compressed on the GPU (BC1-BC4): no decode, a quarter to an eighth of
     // the upload. D3D12 needs block-aligned sizes; others are decoded to RGBA8.
-    static LiveSwitch noNativeBC("FM2_NO_NATIVE_BC");
+    LiveSwitch &noNativeBC = g_sw_FM2_NO_NATIVE_BC;
     const uint32_t bc = !noNativeBC && w % 4 == 0 && h % 4 == 0 && !forceDecode ? TextureBCKind(fetch.Format()) : 0;
     const uint8_t* source = GuestPtr<uint8_t>(GpuPhysToGuest(fetch.Address()));
     // The whole base level: the old guess (pitch * height / 2) covered only the first half of a
@@ -3541,7 +3571,7 @@ ID3D12Resource* GetTextureLocked(const TextureFetch& fetch, DXGI_FORMAT& format,
     } uploadLog{ uploadStart, fetch, wasNew };
     // The title's own mip levels (distant surfaces sample the smaller, averaged ones: without
     // them the road and grass shimmer and look grainy). Down to the packed tail.
-    static LiveSwitch noMips("FM2_NO_MIPS"); // A/B
+    LiveSwitch &noMips = g_sw_FM2_NO_MIPS; // A/B
     std::vector<TextureFetch> levels{ fetch };
     for (uint32_t l = 1; !noMips && !forceDecode; l++)
     {
@@ -6300,7 +6330,7 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
 {
     Section(0);
     g_drawSamplesResolve = false;
-    static LiveSwitch noRender("FM2_NO_RENDER");
+    LiveSwitch &noRender = g_sw_FM2_NO_RENDER;
     if (noRender)
         return;
     if (!g_r.ok)
@@ -6326,7 +6356,7 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
         // background scan is enough.
         const bool unseen = g_r.shaders.find(C().vsHash) == g_r.shaders.end() || g_r.shaders.find(C().psHash) == g_r.shaders.end();
         static auto lastScan = std::chrono::steady_clock::time_point{};
-        static LiveSwitch noScan("FM2_NO_SHADER_SCAN");
+        LiveSwitch &noScan = g_sw_FM2_NO_SHADER_SCAN;
         if (unseen && !noScan)
         {
             if (g_scanKnown.count(C().vsHash) || g_scanKnown.count(C().psHash))
@@ -6360,7 +6390,7 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
     }
     const CompiledShader& ps = GetShader(C().psHash, C().psCode, true);
     Section(1);
-    static LiveSwitch asyncShaders("FM2_ASYNC_SHADERS");
+    LiveSwitch &asyncShaders = g_sw_FM2_ASYNC_SHADERS;
     const bool shadersPending = vs.state.load(std::memory_order_acquire) == CompiledShader::Pending || ps.state.load(std::memory_order_acquire) == CompiledShader::Pending;
     if (shadersPending && SkippableDraw(edramMode == 5, gpureg::Get(RB_BLENDCONTROL0)))
     {
@@ -6393,7 +6423,7 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
     // everything else is expanded here.
     const uint32_t prim = initiator & 0x3F, indexSource = (initiator >> 6) & 3, indexCount = initiator >> 16;
     const bool restartOn = (gpureg::Get(PA_SU_SC_MODE_CNTL) >> 21) & 1;
-    static LiveSwitch noDirectIndex("FM2_NO_DIRECT_INDEX");
+    LiveSwitch &noDirectIndex = g_sw_FM2_NO_DIRECT_INDEX;
     const bool directIndex = g_r.physical && !noDirectIndex && (indexSource == 0 || indexSource == 2) &&
         (prim == 4 || prim == 13 || (prim == 6 && !restartOn));
     const uint32_t directVertices = prim == 4 ? indexCount / 3 * 3 : prim == 13 ? indexCount / 4 * 6 : (indexCount >= 3 ? (indexCount - 2) * 3 : 0);
@@ -6546,7 +6576,7 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
     // writes and any reads back are slow (0.86 -> 0.64 ms a frame on a Ryzen 7 5800X). Not in low
     // performance mode: on an FX-8350 the bigger block copies cost more than they saved (submit
     // 3 -> 13-19 ms). FM2_CONSTANTS_IN_RING=1 writes straight into the ring (A/B).
-    static LiveSwitch inRingSwitch("FM2_CONSTANTS_IN_RING");
+    LiveSwitch &inRingSwitch = g_sw_FM2_CONSTANTS_IN_RING;
     const bool inRing = inRingSwitch || GetSettings().lowPerformance;
     thread_local std::unique_ptr<VSConstants> vcStage(new VSConstants);
     thread_local std::unique_ptr<PSConstants> pcStage(new PSConstants);
@@ -6560,12 +6590,12 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
         const auto* src = reinterpret_cast<const __m128i*>(gpureg::File() + gpureg::AluConstants * 4);
         auto* dv = reinterpret_cast<__m128i*>(vc->c);
         auto* dp = reinterpret_cast<__m128i*>(pc->c);
-        static LiveSwitch allConstants("FM2_ALL_CONSTANTS"); // A/B
+        LiveSwitch &allConstants = g_sw_FM2_ALL_CONSTANTS; // A/B
         const uint32_t nv = allConstants ? 256 : std::min(vs.info.constantsUsed, 256u), np = allConstants ? 256 : std::min(ps.info.constantsUsed, 256u);
         // Only the constants each shader reads, by its mask (from ReGPU 8a8bfa3). Car draws copy them
         // all: hooks/dealer.cpp reads the car's constants itself. FM2_CONSTANTS_BY_COUNT copies all
         // up to the highest one again (A/B).
-        static LiveSwitch byCount("FM2_CONSTANTS_BY_COUNT");
+        LiveSwitch &byCount = g_sw_FM2_CONSTANTS_BY_COUNT;
         auto copy = [&](__m128i* dst, const __m128i* from, const std::array<uint64_t, 4>& mask, uint32_t n, bool all) {
             if (all || byCount)
             {
@@ -6627,7 +6657,7 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
     Sub(4);
     // Only the entries this shader reads are written (all four fields): clearing all 96 (1.5 KB of
     // write-combined memory a draw) was most of the vertex fetch time on an FX-8350.
-    static LiveSwitch clearFetch("FM2_CLEAR_FETCH_TABLE"); // A/B
+    LiveSwitch &clearFetch = g_sw_FM2_CLEAR_FETCH_TABLE; // A/B
     if (clearFetch)
         memset(vc->vf, 0, sizeof(vc->vf));
     for (uint32_t k : vs.info.vertexFetchConstants)
@@ -6636,13 +6666,13 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
         const uint32_t address = d0 & 0xFFFFFFFC, bytes = ((d1 >> 2) & 0xFFFFFF) * 4;
         // Large buffers (static geometry) are read in place; small ones may be
         // rewritten before the GPU runs this frame, so they are copied.
-        static LiveSwitch noDirect("FM2_NO_DIRECT_FETCH");
+        LiveSwitch &noDirect = g_sw_FM2_NO_DIRECT_FETCH;
         static const uint32_t directBytes = getenv("FM2_DIRECT_FETCH_KB") ? uint32_t(atoi(getenv("FM2_DIRECT_FETCH_KB"))) * 1024u : kDirectFetchBytes;
         if (g_r.physical && !noDirect && bytes >= directBytes)
         {
             // FM2_TRACE_DIRECT=1: remember the in-place buffers of depth-only draws and check at the next
             // frame's end whether the game rewrote them (the GPU reads them later than the draw is recorded).
-            static LiveSwitch traceDirect("FM2_TRACE_DIRECT");
+            LiveSwitch &traceDirect = g_sw_FM2_TRACE_DIRECT;
             if (traceDirect && edramMode == 5)
             {
                 std::lock_guard lock(g_directTrace.mutex);
@@ -6662,7 +6692,7 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
             continue;
         }
         // FM2_TRACE_MIDSIZE=1: log copied buffers of 16-64 KB that change within a frame (they must stay copied)
-        static LiveSwitch traceMid("FM2_TRACE_MIDSIZE");
+        LiveSwitch &traceMid = g_sw_FM2_TRACE_MIDSIZE;
         static const uint32_t traceMinBytes = traceMid ? uint32_t(atoi(getenv("FM2_TRACE_MIDSIZE"))) * 1024u : 0;
         if (traceMid && bytes >= traceMinBytes)
         {
@@ -6701,7 +6731,7 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
         const bool gameWidened = g_cameraAspectWidened.load(std::memory_order_relaxed);
         vc->vwide[0] = gameWidened ? 1.0f : 1.0f / extent;
         vc->vwide[1] = wide / extent;
-        static LiveSwitch noSqueeze("FM2_NO_HUD_SQUEEZE"); // A/B: 2D stretched with the view
+        LiveSwitch &noSqueeze = g_sw_FM2_NO_HUD_SQUEEZE; // A/B: 2D stretched with the view
         vc->vwide[2] = noSqueeze ? 1.0f : 1.0f / wide;
         vc->vwide[3] = 1; // set after the textures are bound (below)
     }
@@ -6718,7 +6748,7 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
     // The title clears its (non-MSAA) shadow depth maps through views of the same EDRAM
     // with MSAA on: a pixel of a 4x surface covers 2x2 samples of the linear layout we
     // render in, a pixel of a 2x surface 1x2. Scale those clear rectangles to match.
-    static LiveSwitch noMsaaScale("FM2_NO_MSAA_SCALE");
+    LiveSwitch &noMsaaScale = g_sw_FM2_NO_MSAA_SCALE;
     Sub(3);
     if (!noMsaaScale && (initiator & 0x3F) == 8 && (gpureg::Get(RB_COLOR_MASK) & 0xF) == 0 && (gpureg::Get(RB_SURFACE_INFO) & 0x3FFF) < 1000)
     {
@@ -6764,7 +6794,7 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
     // it the decal z-fought the floor below, black wedges popping in and out as the car turned.
     // FM2_NO_POLY_OFFSET=1 leaves it out (A/B).
     {
-        static LiveSwitch noPolyOffset("FM2_NO_POLY_OFFSET");
+        LiveSwitch &noPolyOffset = g_sw_FM2_NO_POLY_OFFSET;
         const uint32_t sc = gpureg::Get(PA_SU_SC_MODE_CNTL);
         const bool tri = prim == 4 || prim == 5 || prim == 6;
         const bool enabled = tri ? (sc & (3u << 11)) != 0 : ((sc >> 13) & 1) != 0;
@@ -6780,12 +6810,12 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
     }
     // D3D9 pixel centres (PA_SU_VTX_CNTL bit 0 clear): every draw lands half a pixel off D3D12's, as
     // Xenia's half_pixel_offset applies (bit 16 tells the vertex shader). FM2_NO_HALF_PIXEL=1: off (A/B).
-    static LiveSwitch noHalfPixel("FM2_NO_HALF_PIXEL");
+    LiveSwitch &noHalfPixel = g_sw_FM2_NO_HALF_PIXEL;
     if (!noHalfPixel && (gpureg::Get(0x2302) & 1) == 0)
         vc->vte[0] |= 1u << 16;
     vc->vte[1] = vc->vte[2] = vc->vte[3] = 0;
     // Triangle lists and restart-free strips from an index buffer: a real indexed draw.
-    static LiveSwitch noIndexed("FM2_NO_INDEXED");
+    LiveSwitch &noIndexed = g_sw_FM2_NO_INDEXED;
     D3D12_INDEX_BUFFER_VIEW indexView{};
     uint32_t indexedCount = 0;
     if (directIndex && !noIndexed && indexSource == 0 && (prim == 4 || prim == 6))
@@ -6828,7 +6858,7 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
     if (vs.carBody || vs.carPart)
     {
         DealerCarDraw(C().vsHash, vc->c, vc->vsquash, vs.carBody);
-        static LiveSwitch traceCar("FM2_TRACE_CAR_DRAWS");
+        LiveSwitch &traceCar = g_sw_FM2_TRACE_CAR_DRAWS;
         if (traceCar)
             Log("car draw: vs %016llx ps %016llx origin %.3f %.3f %.3f %.3f x %.3f %.3f %.3f", (unsigned long long)C().vsHash, (unsigned long long)C().psHash,
                 vc->c[3][0], vc->c[3][1], vc->c[3][2], vc->c[3][3], vc->c[0][0], vc->c[0][1], vc->c[0][2]);
@@ -6911,14 +6941,14 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
         g_textureFailure[0] = 0;
         ID3D12Resource* texture = cube ? GetCubeTexture(fetch, format) : GetTexture(fetch, format, native);
         // Debug: FM2_NO_LIVE_CUBE=1 binds the fallback for cubes the title rendered (live reflections).
-        if (static LiveSwitch noLiveCube("FM2_NO_LIVE_CUBE"); noLiveCube && cube && ResolvedFor(fetch))
+        if (LiveSwitch &noLiveCube = g_sw_FM2_NO_LIVE_CUBE; noLiveCube && cube && ResolvedFor(fetch))
             texture = nullptr;
         const uint32_t index = texture ? BindlessIndex(texture, format, cube) : (cube ? 1u : 0u);
         if (RendererTracing())
             CaptureTexture(fetch, slot, cube, texture != nullptr, index, native, g_textureFailure);
         // w: dimension (1 2D, 3 cube); bit 31 + bits 8-19: the fetch swizzle, applied in the
         // shader for textures that live on the GPU (resolves). Decoded ones are swizzled already.
-        static LiveSwitch noGpuSwizzle("FM2_NO_GPU_SWIZZLE");
+        LiveSwitch &noGpuSwizzle = g_sw_FM2_NO_GPU_SWIZZLE;
         const ResolvedTexture* resolvedPtr = ResolvedFor(fetch);
         const bool onGpu = (!noGpuSwizzle && fetch.Type() == 2 && resolvedPtr != nullptr) || native;
         // Our resolved textures keep red and blue in place; when the title
@@ -6940,7 +6970,7 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
         // 19-20 (mag): 0 point. With only one axis clamped (kerbs: clamped across, repeating
         // along) the wrapping sampler is used and the shader clamps that axis (bits 18, 19).
         const uint32_t clampX = (fetch.dwords[0] >> 10) & 7, clampY = (fetch.dwords[0] >> 13) & 7;
-        static LiveSwitch oldClamp("FM2_OLD_CLAMP"); // A/B: X's mode for both axes (before the kerb fix)
+        LiveSwitch &oldClamp = g_sw_FM2_OLD_CLAMP; // A/B: X's mode for both axes (before the kerb fix)
         const bool clamp = oldClamp ? clampX != 0 : clampX != 0 && clampY != 0;
         const bool point = ((fetch.dwords[3] >> 19) & 3) == 0;
         ti[0] = (point ? (clamp ? 2 : 3) : (clamp ? 1 : 0)) | ((uint32_t(fetch.ExpAdjust()) & 0x3F) << 8);
@@ -7081,7 +7111,7 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
     {
         // Float constants up to the highest one the shader reads (all for car draws, which the
         // dealer hook reads), then everything after them, each in one go.
-        static LiveSwitch allConstantsFlush("FM2_ALL_CONSTANTS");
+        LiveSwitch &allConstantsFlush = g_sw_FM2_ALL_CONSTANTS;
         const bool carDraw = vs.carBody || vs.carPart;
         const size_t nv = allConstantsFlush || carDraw ? 256 : std::min(vs.info.constantsUsed, 256u);
         const size_t np = allConstantsFlush ? 256 : std::min(ps.info.constantsUsed, 256u);
@@ -7093,7 +7123,7 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
         // 96 fetch constants and 32 slots, a draw uses a few, and the rest was ~3 KB of padding copied per
         // draw (the largest single cost on the command processor in a race; from ReGPU 4884e92). The ring
         // bytes skipped are never read. FM2_FULL_CONSTANT_BLOCKS=1 copies the whole blocks (A/B).
-        static LiveSwitch fullBlocks("FM2_FULL_CONSTANT_BLOCKS");
+        LiveSwitch &fullBlocks = g_sw_FM2_FULL_CONSTANT_BLOCKS;
         auto put = [](uint8_t* ring, const void* stage, size_t from, size_t to) {
             if (to > from)
                 memcpy(ring + from, static_cast<const uint8_t*>(stage) + from, to - from);
