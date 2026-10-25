@@ -45,6 +45,7 @@ using namespace std::chrono;
 constexpr float kSmoothSeconds = 0.010f; // the steering force eases to each new value over about this
 constexpr float kFadeInSeconds = 0.5f, kFadeOutSeconds = 0.15f;
 constexpr auto kStaleAfter = milliseconds(250); // no steering force update for this long: fade out
+constexpr auto kDrivingOffAfter = milliseconds(50); // "not driving" this long before forces fade
 // The game's steering force turns the wheel right when positive; an SDL level on the steering
 // axis pulls left when positive (FH1's wheel_input_driver.cpp).
 constexpr float kConstantToSdl = -1.0f;
@@ -105,6 +106,7 @@ struct Driver
     steady_clock::time_point updated; // the game's last steering force
     float fade = 0;
     bool driving = false; // from the game: off in menus, pauses and replays
+    steady_clock::time_point stoppedDriving; // when it last went off
 
     // From the settings when the thread starts.
     float strength = 0.5f, spring = 0.5f, reverse = 1, steerScale = 1;
@@ -501,7 +503,10 @@ void Thread()
             ReadInput(d);
             if (d.haptic)
             {
-                const bool live = d.driving && Focused() && now - d.updated < kStaleAfter;
+                // The game also turns driving off and back on within a fraction of a millisecond every
+                // frame for a few seconds after a race loads; only an off that lasts counts.
+                const bool driving = d.driving || now - d.stoppedDriving < kDrivingOffAfter;
+                const bool live = driving && Focused() && now - d.updated < kStaleAfter;
                 d.fade = live ? std::min(1.0f, d.fade + dt / kFadeInSeconds) : std::max(0.0f, d.fade - dt / kFadeOutSeconds);
                 for (uint32_t b = 1; b <= wheel::kMaxBlocks; b++)
                     Apply(d, b, dt);
@@ -569,6 +574,8 @@ void WheelFfControl(uint32_t command)
 void WheelSetDriving(bool driving)
 {
     std::lock_guard lock(g_wheel.mutex);
+    if (g_wheel.driving && !driving)
+        g_wheel.stoppedDriving = steady_clock::now();
     g_wheel.driving = driving;
 }
 

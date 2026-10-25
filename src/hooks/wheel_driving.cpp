@@ -18,7 +18,8 @@ PPC_FUNC(sub_82360378)
     if (int(driving) != last)
     {
         if (trace || logged < 4)
-            Log("wheel: the game says %s%s", driving ? "driving" : "not driving", !trace && ++logged == 4 ? " (further changes not logged)" : "");
+            Log("wheel: the game says %s (object %08X)%s", driving ? "driving" : "not driving", ctx.r3.u32,
+                !trace && ++logged == 4 ? " (further changes not logged)" : "");
         last = driving;
     }
     WheelSetDriving(driving);
