@@ -73,6 +73,9 @@ struct Gpu
     // checks every NOP against them (most NOPs are padding and match nothing).
     std::atomic<uint32_t> swapBlocks[16]{};
     std::atomic<uint32_t> swapBlockNext{ 0 };
+    // A bit per (address >> 2) & 255 of those blocks, set before them: a padding NOP is turned away
+    // with one load instead of sixteen (NOPs were ~4% of the command processor in a race).
+    std::atomic<uint64_t> swapFilter[4]{};
     // Predicated tiling: type-3 packets with the predicate bit run only
     // when (binSelect & binMask) != 0. D3D replays each frame per tile and
     // predicates its once-per-frame packets (swap callbacks, fences).
@@ -650,6 +653,9 @@ uint32_t ExecutePacket(uint32_t ptr)
         return 3;
     case 2: // type 2: nop (VdSwap fills its block with these)
     {
+        // (Guest and physical addresses share their low bits.)
+        if (const uint32_t h = (ptr >> 2) & 255; !((g_gpu.swapFilter[h >> 6].load(std::memory_order_acquire) >> (h & 63)) & 1))
+            return 1;
         bool candidate = false;
         for (const auto& b : g_gpu.swapBlocks)
             candidate |= b.load(std::memory_order_acquire) == (ptr & 0x1FFFFFFF);
@@ -943,13 +949,17 @@ uint32_t ExecutePacket(uint32_t ptr)
 
 void ExecuteBuffer(uint32_t address, uint32_t dwords)
 {
-    t_cursors.push_back({ address, address + dwords * 4 });
+    // One thread-local lookup per buffer, not per packet.
+    auto& cursors = t_cursors;
+    const size_t level = cursors.size();
+    cursors.push_back({ address, address + dwords * 4 });
     for (uint32_t done = 0; done < dwords;)
     {
-        t_cursors.back().next = address + (done + PacketLength(LoadBE32(address + done * 4))) * 4;
-        done += ExecutePacket(address + done * 4);
+        const uint32_t ptr = address + done * 4;
+        cursors[level].next = ptr + PacketLength(LoadBE32(ptr)) * 4;
+        done += ExecutePacket(ptr);
     }
-    t_cursors.pop_back();
+    cursors.pop_back();
 }
 
 // ---- Lookahead ---------------------------------------------------------------
@@ -1423,6 +1433,14 @@ GUEST_EXPORT(VdSwap)
         // r4: the front buffer's texture fetch constant (6 dwords).
         const uint32_t frontBuffer = ctx.r4.u32 ? (LoadBE32(ctx.r4.u32 + 4) & 0x1FFFF000) : 0;
         g_gpu.swapBlocks[g_gpu.swapBlockNext++ % 16].store(buffer & 0x1FFFFFFF, std::memory_order_release);
+        uint64_t filter[4] = {};
+        for (const auto& b : g_gpu.swapBlocks)
+        {
+            const uint32_t h = (b.load(std::memory_order_relaxed) >> 2) & 255;
+            filter[h >> 6] |= 1ull << (h & 63);
+        }
+        for (int i = 0; i < 4; i++)
+            g_gpu.swapFilter[i].store(filter[i], std::memory_order_release);
         g_gpu.pendingSwaps.push_back({ buffer & 0x1FFFFFFF, n, frontBuffer });
         if (g_gpu.pendingSwaps.size() > 16)
             g_gpu.pendingSwaps.pop_front();
