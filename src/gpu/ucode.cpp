@@ -174,6 +174,30 @@ Shader Parse(const uint32_t* microcodeBE, uint32_t dwords, bool pixel)
         if (ended)
         {
             shader.valid = true;
+            // Subroutines live after the end: while a call targets an instruction not parsed yet, the
+            // control flow area is read on (up to the first exec's code). Programs without calls stop
+            // at the end as before. From the FM4 port.
+            const auto unparsedCall = [&] {
+                for (const Cf& c : shader.cf)
+                    if (c.op() == CfOp::CondCall && (c.lo & 0x1FFF) >= shader.cf.size())
+                        return true;
+                return false;
+            };
+            for (triple++; unparsedCall() && triple < cfEnd && triple * 3 + 2 < dwords; triple++)
+            {
+                const uint32_t* v = &shader.words[triple * 3];
+                Cf more[2];
+                more[0].lo = v[0];
+                more[0].hi = v[1] & 0xFFFF;
+                more[1].lo = (v[1] >> 16) | (v[2] << 16);
+                more[1].hi = v[2] >> 16;
+                for (const Cf& cf : more)
+                {
+                    shader.cf.push_back(cf);
+                    if (cf.IsExec() && cf.count())
+                        cfEnd = std::min(cfEnd, cf.address());
+                }
+            }
             break;
         }
     }

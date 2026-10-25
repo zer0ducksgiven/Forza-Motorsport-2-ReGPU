@@ -316,6 +316,8 @@ struct Emitter
     bool literalFetch = false; // a fetch had to be baked into the code
     uint32_t lastStride = 0;
     uint32_t lastSrc = 0, lastSrcSwizzle = 0; // mini fetches reuse the full fetch's index
+    uint32_t lastConst = 0; // and its fetch constant (a mini's own constant field is unused)
+    bool saveFetchIndex = false; // minis read the index their full fetch kept (vfi), see ScanFetchIndex
     bool lastRound = false;
     int indent = 1;
 
@@ -573,6 +575,7 @@ struct Emitter
             }
             if (!f.isMini)
             {
+                lastConst = f.constIndex;
                 lastStride = f.stride;
                 lastSrc = f.src;
                 lastSrcSwizzle = f.srcSwizzle;
@@ -582,49 +585,62 @@ struct Emitter
                 fprintf(stderr, "vfetch: fmt %u signed %d norm %d exp %d stride %u offset %u mini %d round %d\n", f.format, f.isSigned, f.isNormalized,
                     f.expAdjust, lastStride, f.offset, f.isMini, lastRound);
             const uint32_t k = uint32_t(result.vertexFetchLayout.size());
-            const bool dynamic = !BakedVertexFetch() && k < 32 && f.src == lastSrc && f.srcSwizzle == lastSrcSwizzle;
+            // A mini fetch (vfetch_mini) reads the vertex its full fetch addressed, through the full fetch's
+            // constant and index: a mini carries only its format, offset and destination (FM4 follows a vf94
+            // table fetch with a mini whose own constant field says vf95: every car drawn damaged). From the
+            // FM4 port. FM2_NO_MINI_CONST=1 takes the mini's own field again (A/B; read at translation).
+            static const bool miniOwnConst = getenv("FM2_NO_MINI_CONST") != nullptr;
+            const uint32_t constIndex = f.isMini && !miniOwnConst ? lastConst : f.constIndex;
+            // The index register, or (ScanFetchIndex) the value the full fetch kept before overwriting it.
+            const std::string indexReg = "r[" + std::to_string(lastSrc) + "]." + "xyzw"[lastSrcSwizzle & 3];
+            const std::string indexSrc = saveFetchIndex ? "vfi" : indexReg;
+            const std::string keep = saveFetchIndex && !f.isMini ? "vfi = " + indexReg + "; " : "";
+            const bool dynamic = !BakedVertexFetch() && k < 32 && (f.isMini || (f.src == lastSrc && f.srcSwizzle == lastSrcSwizzle));
             literalFetch = literalFetch || !dynamic;
             if (layoutOnly)
             {
                 if (dynamic)
-                    result.vertexFetchLayout.push_back({ f.constIndex | (f.format << 8) | (f.isSigned ? 0x4000u : 0) | (f.isNormalized ? 0x8000u : 0) |
+                    result.vertexFetchLayout.push_back({ constIndex | (f.format << 8) | (f.isSigned ? 0x4000u : 0) | (f.isNormalized ? 0x8000u : 0) |
                             (lastRound ? 0x10000u : 0),
                         lastStride, f.offset, f.destSwizzle | ((uint32_t(f.expAdjust) & 0x3F) << 16) });
-                if (std::find(result.vertexFetchConstants.begin(), result.vertexFetchConstants.end(), f.constIndex) ==
+                if (std::find(result.vertexFetchConstants.begin(), result.vertexFetchConstants.end(), constIndex) ==
                     result.vertexFetchConstants.end())
-                    result.vertexFetchConstants.push_back(f.constIndex);
+                    result.vertexFetchConstants.push_back(constIndex);
                 return;
             }
             if (dynamic)
             {
                 // Layout from vfl[k]; only the registers stay in the code.
-                result.vertexFetchLayout.push_back({ f.constIndex | (f.format << 8) | (f.isSigned ? 0x4000u : 0) | (f.isNormalized ? 0x8000u : 0) |
+                result.vertexFetchLayout.push_back({ constIndex | (f.format << 8) | (f.isSigned ? 0x4000u : 0) | (f.isNormalized ? 0x8000u : 0) |
                         (lastRound ? 0x10000u : 0),
                     lastStride, f.offset, f.destSwizzle | ((uint32_t(f.expAdjust) & 0x3F) << 16) });
-                char call[160];
-                snprintf(call, sizeof(call), "{ float4 t = VFetchK(%u, r[%u].%c); r[%u] = VMerge(%u, r[%u], t); }", k, f.src,
-                    "xyzw"[f.srcSwizzle & 3], f.dest, k, f.dest);
-                body = call;
+                const std::string dest = "r[" + std::to_string(f.dest) + "]";
+                body = "{ " + keep + "float4 t = VFetchK(" + std::to_string(k) + ", " + indexSrc + "); " + dest + " = VMerge(" + std::to_string(k) + ", " + dest +
+                    ", t); }";
             }
             else
             {
                 char call[320];
-                snprintf(call, sizeof(call), "VFetch(%u, %s(r[%u].%c), %u, %u, %u, %s, %s) * %.9g", f.constIndex, lastRound ? "round" : "floor",
-                    lastSrc, "xyzw"[lastSrcSwizzle & 3], lastStride, f.offset, f.format, f.isSigned ? "true" : "false",
+                snprintf(call, sizeof(call), "VFetch(%u, %s(%s), %u, %u, %u, %s, %s) * %.9g", constIndex, lastRound ? "round" : "floor",
+                    indexSrc.c_str(), lastStride, f.offset, f.format, f.isSigned ? "true" : "false",
                     f.isNormalized ? "true" : "false", std::ldexp(1.0, f.expAdjust));
-                body = std::string("{ float4 t = ") + call + "; " + DestSwizzleWrite(f.dest, f.destSwizzle, "t") + "}";
+                body = std::string("{ ") + keep + "float4 t = " + call + "; " + DestSwizzleWrite(f.dest, f.destSwizzle, "t") + "}";
             }
             bool known = false;
             for (uint32_t c : result.vertexFetchConstants)
-                known = known || c == f.constIndex;
+                known = known || c == constIndex;
             if (!known)
-                result.vertexFetchConstants.push_back(f.constIndex);
+                result.vertexFetchConstants.push_back(constIndex);
         }
         else if (f.opcode == 1)
         {
             static const char comp[] = "xyzw";
             const std::string reg = "r[" + std::to_string(f.src) + "].";
-            const std::string uv = "float3(" + reg + comp[f.srcSwizzle & 3] + ", " + reg + comp[(f.srcSwizzle >> 2) & 3] + ", " + reg +
+            // A 1D fetch (dimension 0) reads x only: its texture is bound one row high (texture.cpp),
+            // sampled at that row's centre whatever the other components hold (from the FM4 port).
+            static const bool no1d = getenv("FM2_NO_1D_TEXTURES") != nullptr;
+            const std::string uv = f.dimension == 0 && !no1d ? "float3(" + reg + comp[f.srcSwizzle & 3] + ", 0.5, 0)"
+                : "float3(" + reg + comp[f.srcSwizzle & 3] + ", " + reg + comp[(f.srcSwizzle >> 2) & 3] + ", " + reg +
                 comp[(f.srcSwizzle >> 4) & 3] + ")";
             char call[320];
             // Filter override: the mag filter decides (the host samplers don't mix point and linear); 2 (base
@@ -701,8 +717,41 @@ struct Emitter
 
     // Control flow as a program-counter state machine: one block per CF
     // instruction, blocks run in order within an iteration, jumps set pc.
+    // A mini fetch reads the vertex its full fetch addressed: the hardware computes the address once,
+    // at the full fetch. A full fetch that writes its own index register (FM4's tyre morph: vfetch r0,
+    // r0, then a mini) left its minis reading the fetched value as the index. Where that happens the
+    // full fetch keeps its index in vfi for the minis after it. From the FM4 port.
+    // FM2_NO_MINI_INDEX=1 re-reads the register (A/B; read at translation).
+    void ScanFetchIndex()
+    {
+        if (pixel || getenv("FM2_NO_MINI_INDEX"))
+            return;
+        bool clobbered = false;
+        for (const Cf& cf : shader.cf)
+        {
+            if (!cf.IsExec())
+                continue;
+            for (uint32_t k = 0; k < cf.count(); k++)
+            {
+                const uint32_t index = cf.address() + k;
+                if ((index + 1) * 3 > shader.words.size() || !((cf.sequence() >> (2 * k)) & 1))
+                    continue;
+                const Fetch f = DecodeFetch(&shader.words[index * 3]);
+                if (f.opcode != 0)
+                    continue;
+                // The index component is overwritten when the destination swizzle writes it (0-3 a
+                // fetched component, 4 zero, 5 one; 6 and 7 keep the register's value).
+                if (!f.isMini)
+                    clobbered = f.dest == f.src && ((f.destSwizzle >> (3 * (f.srcSwizzle & 3))) & 7) <= 5;
+                else if (clobbered)
+                    saveFetchIndex = true;
+            }
+        }
+    }
+
     void EmitProgram()
     {
+        ScanFetchIndex();
         {
             static const bool trace = getenv("FM2_TRACE_FETCHOPS") != nullptr;
             static std::atomic<bool> exportSeen{ false };
@@ -737,9 +786,37 @@ struct Emitter
             Line("{");
             indent++;
         }
+        // The state machine gets a block only for the CF instructions a program can reach from its start:
+        // through fall-through (none after an end, an unconditional jump or a return) and jump, call and
+        // loop targets, subroutines after the end included. The rest of the CF area is padding or data
+        // the compiler left there. From the FM4 port. FM2_NO_REACHABLE_CF=1: every block up to the end,
+        // as before (read at translation).
+        std::vector<bool> reachable(shader.cf.size(), true);
+        if (!linear && !getenv("FM2_NO_REACHABLE_CF"))
+        {
+            reachable.assign(shader.cf.size(), false);
+            std::vector<size_t> pending{ 0 };
+            while (!pending.empty())
+            {
+                const size_t i = pending.back();
+                pending.pop_back();
+                if (i >= reachable.size() || reachable[i])
+                    continue;
+                reachable[i] = true;
+                const Cf& cf = shader.cf[i];
+                const CfOp op = cf.op();
+                if (op == CfOp::CondJmp || op == CfOp::CondCall || op == CfOp::LoopStart || op == CfOp::LoopEnd)
+                    pending.push_back(cf.lo & 0x1FFF);
+                const bool unconditionalJump = op == CfOp::CondJmp && ((cf.lo >> 13) & 1);
+                if (!cf.IsEnd() && op != CfOp::Return && !unconditionalJump)
+                    pending.push_back(i + 1);
+            }
+        }
         for (size_t i = 0; i < shader.cf.size(); i++)
         {
             const Cf& cf = shader.cf[i];
+            if (!reachable[i])
+                continue;
             const std::string next = cf.IsEnd() ? "0xFFFFu" : std::to_string(i + 1);
             if (!linear)
             {
@@ -894,7 +971,7 @@ struct Emitter
                 indent--;
                 Line("}");
             }
-            if (cf.IsEnd())
+            if (cf.IsEnd() && (linear || getenv("FM2_NO_REACHABLE_CF")))
                 break;
         }
         if (!linear)
@@ -924,7 +1001,11 @@ bool TranslateVertexFetchLayout(const Shader& shader, TranslatedShader& out)
         return false;
     Emitter e{ shader, shader.pixel, {}, {}, result };
     e.layoutOnly = true;
-    // The same walk as EmitProgram: control flow in order, each exec once, up to the end.
+    // The same walk as EmitProgram: control flow in order, each exec once, up to the end. (A program
+    // with subroutines runs code after the end: translated in full instead.)
+    for (const Cf& cf : shader.cf)
+        if (cf.op() == CfOp::CondCall)
+            return false;
     for (const Cf& cf : shader.cf)
     {
         if (cf.IsExec())
@@ -961,7 +1042,8 @@ TranslatedShader TranslateShader(const Shader& shader)
         h += "void GuestVS(uint vindex, out float4 opos, out float4 o[16], out float4 opts)\n{\n"
              "    float4 r[64];\n    [unroll] for (int i = 0; i < 64; i++) r[i] = 0;\n"
              "    [unroll] for (int j = 0; j < 16; j++) o[j] = 0;\n"
-             "    r[0].x = float(vindex); opos = float4(0, 0, 0, 1); opts = 0; float ps = 0; bool p = false; int a0 = 0, aL = 0; float regLod = 0;\n";
+             "    r[0].x = float(vindex); opos = float4(0, 0, 0, 1); opts = 0; float ps = 0; bool p = false; int a0 = 0, aL = 0; float regLod = 0;\n" +
+             std::string(e.saveFetchIndex ? "    float vfi = 0; // the index of the last full vertex fetch, for its mini fetches\n" : "");
         h += e.out;
         h += "}\n"
              "void GuestVS(uint vindex, out float4 opos, out float4 o[16])\n{\n"
@@ -1106,8 +1188,31 @@ TranslatedShader TranslateShader(const Shader& shader)
              "    case 5: if (!(oC[0].a != pinfo2.x)) discard; break;\n"
              "    case 6: if (!(oC[0].a >= pinfo2.x)) discard; break;\n"
              "    }\n"
+             "    oC[0] *= exp2(float(int(pinfo.w))); // colour exponent bias (RB_COLOR_INFO), after the alpha test\n"
+             "    if (pinfo.z & 8u) oC[0] = clamp(oC[0], -32.0, 32.0); // 16_16 fixed range\n"
              "    if (pinfo2.w > 0.0) oC[0].rgb = clamp(oC[0].rgb, 0.0, pinfo2.w); // 7e3 target range\n"
              "    return oC[0];\n}\n";
+    }
+    // The colour exports as separate variables, not an array (from the FM4 port): fxc declares a local
+    // array as an indexable temp, and a driver can reorder writes to one ahead of an earlier read of
+    // the same element (a predicated alpha-fade overwrote an export whose old value was still needed).
+    // Every index is a constant here. FM2_COLOR_EXPORT_ARRAY=1 keeps the array (read at translation).
+    static const bool exportArray = getenv("FM2_COLOR_EXPORT_ARRAY") != nullptr;
+    if (shader.pixel && !exportArray)
+    {
+        const std::string declArray = "float4 oC[4]; [unroll] for (int k = 0; k < 4; k++) oC[k] = 0;";
+        if (const size_t at = h.find(declArray); at != std::string::npos)
+        {
+            h.replace(at, declArray.size(), "float4 oC0 = 0, oC1 = 0, oC2 = 0, oC3 = 0;");
+            for (char k = '0'; k <= '3'; k++)
+                for (size_t p = 0; (p = h.find(std::string("oC[") + k + "]", p)) != std::string::npos;)
+                    h.replace(p, 5, std::string("oC") + k);
+            // The return keeps its form: debug edits and the motion-vector variant patch "return oC[0];"
+            // (a one-element array written once and read once has nothing to reorder).
+            const std::string ret = "    return oC0;\n}\n";
+            if (const size_t r = h.rfind(ret); r != std::string::npos)
+                h.replace(r, ret.size(), "    float4 oC[1] = { oC0 };\n    return oC[0];\n}\n");
+        }
     }
     result.hlsl = h;
     result.ok = true;

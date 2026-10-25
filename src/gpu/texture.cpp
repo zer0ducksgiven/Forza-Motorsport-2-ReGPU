@@ -7,6 +7,7 @@
 #include <algorithm>
 
 #include "gpu/regs.h"
+#include "live_switch.h"
 
 namespace
 {
@@ -233,6 +234,22 @@ TextureFetch ReadTextureFetch(uint32_t slot)
     TextureFetch f;
     for (int i = 0; i < 6; i++)
         f.dwords[i] = gpureg::Get(gpureg::FetchConstants + slot * 6 + i);
+    // A 1D texture (dimension 0: a 24-bit width in dword 2, no height) is the same memory as a 2D
+    // texture one row high, which is how it is bound (the translator samples a 1D fetch at the
+    // row's centre). Wider than a 2D texture can be, it stays 1D and is not bound (white, as before).
+    // From the FM4 port (55 1D fetches there, most of them data lookups). FM2_NO_1D_TEXTURES=1: off.
+    static LiveSwitch no1d("FM2_NO_1D_TEXTURES");
+    if (f.Type() == 2 && f.Dimension() == 0 && !no1d)
+    {
+        const uint32_t width = (f.dwords[2] & 0xFFFFFF) + 1;
+        if (width <= 8192)
+        {
+            f.dwords[2] = (f.dwords[2] & ~0x3FFFFFFu) | (width - 1);
+            f.dwords[5] = (f.dwords[5] & ~(3u << 9)) | (1u << 9);
+            if (!f.Pitch()) // one row: any pitch addresses it, but the decoder wants one
+                f.dwords[0] |= ((((width + 31) / 32) & 0x1FF) << 22);
+        }
+    }
     return f;
 }
 

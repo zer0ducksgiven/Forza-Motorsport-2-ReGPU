@@ -1125,7 +1125,7 @@ void InitDepthBlit()
     params[0].DescriptorTable.pDescriptorRanges = &range;
     params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
     params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[1].Constants.Num32BitValues = 2;
+    params[1].Constants.Num32BitValues = 5;
     params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
     D3D12_ROOT_SIGNATURE_DESC rs{};
     rs.NumParameters = 2;
@@ -1139,7 +1139,7 @@ void InitDepthBlit()
     static const char kSource[] = R"(
 Texture2D<float> depthTex : register(t0);
 Texture2D<float4> colorTex : register(t0);
-cbuffer Blit : register(b0) { float scale; uint swapRB; };
+cbuffer Blit : register(b0) { float scale; uint swapRB; uint clampDest; float destMin; float destMax; };
 float4 vs(uint id : SV_VertexID) : SV_Position
 {
     float2 uv = float2((id << 1) & 2, id & 2);
@@ -1152,6 +1152,7 @@ float ps(float4 pos : SV_Position) : SV_Target
 float4 psColor(float4 pos : SV_Position) : SV_Target
 {
     float4 c = colorTex.Load(int3(int2(pos.xy), 0)) * scale;
+    if (clampDest) c = clamp(c, destMin, destMax);
     return swapRB ? c.bgra : c;
 }
 )";
@@ -1187,7 +1188,7 @@ float4 psColor(float4 pos : SV_Position) : SV_Target
         const std::string msSource = "#define SAMPLES " + std::to_string(g_msaa) + R"(
 Texture2DMS<float, SAMPLES> depthMs : register(t0);
 Texture2DMS<float4, SAMPLES> colorMs : register(t0);
-cbuffer Blit : register(b0) { float scale; uint swapRB; };
+cbuffer Blit : register(b0) { float scale; uint swapRB; uint clampDest; float destMin; float destMax; };
 float4 vs(uint id : SV_VertexID) : SV_Position
 {
     float2 uv = float2((id << 1) & 2, id & 2);
@@ -1203,6 +1204,7 @@ float4 psColor(float4 pos : SV_Position) : SV_Target
     [unroll] for (int i = 0; i < SAMPLES; i++)
         c += colorMs.Load(int2(pos.xy), i);
     c = c / SAMPLES * scale;
+    if (clampDest) c = clamp(c, destMin, destMax);
     return swapRB ? c.bgra : c;
 }
 )";
@@ -4006,6 +4008,13 @@ bool BuildIndexList(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize, std:
             }
             g[i] = raw + offset;
         }
+        // A draw whose count runs past the index buffer (DMA size) reads zero indices there, as the
+        // indexed path's buffer view does: the vector is reused between draws, so those entries kept
+        // an earlier draw's indices (stray triangles). From the FM4 port. FM2_STALE_INDICES=1: as before (A/B).
+        static LiveSwitch staleIndices("FM2_STALE_INDICES");
+        if (count > available && !staleIndices)
+            for (uint32_t i = available; i < count; i++)
+                g[i] = offset;
     }
     else if (source == 2) // auto
     {
@@ -4270,7 +4279,10 @@ void EnsureResolved(ResolvedTexture& dest, uint32_t width, uint32_t height, uint
     }
 }
 
-void BlitResolve(bool depth, uint32_t base, uint32_t width, uint32_t height, DXGI_FORMAT format, const D3D12_RECT& rect, float scale, bool swapRB = false)
+// destRange: the destination's fixed-point range after the scale (the 16-bit integer range for the
+// 16-bit fixed formats); null none.
+void BlitResolve(bool depth, uint32_t base, uint32_t width, uint32_t height, DXGI_FORMAT format, const D3D12_RECT& rect, float scale, bool swapRB = false,
+    const float* destRange = nullptr)
 {
     ResolvedTexture& dest = g_r.resolved[base];
     const uint32_t hostWidth = uint32_t(HostX(LONG(width))), hostHeight = uint32_t(HostY(LONG(height)));
@@ -4329,8 +4341,9 @@ void BlitResolve(bool depth, uint32_t base, uint32_t width, uint32_t height, DXG
     C().list->SetGraphicsRootSignature(g_r.blitRootSignature.Get());
     C().list->SetPipelineState(pso);
     C().list->SetGraphicsRootDescriptorTable(0, Gpu(g_r.srvHeap.Get(), slot, g_r.srvStride));
-    const uint32_t blitConstants[2] = { std::bit_cast<uint32_t>(scale), uint32_t(swapRB) };
-    C().list->SetGraphicsRoot32BitConstants(1, 2, blitConstants, 0);
+    const uint32_t blitConstants[5] = { std::bit_cast<uint32_t>(scale), uint32_t(swapRB), uint32_t(destRange != nullptr),
+        std::bit_cast<uint32_t>(destRange ? destRange[0] : 0.0f), std::bit_cast<uint32_t>(destRange ? destRange[1] : 0.0f) };
+    C().list->SetGraphicsRoot32BitConstants(1, 5, blitConstants, 0);
     // Width and height stay in game pixels (the size the title knows); the texture and the
     // rectangle are scaled.
     const D3D12_VIEWPORT vp{ 0, 0, float(hostWidth), float(hostHeight), 0, 1 };
@@ -5160,7 +5173,17 @@ void Resolve()
             : (destFormat >= 3 && destFormat <= 5) || destFormat == 10 || destFormat == 15 || destFormat == 24 ? 2
             : destFormat == 26 || destFormat == 37 ? 8
             : destFormat == 38 ? 16 : 4;
-        BlitResolve(depth, base, width, height, format, rect, depth ? 1.0f : std::ldexp(1.0f, bias));
+        // 16-bit fixed destinations (k_16, k_16_16, k_16_16_16_16: formats 24-26) hold integers: the copy converts
+        // each value (after the exponent bias) to a 16-bit integer and saturates, signed or unsigned by the copy's
+        // number format (RB_COPY_DEST_INFO bits 13-15: 1 snorm, 3 sint signed). Our texture keeps the value as a
+        // float in the same units, so it is held to that range here (from the FM4 port).
+        // FM2_NO_FIXED16_RESOLVE_CLAMP=1 leaves them unclamped (A/B).
+        static LiveSwitch noFixed16Clamp("FM2_NO_FIXED16_RESOLVE_CLAMP");
+        const uint32_t numberFormat = (info >> 13) & 7;
+        static constexpr float kSigned16[2] = { -32768.0f, 32767.0f }, kUnsigned16[2] = { 0.0f, 65535.0f };
+        const float* destRange = !depth && !noFixed16Clamp && destFormat >= 24 && destFormat <= 26
+            ? (numberFormat == 1 || numberFormat == 3 ? kSigned16 : kUnsigned16) : nullptr;
+        BlitResolve(depth, base, width, height, format, rect, depth ? 1.0f : std::ldexp(1.0f, bias), false, destRange);
         // Temporal upscaling: each tile of the main view keeps its depth before it is cleared.
         if (g_temporal && g_scenePhase && !depth && width >= kWidth && rect.left == 0 && rect.right >= LONG(kWidth))
             CopySceneDepth(rect);
@@ -7246,6 +7269,18 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
     static const bool depthAlphaTest = getenv("FM2_NO_DEPTH_ALPHATEST") == nullptr;
     const bool alphaTestHere = edramMode != 5 || (depthAlphaTest && ps.info.usedTextureSlots != 0);
     pc->info[0] = (colorControl >> 3) & 1 && alphaTestHere ? (colorControl & 7) : 7;
+    // Colour exponent bias (RB_COLOR_INFO bits 20-25, signed): the hardware scales the colour output by
+    // 2^bias before it is stored and blended, in every format; the 16_16 and 16_16_16_16 targets
+    // (formats 4, 5) hold -32..32 (pinfo.z bit 3). A title drawing a 16_16 shadow map with bias 5,
+    // resolved with copy bias 10 and fetched with exponent -15, got every value 32x too small (from
+    // the FM4 port). FM2_NO_COLOR_EXP_BIAS=1: unscaled (A/B).
+    {
+        static LiveSwitch noColorExpBias("FM2_NO_COLOR_EXP_BIAS");
+        const uint32_t colorInfo = gpureg::Get(RB_COLOR_INFO);
+        pc->info[3] = noColorExpBias ? 0u : uint32_t(int32_t(colorInfo << 6) >> 26);
+        const uint32_t format = (colorInfo >> 16) & 0xF;
+        pc->info[2] = !noColorExpBias && (format == 4 || format == 5) ? 8u : 0u;
+    }
     pc->info2[0] = RegFloat(RB_ALPHA_REF);
     pc->info2[1] = 1.0f / ScaleX();
     pc->info2[2] = 1.0f / ScaleY();
