@@ -15,6 +15,7 @@ std::atomic<int64_t> g_inputEpochNs{ 0 };
 
 #include "gpu/renderer.h"
 #include "input/wheel.h"
+#include "kernel/sessions.h"
 #include "kernel/wheel_ff.h"
 #include "debug.h"
 #include "kernel/imports.h"
@@ -219,6 +220,11 @@ void LogXMsg(const char* call, uint32_t app, uint32_t message, uint32_t buffer, 
     Log("live: %s app %X message %08X, %u bytes at %08X (lr %08X): %s", call, app, message, size, buffer, lr,
         HexBytes(buffer, size).c_str());
 }
+}
+
+uint64_t OnlineLocalXuid(uint32_t userIndex)
+{
+    return userIndex == 0 ? Xuid() : 0;
 }
 
 // Users ------------------------------------------------------------------------
@@ -1270,23 +1276,45 @@ GUEST_EXPORT(XMsgInProcessCall)
     }
     Return(ctx, 0);
 }
-GUEST_EXPORT(XMsgStartIORequest)
+namespace
 {
-    // (app, message, overlapped, buffer, size)
-    if (LiveTrace())
-        LogXMsg("XMsgStartIORequest", ctx.r3.u32, ctx.r4.u32, ctx.r6.u32, ctx.r7.u32, ctx.lr);
-    FinishUi(ctx, ctx.r5.u32, X_ERROR_FUNCTION_FAILED);
-}
-GUEST_EXPORT(XMsgStartIORequestEx)
+// An XMsg request: the XGI app's (0xFB) session and stats messages under FM2_LIVE
+// (kernel/sessions.cpp); everything else fails as before.
+void XMsgRequest(PPCContext& ctx, const char* call)
 {
-    // (app, message, overlapped, buffer, size, ...)
-    if (LiveTrace())
-        LogXMsg("XMsgStartIORequestEx", ctx.r3.u32, ctx.r4.u32, ctx.r6.u32, ctx.r7.u32, ctx.lr);
-    FinishUi(ctx, ctx.r5.u32, X_ERROR_FUNCTION_FAILED);
+    const uint32_t app = ctx.r3.u32, message = ctx.r4.u32, overlapped = ctx.r5.u32, buffer = ctx.r6.u32, size = ctx.r7.u32;
+    if (!LiveTrace())
+    {
+        FinishUi(ctx, overlapped, X_ERROR_FUNCTION_FAILED);
+        return;
+    }
+    LogXMsg(call, app, message, buffer, size, ctx.lr);
+    uint32_t result = X_ERROR_FUNCTION_FAILED;
+    if (app == 0xFB && OnlineXgiMessage(message, buffer, size, result))
+    {
+        FinishUi(ctx, overlapped, result);
+        return;
+    }
+    FinishUi(ctx, overlapped, X_ERROR_FUNCTION_FAILED);
 }
+}
+// (app, message, overlapped, buffer, size)
+GUEST_EXPORT(XMsgStartIORequest) { XMsgRequest(ctx, "XMsgStartIORequest"); }
+GUEST_EXPORT(XMsgStartIORequestEx) { XMsgRequest(ctx, "XMsgStartIORequestEx"); }
 GUEST_EXPORT(XMsgCancelIORequest) { Return(ctx, X_ERROR_SUCCESS); }
-GUEST_EXPORT(XamSessionCreateHandle) { StoreIfNonNull(ctx.r3.u32, CreateHandle(std::make_shared<EnumeratorObject>())); Return(ctx, X_ERROR_SUCCESS); }
-GUEST_EXPORT(XamSessionRefObjByHandle) { StoreIfNonNull(ctx.r4.u32, 0); Return(ctx, X_ERROR_FUNCTION_FAILED); }
+GUEST_EXPORT(XamSessionCreateHandle)
+{
+    // (handle*)
+    StoreIfNonNull(ctx.r3.u32, LiveTrace() ? OnlineSessionCreateHandle() : CreateHandle(std::make_shared<EnumeratorObject>()));
+    Return(ctx, X_ERROR_SUCCESS);
+}
+GUEST_EXPORT(XamSessionRefObjByHandle)
+{
+    // (handle, X_KSESSION**)
+    const uint32_t obj = LiveTrace() ? OnlineSessionObject(ctx.r3.u32) : 0;
+    StoreIfNonNull(ctx.r4.u32, obj);
+    Return(ctx, obj ? X_ERROR_SUCCESS : X_ERROR_FUNCTION_FAILED);
+}
 GUEST_EXPORT(XamVoiceCreate) { Return(ctx, X_ERROR_DEVICE_NOT_CONNECTED); }
 GUEST_EXPORT(XamVoiceClose) { Return(ctx, 0); }
 GUEST_EXPORT(XamVoiceHeadsetPresent) { Return(ctx, 0); }
@@ -1314,7 +1342,7 @@ GUEST_EXPORT(NetDll_WSAStartup) { Return(ctx, 0); }
 GUEST_EXPORT(NetDll_WSACleanup) { Return(ctx, 0); }
 GUEST_EXPORT(NetDll_WSAGetLastError) { Return(ctx, 10050); } // WSAENETDOWN
 // FM2_LIVE: the link is up and online (XNET_ETHERNET_LINK_ACTIVE | 100 Mbps | full duplex), with
-// an address (Ethernet, static, gateway, DNS, online); the XNADDR itself is left zero for now.
+// an address (Ethernet, static, gateway, DNS, online): this PC (kernel/sessions.cpp).
 GUEST_EXPORT(NetDll_XNetGetEthernetLinkStatus) { Return(ctx, LiveTrace() ? 0x1 | 0x2 | 0x8 : 0); }
 GUEST_EXPORT(NetDll_XNetGetTitleXnAddr)
 {
@@ -1324,7 +1352,7 @@ GUEST_EXPORT(NetDll_XNetGetTitleXnAddr)
         Return(ctx, 1); // XNET_GET_XNADDR_NONE
         return;
     }
-    memset(GuestPtr(ctx.r4.u32), 0, 0x24);
+    OnlineSelfXnAddr(ctx.r4.u32);
     Return(ctx, 0x2 | 0x4 | 0x20 | 0x40 | 0x80);
 }
 GUEST_EXPORT(NetDll_XNetGetConnectStatus) { Return(ctx, LiveTrace() ? 2 : 3); } // connected / lost
@@ -1340,6 +1368,15 @@ GUEST_EXPORT(NetDll_socket)
     Return(ctx, 0xFFFFFFFF);
 }
 GUEST_EXPORT(NetDll_closesocket) { Return(ctx, 0); }
+GUEST_EXPORT(NetDll_XNetCreateKey)
+{
+    // (caller, XNKID*, XNKEY*): a random system link key pair (an id with the top byte 0)
+    for (uint32_t i = 0; i < 8; i++)
+        *GuestPtr<uint8_t>(ctx.r4.u32 + i) = i == 0 ? 0 : uint8_t(rand());
+    for (uint32_t i = 0; i < 16; i++)
+        *GuestPtr<uint8_t>(ctx.r5.u32 + i) = uint8_t(rand());
+    Return(ctx, 0);
+}
 GUEST_EXPORT(NetDll_XNetRandom)
 {
     // (caller, buffer, length)
