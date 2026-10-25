@@ -728,11 +728,13 @@ thread_local uint64_t g_bindingsFrame = ~0ull, g_bindingsEpoch = ~0ull;
 // The frame to trace (draws and resolves logged, the image and resolves written out):
 // FM2_TRACE_DRAWS=<frame>, or the one after F12 is pressed in the game window.
 std::atomic<uint64_t> g_hotkeyFrame{ 0 };
+// (Read once at startup: a function-local static checks its initialisation guard on every call, and
+// RendererTracing asks several times a draw.)
+const uint64_t g_traceDrawsEnv = getenv("FM2_TRACE_DRAWS") ? strtoull(getenv("FM2_TRACE_DRAWS"), nullptr, 10) : 0;
 uint64_t TraceFrame()
 {
-    static const uint64_t env = getenv("FM2_TRACE_DRAWS") ? strtoull(getenv("FM2_TRACE_DRAWS"), nullptr, 10) : 0;
     const uint64_t hot = g_hotkeyFrame.load(std::memory_order_relaxed);
-    return hot ? hot : env;
+    return hot ? hot : g_traceDrawsEnv;
 }
 
 // Why GetTexture last found nothing to bind (the draw then samples the white fallback): shown in
