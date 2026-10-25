@@ -27,6 +27,7 @@ struct Settings
     uint32_t wheelRotation = 0;
     uint32_t language = 1;               // the console language the game sees (XGetLanguage: 1 English, 3 German, ...)
     uint32_t msaa = 1;                   // anti-aliasing samples per pixel: 1 (off), 2, 4 or 8
+    uint32_t anisotropy = 16;            // anisotropic filtering of surface textures: 0 (off: trilinear), 2, 4, 8 or 16
     // Upscaling: the 3D scene renders smaller and is upscaled before post-processing and
     // the HUD, which stay at full resolution.
     enum class Upscaler : uint32_t { Off, Fsr1, Fsr3, Dlss };

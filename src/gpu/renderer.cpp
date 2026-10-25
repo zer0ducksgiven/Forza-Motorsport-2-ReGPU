@@ -1208,12 +1208,14 @@ void Init()
         // Wrapping linear filtering (surface textures: road, ground) is anisotropic: plain
         // trilinear picks blurred levels at grazing angles (blotchy asphalt). Not the clamped
         // sampler: it also reads shadow maps and other render targets, where averaging depth
-        // over a long footprint breaks the shadows (black patches, glitchy car shadows).
+        // over a long footprint breaks the shadows (black patches, glitchy car shadows). The
+        // level is the player's setting (settings.ini anisotropy, 16 by default; 0 is trilinear).
         static LiveSwitch noAniso("FM2_NO_ANISO"); // A/B
-        if (filters[i] == D3D12_FILTER_MIN_MAG_MIP_LINEAR && modes[i] == D3D12_TEXTURE_ADDRESS_MODE_WRAP && !noAniso)
+        const uint32_t anisotropy = GetSettings().anisotropy;
+        if (filters[i] == D3D12_FILTER_MIN_MAG_MIP_LINEAR && modes[i] == D3D12_TEXTURE_ADDRESS_MODE_WRAP && !noAniso && anisotropy >= 2)
         {
             samplers[i].Filter = D3D12_FILTER_ANISOTROPIC;
-            samplers[i].MaxAnisotropy = 16;
+            samplers[i].MaxAnisotropy = anisotropy;
         }
         samplers[i].AddressU = samplers[i].AddressV = samplers[i].AddressW = modes[i];
         samplers[i].MaxLOD = D3D12_FLOAT32_MAX;

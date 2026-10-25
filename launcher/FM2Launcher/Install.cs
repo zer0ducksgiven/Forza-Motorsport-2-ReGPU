@@ -48,6 +48,7 @@ public sealed class GameSettings
     public bool Vsync { get; set; } = true;
     public int MaxFps { get; set; } = 60;
     public int Msaa { get; set; } = 1;
+    public int Anisotropy { get; set; } = 16;
     public bool Enhance { get; set; }
     public bool SkipIntro { get; set; }
     public bool LowPerformance { get; set; }
@@ -57,7 +58,7 @@ public sealed class GameSettings
     public int WheelRotation { get; set; }
     public int Language { get; set; } = 1;
 
-    static readonly string[] Known = ["profile", "resolution", "aspect", "fullscreen", "vsync", "max_fps", "msaa", "enhance", "skip_intro", "low_performance", "wheel_strength", "wheel_spring", "wheel_reverse", "wheel_rotation", "language"];
+    static readonly string[] Known = ["profile", "resolution", "aspect", "fullscreen", "vsync", "max_fps", "msaa", "anisotropy", "enhance", "skip_intro", "low_performance", "wheel_strength", "wheel_spring", "wheel_reverse", "wheel_rotation", "language"];
 
     public static GameSettings Load()
     {
@@ -72,6 +73,7 @@ public sealed class GameSettings
                 case "vsync": s.Vsync = v == "1"; break;
                 case "max_fps": s.MaxFps = int.TryParse(v, out var f) ? f : 60; break;
                 case "msaa": s.Msaa = int.TryParse(v, out var m) ? m : 1; break;
+                case "anisotropy": s.Anisotropy = int.TryParse(v, out var an) ? an : 16; break;
                 case "enhance": s.Enhance = v == "1"; break;
                 case "skip_intro": s.SkipIntro = v == "1"; break;
                 case "low_performance": s.LowPerformance = v == "1"; break;
@@ -91,7 +93,7 @@ public sealed class GameSettings
         var sb = new StringBuilder("# Forza Motorsport 2 (fm2) settings; the launcher edits this file.\n");
         sb.Append($"profile={(profile.Length > 0 ? profile : "Player")}\n");
         sb.Append($"resolution={Resolution}\naspect={Aspect}\nfullscreen={B(Fullscreen)}\nvsync={B(Vsync)}\n");
-        sb.Append($"max_fps={Math.Clamp(MaxFps, 30, 360)}\nmsaa={Msaa}\nenhance={B(Enhance)}\nskip_intro={B(SkipIntro)}\nlow_performance={B(LowPerformance)}\nlanguage={Language}\n");
+        sb.Append($"max_fps={Math.Clamp(MaxFps, 30, 360)}\nmsaa={Msaa}\nanisotropy={Anisotropy}\nenhance={B(Enhance)}\nskip_intro={B(SkipIntro)}\nlow_performance={B(LowPerformance)}\nlanguage={Language}\n");
         sb.Append($"wheel_strength={Math.Clamp(WheelStrength, 0, 100)}\nwheel_spring={Math.Clamp(WheelSpring, 0, 100)}\nwheel_reverse={B(WheelReverse)}\nwheel_rotation={Math.Clamp(WheelRotation, 0, 3600)}\n");
         foreach (var (k, v) in keep) sb.Append($"{k}={v}\n");
         Directory.CreateDirectory(Paths.User);
@@ -140,6 +142,7 @@ public static class Options
     public static readonly int[] Fps = [30, 60, 120, 144, 165, 240, 360];
     public static readonly (string Value, string Name)[] Aspects = [("auto", "Auto (match resolution)"), ("16:9", "16:9"), ("21:9", "21:9 (experimental)"), ("32:9", "32:9 (experimental)")];
     public static readonly (int Value, string Name)[] Msaa = [(1, "Off"), (2, "2x MSAA"), (4, "4x MSAA"), (8, "8x MSAA")];
+    public static readonly (int Value, string Name)[] Anisotropy = [(0, "Off (trilinear)"), (2, "2x"), (4, "4x"), (8, "8x"), (16, "16x")];
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     struct DEVMODE

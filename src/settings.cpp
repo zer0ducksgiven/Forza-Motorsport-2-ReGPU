@@ -82,6 +82,8 @@ void Load()
             g_settings.wheelRotation = uint32_t(atoi(value.c_str()));
         else if (key == "msaa")
             g_settings.msaa = uint32_t(atoi(value.c_str()));
+        else if (key == "anisotropy")
+            g_settings.anisotropy = uint32_t(atoi(value.c_str()));
         else if (key == "upscaler")
             g_settings.upscaler = ParseUpscaler(value);
         else if (key == "upscale_quality")
@@ -138,6 +140,12 @@ void Load()
     if (const char* v = getenv("FM2_MSAA"))
         g_settings.msaa = uint32_t(atoi(v));
     g_settings.msaa = g_settings.msaa >= 8 ? 8 : g_settings.msaa >= 4 ? 4 : g_settings.msaa >= 2 ? 2 : 1;
+    if (const char* v = getenv("FM2_ANISOTROPY"))
+        g_settings.anisotropy = uint32_t(atoi(v));
+    {
+        const uint32_t a = g_settings.anisotropy;
+        g_settings.anisotropy = a >= 16 ? 16 : a >= 8 ? 8 : a >= 4 ? 4 : a >= 2 ? 2 : 0;
+    }
     g_settings.width = std::clamp<uint32_t>(g_settings.width, 640, 15360);
     g_settings.height = std::clamp<uint32_t>(g_settings.height, 360, 8640);
     g_settings.maxFps = std::clamp<uint32_t>(g_settings.maxFps ? g_settings.maxFps : 60, 30, 360);
@@ -203,6 +211,7 @@ void SaveSettings()
     out << "wheel_rotation=" << s.wheelRotation << "\n";
     out << "language=" << s.language << "\n";
     out << "msaa=" << s.msaa << "\n";
+    out << "anisotropy=" << s.anisotropy << "\n";
     out << "upscaler=" << UpscalerName(s.upscaler) << "\n";
     out << "upscale_quality=" << s.quality << "\n";
     out << "sharpness=" << s.sharpness << "\n";
