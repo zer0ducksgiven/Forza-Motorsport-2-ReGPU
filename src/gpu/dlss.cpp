@@ -24,6 +24,15 @@ struct Dlss
 
 // Made up for this port (NGX wants a GUID-shaped project id).
 const char kProjectId[] = "6b3a9c2e-4f1d-4e8a-9b7c-2d5f8e1a3c47";
+
+// NGX's own messages (why DLSS isn't available, for one) into play.log under FM2_NGX_LOG=1
+// (FM2_NGX_LOG=2: verbose).
+void NVSDK_CONV NgxLog(const char* message, NVSDK_NGX_Logging_Level, NVSDK_NGX_Feature)
+{
+    static int lines = 0;
+    if (lines++ < 200)
+        Log("ngx: %s", message);
+}
 }
 
 bool DlssInit(ID3D12Device* device)
@@ -34,7 +43,14 @@ bool DlssInit(ID3D12Device* device)
     g_dlss.device = device;
     wchar_t path[MAX_PATH] = L".";
     GetTempPathW(MAX_PATH, path);
-    NVSDK_NGX_Result r = NVSDK_NGX_D3D12_Init_with_ProjectID(kProjectId, NVSDK_NGX_ENGINE_TYPE_CUSTOM, "1.0", path, device);
+    NVSDK_NGX_FeatureCommonInfo info{};
+    const char* ngxLog = getenv("FM2_NGX_LOG");
+    if (ngxLog)
+    {
+        info.LoggingInfo.LoggingCallback = NgxLog;
+        info.LoggingInfo.MinimumLoggingLevel = atoi(ngxLog) >= 2 ? NVSDK_NGX_LOGGING_LEVEL_VERBOSE : NVSDK_NGX_LOGGING_LEVEL_ON;
+    }
+    NVSDK_NGX_Result r = NVSDK_NGX_D3D12_Init_with_ProjectID(kProjectId, NVSDK_NGX_ENGINE_TYPE_CUSTOM, "1.0", path, device, ngxLog ? &info : nullptr);
     if (NVSDK_NGX_FAILED(r))
     {
         Log("dlss: NGX init failed (%08X): not an NVIDIA RTX GPU or driver, or nvngx_dlss.dll missing", unsigned(r));
@@ -49,7 +65,10 @@ bool DlssInit(ID3D12Device* device)
     }
     if (!supported)
     {
-        Log("dlss: not available on this GPU%s", needsUpdate ? " (needs a newer driver)" : "");
+        int initResult = 0;
+        if (g_dlss.params)
+            NVSDK_NGX_Parameter_GetI(g_dlss.params, NVSDK_NGX_Parameter_SuperSampling_FeatureInitResult, &initResult);
+        Log("dlss: not available on this GPU%s (feature init result %08X)", needsUpdate ? " (needs a newer driver)" : "", unsigned(initResult));
         return false;
     }
     g_dlss.available = true;

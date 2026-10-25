@@ -1166,6 +1166,10 @@ void InitPipelineLibrary(ID3D12Device* device);
 void Init()
 {
     g_r.device = RenderDevice();
+    // NGX at device creation: initialised later, mid-frame, DLSS reports itself unavailable
+    // (feature init result FAIL_PlatformError), though the same call works here.
+    if (GetSettings().upscaler == Settings::Upscaler::Dlss)
+        DlssInit(g_r.device);
     g_r.queue = RenderQueue();
     auto* d = g_r.device;
 

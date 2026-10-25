@@ -140,6 +140,10 @@ void Load()
     if (const char* v = getenv("FM2_MSAA"))
         g_settings.msaa = uint32_t(atoi(v));
     g_settings.msaa = g_settings.msaa >= 8 ? 8 : g_settings.msaa >= 4 ? 4 : g_settings.msaa >= 2 ? 2 : 1;
+    // DLSS and FSR 3 anti-alias the image themselves; with MSAA as well the device is removed at
+    // the first scene resolve.
+    if (g_settings.upscaler == Settings::Upscaler::Dlss || g_settings.upscaler == Settings::Upscaler::Fsr3)
+        g_settings.msaa = 1;
     if (const char* v = getenv("FM2_ANISOTROPY"))
         g_settings.anisotropy = uint32_t(atoi(v));
     {
