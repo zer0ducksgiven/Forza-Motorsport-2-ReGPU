@@ -105,9 +105,8 @@ public sealed class GameSettings
         sb.Append($"wheel_strength={Math.Clamp(WheelStrength, 0, 100)}\nwheel_spring={Math.Clamp(WheelSpring, 0, 100)}\nwheel_reverse={B(WheelReverse)}\nwheel_rotation={Math.Clamp(WheelRotation, 0, 3600)}\n");
         var scale = Math.Clamp(RenderScale, 50, 100);
         var sharp = Math.Clamp(Sharpening, 0, 100);
-        // FSR 3 and DLSS are set by hand for testing; the launcher keeps them.
-        var current = Read().LastOrDefault(kv => kv.Key == "upscaler").Value;
-        var upscaler = current is "fsr3" or "dlss" ? current : scale < 100 || sharp > 0 ? "fsr1" : "off";
+        // FSR 3 and DLSS aren't offered (the game ignores them unless FM2_TEMPORAL_UPSCALERS=1).
+        var upscaler = scale < 100 || sharp > 0 ? "fsr1" : "off";
         sb.Append($"upscaler={upscaler}\nrender_scale={scale}\nsharpness={(sharp / 100.0).ToString(System.Globalization.CultureInfo.InvariantCulture)}\n");
         foreach (var (k, v) in keep) sb.Append($"{k}={v}\n");
         Directory.CreateDirectory(Paths.User);

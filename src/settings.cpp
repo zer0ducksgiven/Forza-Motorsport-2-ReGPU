@@ -21,9 +21,11 @@ Settings::Upscaler ParseUpscaler(const std::string& v)
 {
     if (v == "fsr1")
         return Settings::Upscaler::Fsr1;
-    if (v == "fsr3")
+    // DLSS and FSR 3 aren't finished (0.8.0): off unless FM2_TEMPORAL_UPSCALERS=1, for testing.
+    static const bool temporal = getenv("FM2_TEMPORAL_UPSCALERS") != nullptr;
+    if (v == "fsr3" && temporal)
         return Settings::Upscaler::Fsr3;
-    if (v == "dlss")
+    if (v == "dlss" && temporal)
         return Settings::Upscaler::Dlss;
     return Settings::Upscaler::Off;
 }
