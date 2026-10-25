@@ -483,12 +483,41 @@ void AddKeyboard(PadState& s)
         s.ry = Key('K') ? -32767 : 32767;
 }
 
+DWORD PadSlot(uint32_t user)
+{
+    // Players are the connected pads in slot order: player 1 is the first connected pad whatever its
+    // XInput slot. Only player 1 is signed in, and a pad left in slot 2 (it connected while another
+    // pad or a virtual one held slot 1) otherwise played signed out: no profile, no saves. The slots
+    // are looked up again every second (polling empty slots is slow).
+    static std::mutex slotMutex;
+    static int slotOf[XUSER_MAX_COUNT] = { 0, 1, 2, 3 };
+    static Clock::time_point slotsChecked{};
+    {
+        std::lock_guard lock(slotMutex);
+        const auto now = Clock::now();
+        if (now - slotsChecked > std::chrono::seconds(1))
+        {
+            slotsChecked = now;
+            int n = 0;
+            XINPUT_STATE probe{};
+            for (DWORD slot = 0; slot < XUSER_MAX_COUNT; slot++)
+                if (XInputGetState(slot, &probe) == ERROR_SUCCESS)
+                    slotOf[n++] = int(slot);
+            for (DWORD slot = 0; slot < XUSER_MAX_COUNT && n < int(XUSER_MAX_COUNT); slot++)
+                if (std::find(slotOf, slotOf + n, int(slot)) == slotOf + n)
+                    slotOf[n++] = int(slot);
+        }
+    }
+    std::lock_guard lock(slotMutex);
+    return DWORD(slotOf[user < XUSER_MAX_COUNT ? user : 0]);
+}
+
 // Returns false if nothing is connected for this user.
 bool ReadPad(uint32_t user, PadState& s)
 {
     bool connected = false;
     XINPUT_STATE x{};
-    if (user < XUSER_MAX_COUNT && XInputGetState(user, &x) == ERROR_SUCCESS)
+    if (user < XUSER_MAX_COUNT && XInputGetState(PadSlot(user), &x) == ERROR_SUCCESS)
     {
         connected = true;
         s.buttons = x.Gamepad.wButtons; // same bit layout as the 360
@@ -828,7 +857,7 @@ GUEST_EXPORT(XamInputSetState)
         XINPUT_VIBRATION v{};
         v.wLeftMotorSpeed = __builtin_bswap16(*GuestPtr<uint16_t>(ctx.r5.u32));
         v.wRightMotorSpeed = __builtin_bswap16(*GuestPtr<uint16_t>(ctx.r5.u32 + 2));
-        XInputSetState(user, &v); // ignored when no pad is connected
+        XInputSetState(PadSlot(user), &v); // ignored when no pad is connected
     }
     Return(ctx, X_ERROR_SUCCESS);
 }
