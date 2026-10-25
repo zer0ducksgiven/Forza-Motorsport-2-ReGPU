@@ -241,8 +241,12 @@ constexpr UINT kFrames = 3;
 // The per-frame upload ring. Without guest memory mapped for the GPU (drivers without
 // ID3D12Device13, e.g. older Windows 10 builds) every vertex buffer is copied into it: the
 // menus alone then need well over 64 MB a frame, and draws past the end were dropped (black
-// bands and missing letters). FM2_RING_MB overrides.
+// bands and missing letters). FM2_RING_MB overrides. A frame that runs out asks for a bigger
+// ring (twice the size, up to kRingMax) and the next frame of that slot gets it, as ReGPU does:
+// one frame drops a few draws instead of every busy frame dropping them.
 UINT64 kRingSize = 64ull << 20;
+constexpr UINT64 kRingMax = 2048ull << 20;
+std::atomic<UINT64> g_ringWant{ 0 };
 UINT64 g_ringPeak = 0;
 constexpr UINT kDescriptorsPerFrame = 8192; // per frame: ring + guest memory views, then resolve-blit views
 constexpr UINT kBindless = 1u << 16;      // permanent texture descriptors (0 null 2D, 1 null cube)
@@ -353,6 +357,7 @@ struct FrameResources
     ComPtr<ID3D12Resource> ring;
     uint8_t* ringCpu = nullptr;
     std::atomic<UINT64> ringUsed{ 0 }; // draw workers allocate concurrently
+    UINT64 ringSize = 0; // this slot's ring (grows, see RingAlloc)
     // Guest ranges already uploaded this frame: (address << 32 | bytes) -> (offset, sample hash).
     std::unordered_map<uint64_t, std::pair<UINT64, uint64_t>> uploads;
     UINT descriptorBase = 0;
@@ -1360,6 +1365,7 @@ void Init()
         Check(d->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&f.allocator)), "CreateCommandAllocator");
         f.ring = CreateBuffer(kRingSize, D3D12_HEAP_TYPE_UPLOAD, D3D12_RESOURCE_STATE_GENERIC_READ);
         f.ring->Map(0, nullptr, reinterpret_cast<void**>(&f.ringCpu));
+        f.ringSize = kRingSize;
         f.descriptorBase = i * kDescriptorsPerFrame;
     }
     Check(d->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, g_r.frames[0].allocator.Get(), nullptr, IID_PPV_ARGS(&g_r.realList)),
@@ -1728,8 +1734,16 @@ void BeginFrameIfNeeded()
     if (const UINT64 used = f.ringUsed.load(); used > g_ringPeak)
     {
         g_ringPeak = used;
-        if (used > kRingSize / 2)
-            Log("renderer: upload ring peak %llu MB of %llu", (unsigned long long)(used >> 20), (unsigned long long)(kRingSize >> 20));
+        if (used > f.ringSize / 2)
+            Log("renderer: upload ring peak %llu MB of %llu", (unsigned long long)(used >> 20), (unsigned long long)(f.ringSize >> 20));
+    }
+    if (const UINT64 want = g_ringWant.load(); want > f.ringSize)
+    {
+        f.garbage.push_back(f.ring); // the old ring may still be referenced by views until this frame's end
+        f.ring = CreateBuffer(want, D3D12_HEAP_TYPE_UPLOAD, D3D12_RESOURCE_STATE_GENERIC_READ);
+        f.ring->Map(0, nullptr, reinterpret_cast<void**>(&f.ringCpu));
+        f.ringSize = want;
+        Log("renderer: upload ring grown to %llu MB", (unsigned long long)(want >> 20));
     }
     f.ringUsed = 0;
     f.uploads.clear();
@@ -1739,7 +1753,7 @@ void BeginFrameIfNeeded()
         raw.Format = DXGI_FORMAT_R32_TYPELESS;
         raw.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
         raw.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        raw.Buffer.NumElements = UINT(kRingSize / 4);
+        raw.Buffer.NumElements = UINT(f.ringSize / 4);
         raw.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
         g_r.device->CreateShaderResourceView(f.ring.Get(), &raw, Cpu(g_r.srvHeap.Get(), f.descriptorBase, g_r.srvStride));
         if (g_r.physical)
@@ -1770,11 +1784,14 @@ UINT64 RingAlloc(UINT64 bytes, UINT64 alignment = 256)
     for (;;)
     {
         offset = (used + alignment - 1) & ~(alignment - 1);
-        if (offset + bytes > kRingSize || f.ringUsed.compare_exchange_weak(used, offset + bytes, std::memory_order_relaxed))
+        if (offset + bytes > f.ringSize || f.ringUsed.compare_exchange_weak(used, offset + bytes, std::memory_order_relaxed))
             break;
     }
-    if (offset + bytes > kRingSize)
+    if (offset + bytes > f.ringSize)
     {
+        for (UINT64 want = g_ringWant.load(), grown = std::min(std::max(f.ringSize * 2, offset + bytes), kRingMax);
+             want < grown && !g_ringWant.compare_exchange_weak(want, grown);)
+            ;
         static UINT64 lastFull = 0;
         static int fullLogs = 0;
         if ((RendererTracing() || fullLogs < 20) && lastFull != g_r.frame && ++fullLogs)
@@ -5868,6 +5885,58 @@ struct DirectTrace
     uint32_t changed = 0, checked = 0;
 } g_directTrace;
 
+// A large vertex buffer the game rewrites from frame to frame (tyre marks): read in place, the
+// game's next frame can overwrite it before the host GPU runs this one, and vertices fly off
+// for a frame. It is copied while it keeps changing (ReGPU's DynamicBuffer, from PGR4's crowd).
+// Checked once per frame with the sampled hash. FM2_DIRECT_DYNAMIC keeps them in place (A/B).
+bool DynamicBuffer(uint32_t address, uint32_t bytes)
+{
+    static LiveSwitch keepDirect("FM2_DIRECT_DYNAMIC");
+    if (keepDirect)
+        return false;
+    struct Seen
+    {
+        uint64_t hash = 0, frame = ~0ull, dynamicUntil = 0;
+    };
+    static std::mutex mutex;
+    static std::unordered_map<uint64_t, Seen> seen;
+    std::lock_guard lock(mutex);
+    Seen& s = seen[uint64_t(address) << 32 | bytes];
+    // Hashing is the cost: a buffer that stopped changing (static geometry, most of them) is
+    // checked every 16th frame, one that changes every frame.
+    const bool due = s.frame == ~0ull || g_r.frame <= s.dynamicUntil || g_r.frame >= s.frame + 16;
+    if (s.frame != g_r.frame && due)
+    {
+        const uint64_t hash = ContentHash(GuestPtr<uint8_t>(GpuPhysToGuest(address)), bytes);
+        if (s.frame != ~0ull && hash != s.hash)
+            s.dynamicUntil = g_r.frame + 120;
+        s.hash = hash;
+        s.frame = g_r.frame;
+        // FM2_TRACE_DYNAMIC=1: the buffers being copied, every 600 frames.
+        static LiveSwitch trace("FM2_TRACE_DYNAMIC");
+        static uint64_t lastLog = 0;
+        if (trace && g_r.frame >= lastLog + 600)
+        {
+            lastLog = g_r.frame;
+            uint32_t n = 0, total = 0;
+            uint64_t bytesTotal = 0;
+            for (const auto& [key, e] : seen)
+            {
+                total++;
+                if (g_r.frame <= e.dynamicUntil)
+                {
+                    n++;
+                    bytesTotal += uint32_t(key);
+                    if (n <= 12)
+                        Log("dynamic: buffer %08X %u bytes", uint32_t(key >> 32), uint32_t(key));
+                }
+            }
+            Log("dynamic: %u of %u large buffers copied, %llu KB", n, total, (unsigned long long)(bytesTotal >> 10));
+        }
+    }
+    return g_r.frame <= s.dynamicUntil;
+}
+
 // Performance counters (FM2_PERF=1 logs them once a second).
 struct Perf
 {
@@ -6886,7 +6955,7 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
         // rewritten before the GPU runs this frame, so they are copied.
         LiveSwitch &noDirect = g_sw_FM2_NO_DIRECT_FETCH;
         static const uint32_t directBytes = getenv("FM2_DIRECT_FETCH_KB") ? uint32_t(atoi(getenv("FM2_DIRECT_FETCH_KB"))) * 1024u : kDirectFetchBytes;
-        if (g_r.physical && !noDirect && bytes >= directBytes)
+        if (g_r.physical && !noDirect && bytes >= directBytes && !DynamicBuffer(address, bytes))
         {
             // FM2_TRACE_DIRECT=1: remember the in-place buffers of depth-only draws and check at the next
             // frame's end whether the game rewrote them (the GPU reads them later than the draw is recorded).
