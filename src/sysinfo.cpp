@@ -182,6 +182,6 @@ void LogSystemInfo(ID3D12Device* device)
     LogD3D12(device);
     const Settings& st = GetSettings();
     static const char* upscalers[] = { "off", "FSR 1", "FSR 3", "DLSS" };
-    Log("system: settings %ux%u %s, vsync %s, max %u fps, MSAA %ux, upscaler %s%s%s", st.width, st.height, st.fullscreen ? "fullscreen" : "windowed",
-        st.vsync ? "on" : "off", st.maxFps, st.msaa, upscalers[std::min<uint32_t>(uint32_t(st.upscaler), 3)], st.enhance ? ", enhanced lighting" : "", st.lowPerformance ? ", low performance mode" : "");
+    Log("system: settings %ux%u %s, vsync %s, max %u fps, MSAA %ux, anisotropic %ux, upscaler %s%s%s", st.width, st.height, st.fullscreen ? "fullscreen" : "windowed",
+        st.vsync ? "on" : "off", st.maxFps, st.msaa, st.anisotropy, upscalers[std::min<uint32_t>(uint32_t(st.upscaler), 3)], st.enhance ? ", enhanced lighting" : "", st.lowPerformance ? ", low performance mode" : "");
 }
