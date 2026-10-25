@@ -6,6 +6,8 @@
 #include <deque>
 #include <filesystem>
 #include <fstream>
+#include <map>
+#include <mutex>
 #include <vector>
 
 // When the boot's shader warm-up ended (renderer.cpp): input recordings and replays count from it.
@@ -180,11 +182,51 @@ struct EnumeratorObject : KernelObject
 std::mutex g_listenerMutex;
 }
 
+// Online (FM2-online-scope.md), step 1: FM2_LIVE=1 shows the game a profile signed in to Xbox
+// Live and a network that is up, and logs every online request it then makes (XMsg messages,
+// sockets), to map what it needs. The requests themselves still fail.
+bool LiveTrace()
+{
+    static const bool on = getenv("FM2_LIVE") != nullptr;
+    return on;
+}
+
+namespace
+{
+// The first bytes of a guest buffer, as hex.
+std::string HexBytes(uint32_t address, uint32_t size)
+{
+    std::string s;
+    char b[4];
+    for (uint32_t i = 0; address && i < size && i < 64; i++)
+    {
+        snprintf(b, sizeof(b), "%02X", *GuestPtr<uint8_t>(address + i));
+        s += b;
+        if (i % 4 == 3)
+            s += ' ';
+    }
+    return s;
+}
+
+// Each distinct (app, message) of an XMsg call, the first few times.
+void LogXMsg(const char* call, uint32_t app, uint32_t message, uint32_t buffer, uint32_t size, uint32_t lr)
+{
+    static std::mutex mutex;
+    static std::map<uint64_t, int> seen;
+    std::lock_guard lock(mutex);
+    if (seen[uint64_t(app) << 32 | message]++ >= 3)
+        return;
+    Log("live: %s app %X message %08X, %u bytes at %08X (lr %08X): %s", call, app, message, size, buffer, lr,
+        HexBytes(buffer, size).c_str());
+}
+}
+
 // Users ------------------------------------------------------------------------
 
 GUEST_EXPORT(XamUserGetSigninState)
 {
-    Return(ctx, ctx.r3.u32 == 0 ? 1 : 0); // signed in locally
+    // 1 signed in locally, 2 signed in to Xbox Live (FM2_LIVE)
+    Return(ctx, ctx.r3.u32 == 0 ? (LiveTrace() ? 2 : 1) : 0);
 }
 
 GUEST_EXPORT(XamUserGetXUID)
@@ -1190,6 +1232,8 @@ GUEST_EXPORT(XamTaskCloseHandle) { CloseHandle(ctx.r3.u32); Return(ctx, X_STATUS
 GUEST_EXPORT(XMsgInProcessCall)
 {
     const uint32_t app = ctx.r3.u32, message = ctx.r4.u32, args = ctx.r5.u32;
+    if (LiveTrace())
+        LogXMsg("XMsgInProcessCall", app, message, args, 16, ctx.lr);
     if (app == 0xFC)
     {
         // XLiveBase: the title's profile manager starts with a request here (00058004) and
@@ -1226,8 +1270,20 @@ GUEST_EXPORT(XMsgInProcessCall)
     }
     Return(ctx, 0);
 }
-GUEST_EXPORT(XMsgStartIORequest) { FinishUi(ctx, ctx.r5.u32, X_ERROR_FUNCTION_FAILED); }
-GUEST_EXPORT(XMsgStartIORequestEx) { FinishUi(ctx, ctx.r5.u32, X_ERROR_FUNCTION_FAILED); }
+GUEST_EXPORT(XMsgStartIORequest)
+{
+    // (app, message, overlapped, buffer, size)
+    if (LiveTrace())
+        LogXMsg("XMsgStartIORequest", ctx.r3.u32, ctx.r4.u32, ctx.r6.u32, ctx.r7.u32, ctx.lr);
+    FinishUi(ctx, ctx.r5.u32, X_ERROR_FUNCTION_FAILED);
+}
+GUEST_EXPORT(XMsgStartIORequestEx)
+{
+    // (app, message, overlapped, buffer, size, ...)
+    if (LiveTrace())
+        LogXMsg("XMsgStartIORequestEx", ctx.r3.u32, ctx.r4.u32, ctx.r6.u32, ctx.r7.u32, ctx.lr);
+    FinishUi(ctx, ctx.r5.u32, X_ERROR_FUNCTION_FAILED);
+}
 GUEST_EXPORT(XMsgCancelIORequest) { Return(ctx, X_ERROR_SUCCESS); }
 GUEST_EXPORT(XamSessionCreateHandle) { StoreIfNonNull(ctx.r3.u32, CreateHandle(std::make_shared<EnumeratorObject>())); Return(ctx, X_ERROR_SUCCESS); }
 GUEST_EXPORT(XamSessionRefObjByHandle) { StoreIfNonNull(ctx.r4.u32, 0); Return(ctx, X_ERROR_FUNCTION_FAILED); }
@@ -1257,10 +1313,32 @@ GUEST_EXPORT(NetDll_XNetCleanup) { Return(ctx, 0); }
 GUEST_EXPORT(NetDll_WSAStartup) { Return(ctx, 0); }
 GUEST_EXPORT(NetDll_WSACleanup) { Return(ctx, 0); }
 GUEST_EXPORT(NetDll_WSAGetLastError) { Return(ctx, 10050); } // WSAENETDOWN
-GUEST_EXPORT(NetDll_XNetGetEthernetLinkStatus) { Return(ctx, 0); }
-GUEST_EXPORT(NetDll_XNetGetTitleXnAddr) { Return(ctx, 1); } // XNET_GET_XNADDR_NONE
-GUEST_EXPORT(NetDll_XNetGetConnectStatus) { Return(ctx, 3); } // lost
-GUEST_EXPORT(NetDll_socket) { Return(ctx, 0xFFFFFFFF); }
+// FM2_LIVE: the link is up and online (XNET_ETHERNET_LINK_ACTIVE | 100 Mbps | full duplex), with
+// an address (Ethernet, static, gateway, DNS, online); the XNADDR itself is left zero for now.
+GUEST_EXPORT(NetDll_XNetGetEthernetLinkStatus) { Return(ctx, LiveTrace() ? 0x1 | 0x2 | 0x8 : 0); }
+GUEST_EXPORT(NetDll_XNetGetTitleXnAddr)
+{
+    // (caller, xnaddr*)
+    if (!LiveTrace())
+    {
+        Return(ctx, 1); // XNET_GET_XNADDR_NONE
+        return;
+    }
+    memset(GuestPtr(ctx.r4.u32), 0, 0x24);
+    Return(ctx, 0x2 | 0x4 | 0x20 | 0x40 | 0x80);
+}
+GUEST_EXPORT(NetDll_XNetGetConnectStatus) { Return(ctx, LiveTrace() ? 2 : 3); } // connected / lost
+GUEST_EXPORT(NetDll_socket)
+{
+    // (caller, af, type, protocol)
+    if (LiveTrace())
+    {
+        static std::atomic<int> logged{ 0 };
+        if (logged++ < 20)
+            Log("live: socket(af %u, type %u, protocol %u) (lr %08X): refused", ctx.r4.u32, ctx.r5.u32, ctx.r6.u32, uint32_t(ctx.lr));
+    }
+    Return(ctx, 0xFFFFFFFF);
+}
 GUEST_EXPORT(NetDll_closesocket) { Return(ctx, 0); }
 GUEST_EXPORT(NetDll_XNetRandom)
 {
