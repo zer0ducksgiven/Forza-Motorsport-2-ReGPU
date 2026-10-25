@@ -625,13 +625,16 @@ void WriteRegisters(uint32_t index, uint32_t source, uint32_t count)
         WriteRegister(index + i, LoadBE32(source + i * 4));
 }
 
+// (At namespace scope: a function-local static checks its initialisation guard on every packet.)
+const int g_gpuSlow = getenv("FM2_GPUSLOW") ? atoi(getenv("FM2_GPUSLOW")) : 0;
+LiveSwitch g_tracePredication("FM2_TRACE_PRED");
+
 // Executes one packet at ptr; returns its size in dwords.
 uint32_t ExecutePacket(uint32_t ptr)
 {
     const uint32_t header = LoadBE32(ptr);
     g_gpu.lastPacket.store(ptr, std::memory_order_relaxed); // diagnostics only: no fence per packet
-    static const int slow = getenv("FM2_GPUSLOW") ? atoi(getenv("FM2_GPUSLOW")) : 0;
-    for (int i = 0; i < slow; i++)
+    for (int i = 0; i < g_gpuSlow; i++)
         _mm_pause();
     switch (header >> 30)
     {
@@ -694,7 +697,7 @@ uint32_t ExecutePacket(uint32_t ptr)
     const uint32_t opcode = (header >> 8) & 0x7F;
     const uint32_t data = ptr + 4;
     auto arg = [&](uint32_t i) { return LoadBE32(data + i * 4); };
-    static LiveSwitch tracePredication("FM2_TRACE_PRED");
+    LiveSwitch& tracePredication = g_tracePredication;
     static std::atomic<int> predLogged{ 0 };
     if (tracePredication && (header & 1) && (g_gpu.binSelect != 0xFFFFFFFFull || g_gpu.binMask != 0xFFFFFFFFull) && predLogged++ < (getenv("FM2_TRACE_PRED_MAX") ? atoi(getenv("FM2_TRACE_PRED_MAX")) : 400))
         Log("pred: op %02X mask %016llX select %016llX -> %s", opcode, (unsigned long long)g_gpu.binMask, (unsigned long long)g_gpu.binSelect,
