@@ -916,6 +916,25 @@ void StartFrame()
     g_cv.notify_all();
 }
 
+// The command processor's thread (draw workers hash for themselves and queue nothing).
+bool Owner()
+{
+    static const std::thread::id owner = std::this_thread::get_id();
+    return std::this_thread::get_id() == owner;
+}
+
+LiveSwitch g_noAhead("FM2_NO_TEXTURE_AHEAD");
+
+// A texture that skips its check this frame and is due next frame, queued for the workers. Hash
+// queues the textures checked this frame, but with staggered checks (every 4th or 16th frame by
+// key) those are not next frame's: the command processor was hashing most textures itself (~5% of
+// its time in FM2's race). FM2_NO_TEXTURE_AHEAD=1: not queued (A/B).
+void Ahead(uint64_t key, const uint8_t* source, size_t bytes, size_t stride)
+{
+    if (Enabled() && !g_noAhead && Owner())
+        g_next.push_back({ key, source, bytes, stride });
+}
+
 // The texture's hash, from the workers when they have it and memory still matches.
 uint64_t Hash(uint64_t key, const uint8_t* source, size_t bytes, size_t stride)
 {
@@ -3452,6 +3471,19 @@ const ResolvedTexture* ResolvedFor(const TextureFetch& fetch)
 }
 
 // Decodes (if changed) and uploads a texture; returns its resource.
+// The guest bytes a texture check hashes, and how densely.
+void TextureHashSpan(const TextureFetch& fetch, uint32_t w, uint32_t h, const uint8_t*& source, size_t& bytes, size_t& stride)
+{
+    source = GuestPtr<uint8_t>(GpuPhysToGuest(fetch.Address()));
+    // The whole base level: the old guess (pitch * height / 2) covered only the first half of a
+    // one-byte-per-texel texture (DXT5), so a thumbnail filled in later went unnoticed.
+    bytes = std::max<size_t>({ size_t(std::max(fetch.Pitch(), w)) * h / 2, TextureSourceSize(fetch), 64 });
+    // Only what changes the decoded image: sampler state (clamp, filter) varies per draw.
+    // Small textures (icons, thumbnails) are hashed densely, big ones sampled: a change confined
+    // to a few dwords must not slip between the samples.
+    stride = bytes <= (64u << 10) ? 4 : bytes <= (512u << 10) ? 64 : 256;
+}
+
 ID3D12Resource* GetTextureLocked(const TextureFetch& fetch, DXGI_FORMAT& format, bool& native);
 // Textures are checked and uploaded once per frame; each thread remembers what it got this
 // frame, so repeated bindings take no lock.
@@ -3526,6 +3558,13 @@ ID3D12Resource* GetTextureLocked(const TextureFetch& fetch, DXGI_FORMAT& format,
     const uint64_t checkMask = !every4 && cached.unchanged >= 300 ? 15 : 3;
     if (cached.resource && !checkAlways && !forceDecode && cached.unchanged >= 30 && ((g_r.frame + (textureKey >> 32)) & checkMask) != 0)
     {
+        if (((g_r.frame + 1 + (textureKey >> 32)) & checkMask) == 0) // due next frame: hashed ahead
+        {
+            const uint8_t* source;
+            size_t bytes, stride;
+            TextureHashSpan(fetch, w, h, source, bytes, stride);
+            prehash::Ahead(textureKey, source, bytes, stride);
+        }
         cached.checkedFrame = g_r.frame;
         format = cached.format;
         native = cached.native;
@@ -3536,14 +3575,9 @@ ID3D12Resource* GetTextureLocked(const TextureFetch& fetch, DXGI_FORMAT& format,
     // the upload. D3D12 needs block-aligned sizes; others are decoded to RGBA8.
     LiveSwitch &noNativeBC = g_sw_FM2_NO_NATIVE_BC;
     const uint32_t bc = !noNativeBC && w % 4 == 0 && h % 4 == 0 && !forceDecode ? TextureBCKind(fetch.Format()) : 0;
-    const uint8_t* source = GuestPtr<uint8_t>(GpuPhysToGuest(fetch.Address()));
-    // The whole base level: the old guess (pitch * height / 2) covered only the first half of a
-    // one-byte-per-texel texture (DXT5), so a thumbnail filled in later went unnoticed.
-    const size_t sourceBytes = std::max<size_t>({ size_t(std::max(fetch.Pitch(), w)) * h / 2, TextureSourceSize(fetch), 64 });
-    // Only what changes the decoded image: sampler state (clamp, filter) varies per draw.
-    // Small textures (icons, thumbnails) are hashed densely, big ones sampled: a change confined
-    // to a few dwords must not slip between the samples.
-    const size_t hashStride = sourceBytes <= (64u << 10) ? 4 : sourceBytes <= (512u << 10) ? 64 : 256;
+    const uint8_t* source;
+    size_t sourceBytes, hashStride;
+    TextureHashSpan(fetch, w, h, source, sourceBytes, hashStride);
     const uint64_t hash = prehash::Hash(textureKey, source, sourceBytes, hashStride) ^ (bc ? 0 : uint64_t(fetch.Swizzle()) << 8) ^ (uint64_t(fetch.Pitch()) << 24) ^
         (uint64_t(fetch.Tiled()) << 40) ^ (uint64_t(fetch.Endian()) << 44);
     if (cached.resource && cached.contentHash == hash && !forceDecode)
