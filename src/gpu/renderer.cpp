@@ -103,6 +103,12 @@ struct Upscale
     ComPtr<ID3D12Resource> temp; // EASU output (RGBA16F)
     uint32_t tempWidth = 0, tempHeight = 0;
     bool switchedThisFrame = false;
+    // The scene image whose last tile was resolved: upscaled at the next draw. FM2 resolves each
+    // tile twice (the HDR image, then a copy for bloom); upscaling at the first resolve switched
+    // to full size before the second, which then read the small scene at full-size coordinates
+    // (the box of wrong picture over the car).
+    uint32_t pendingBase = 0;
+    bool pending = false;
     uint64_t retryFrame = 0; // after a frame with no scene to upscale (menus): native until then
     // Temporal upscalers: the motion target (RG16F, output size; UV offsets to last frame),
     // this frame's jitter (pixels and NDC) and the scene's render size.
@@ -4815,6 +4821,15 @@ void UpscaleScene(uint32_t base)
     g_upscale.switchedThisFrame = true;
 }
 
+// The scene's upscale, once all the resolves of its last tile are done (see Upscale::pending).
+void FlushPendingUpscale()
+{
+    if (!g_upscale.pending)
+        return;
+    g_upscale.pending = false;
+    UpscaleScene(g_upscale.pendingBase);
+}
+
 // Copies the render target resolved to `base` into guest memory, tiled, for the title to read.
 void WriteResolveToGuest(uint32_t base, uint32_t width, uint32_t height, uint32_t info);
 void WriteDepthToGuest(uint32_t base, uint32_t width, uint32_t height, uint32_t info, const D3D12_RECT& rect);
@@ -4925,8 +4940,12 @@ void Resolve()
         if (g_temporal && g_scenePhase && !depth && width >= kWidth && rect.left == 0 && rect.right >= LONG(kWidth))
             CopySceneDepth(rect);
         // The main view's full image (its last tile reaches the bottom): the scene is done.
-        if (g_scenePhase && !depth && width >= kWidth && rect.left == 0 && rect.right >= LONG(kWidth) && rect.bottom >= LONG(kHeight))
-            UpscaleScene(base);
+        if (g_scenePhase && !depth && width >= kWidth && rect.left == 0 && rect.right >= LONG(kWidth) && rect.bottom >= LONG(kHeight) &&
+            !g_upscale.pending)
+        {
+            g_upscale.pending = true;
+            g_upscale.pendingBase = base;
+        }
         g_r.resolved[base].swapped = swapRB;
         // The title reads some resolved images back on the CPU (the garage thumbnail it renders, then
         // compresses and saves, and the 1024x1024 livery a race compresses for the car body): our
@@ -6536,11 +6555,13 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
         }
     }
     BeginFrameIfNeeded();
+    FlushPendingUpscale();
     SelectSurfaces(false);
     // Temporal upscaling: the main view's draws in the scene also write motion vectors (their
     // shaders' motion variants, once compiled; until then the draw has no motion).
     const bool cullable = (initiator & 0x3F) != 8 && (initiator & 0x3F) != 1;
-    const bool wantMotion = g_temporal && g_scenePhase && edramMode == 4 && WidePass();
+    static LiveSwitch noMotion("FM2_NO_MOTION"); // A/B: no motion vectors (the upscaler sees a still scene)
+    const bool wantMotion = g_temporal && g_scenePhase && edramMode == 4 && WidePass() && !noMotion;
     const CompiledShader* mvs = wantMotion ? MotionShader(vs) : nullptr;
     const CompiledShader* mps = wantMotion ? MotionShader(ps) : nullptr;
     bool motion = mvs && mps && mvs->IsReady() && mps->IsReady();
@@ -7803,6 +7824,7 @@ void RendererOnSwapImpl(uint64_t frameNumber, uint32_t frontBuffer)
     PrecompileAll();
     WarmupStep();
     BeginFrameIfNeeded();
+    FlushPendingUpscale();
     // A frame that rendered small but never resolved a scene (a menu): upscale what it shows
     // and stay at full size for a while (menus are drawn sharp at full size).
     if (g_scenePhase && !g_upscale.switchedThisFrame)
