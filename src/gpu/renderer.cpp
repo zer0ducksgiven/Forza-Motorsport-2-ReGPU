@@ -3617,6 +3617,18 @@ ID3D12Resource* GetTextureLocked(const TextureFetch& fetch, DXGI_FORMAT& format,
         levels.push_back(level);
     }
     const UINT16 mipCount = UINT16(levels.size());
+    // Diagnostic: textures the title gives mip levels that get none here (they shimmer and look
+    // grainy in the distance), once each.
+    if (mipCount == 1 && fetch.MipMaxLevel() > 0 && !noMips && !forceDecode)
+    {
+        static std::unordered_set<uint64_t> reported;
+        if (reported.insert(textureKey).second && reported.size() <= 200)
+        {
+            const bool pow2 = !(w & (w - 1)) && !(h & (h - 1));
+            Log("mips: %08X %s %ux%u has %u levels but none uploaded: %s", fetch.Address(), TextureFormatName(fetch.Format()), w, h,
+                fetch.MipMaxLevel(), !fetch.MipAddress() ? "no mip address" : !fetch.Tiled() ? "not tiled" : !pow2 ? "not a power of two" : "level 1 is in the packed tail");
+        }
+    }
     if (bc)
     {
         static const DXGI_FORMAT bcFormats[] = { DXGI_FORMAT_UNKNOWN, DXGI_FORMAT_BC1_UNORM, DXGI_FORMAT_BC2_UNORM, DXGI_FORMAT_BC3_UNORM,

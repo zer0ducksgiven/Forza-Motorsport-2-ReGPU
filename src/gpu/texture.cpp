@@ -276,6 +276,12 @@ bool DecodeTexture(const TextureFetch& fetch, std::vector<uint8_t>& rgba)
 void PackedMipOffset(const TextureFetch& fetch, uint32_t blockSize, uint32_t& xBlocks, uint32_t& yBlocks)
 {
     xBlocks = yBlocks = 0;
+    if (fetch.tailLevel) // a level of the packed tail (TextureMipLevel)
+    {
+        xBlocks = fetch.tailX / blockSize;
+        yBlocks = fetch.tailY / blockSize;
+        return;
+    }
     if (!fetch.Tiled() || !((fetch.dwords[5] >> 11) & 1))
         return;
     auto log2Ceil = [](uint32_t v) {
@@ -437,14 +443,44 @@ bool TextureMipLevel(const TextureFetch& base, uint32_t level, TextureFetch& out
         return true;
     }
     const uint32_t w = base.Width(), h = base.Height();
-    if (!base.MipAddress() || level > base.MipMaxLevel() || !base.Tiled() || (w & (w - 1)) || (h & (h - 1)))
+    if (!base.MipAddress() || level > base.MipMaxLevel() || !base.Tiled() || (w & (w - 1)) || (h & (h - 1)) || (w >> level == 0 && h >> level == 0))
         return false;
     uint32_t address = base.MipAddress();
+    auto log2Ceil = [](uint32_t v) {
+        uint32_t l = 0;
+        while ((1u << l) < v)
+            l++;
+        return l;
+    };
     for (uint32_t l = 1;; l++)
     {
         const uint32_t lw = std::max(w >> l, 1u), lh = std::max(h >> l, 1u);
-        if (std::min(lw, lh) <= 16) // the packed tail (small levels share a tile): not read
-            return false;
+        if (std::min(lw, lh) <= 16)
+        {
+            // The packed tail: this level and every smaller one share the tile at `address`,
+            // each at an offset (Xenia's GetPackedMipOffset, texture_util.cc). Without them a
+            // small texture tiled over the ground (gravel, sand) had no mips at all and sampled
+            // its full detail in the distance: speckle.
+            const uint32_t log2W = log2Ceil(w), log2H = log2Ceil(h), log2Size = std::min(log2W, log2H);
+            const uint32_t packedBase = log2Size > 4 ? log2Size - 4 : 0;
+            const uint32_t packed = level - packedBase;
+            const bool wide = log2W > std::max(log2H, 1u);
+            uint32_t x = 0, y = 0;
+            if (packed < 3)
+                (wide ? y : x) = 16 >> packed;
+            else
+                (wide ? x : y) = (1u << ((wide ? log2W : log2H) - packedBase)) >> (packed - 2);
+            const uint32_t vw = std::max(w >> level, 1u), vh = std::max(h >> level, 1u);
+            out = base;
+            out.dwords[0] &= ~(0x1FFu << 22); // pitch: the tile's
+            out.dwords[0] |= 1u << 22;        // 32 texels; the tiled reader pads it to 32 blocks
+            out.dwords[1] = (out.dwords[1] & 0xFFF) | address;
+            out.dwords[2] = (out.dwords[2] & ~0x3FFFFFFu) | (vw - 1) | ((vh - 1) << 13);
+            out.tailLevel = true;
+            out.tailX = x;
+            out.tailY = y;
+            return true;
+        }
         if (l == level)
         {
             out = base;

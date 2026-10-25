@@ -6,6 +6,10 @@
 struct TextureFetch
 {
     uint32_t dwords[6];
+    // A mip level in the packed tail (TextureMipLevel): its offset inside the tail's tile, in
+    // texels (as Xenia's GetPackedMipOffset), which the readers use instead of their own.
+    bool tailLevel = false;
+    uint32_t tailX = 0, tailY = 0;
 
     uint32_t Type() const { return dwords[0] & 3; } // 2 = texture
     bool Tiled() const { return dwords[0] >> 31; }
@@ -41,7 +45,8 @@ uint32_t TextureBCKind(uint32_t format);
 bool CopyTextureBlocks(const TextureFetch& fetch, uint8_t* dst, uint32_t dstRowPitch);
 
 // The fetch constant of mip level `level` (its address, size and pitch), for tiled
-// power-of-two textures down to the packed tail (levels 32 texels and up); false otherwise.
+// power-of-two textures, the packed tail's small levels (16 texels and less) included; false
+// otherwise.
 bool TextureMipLevel(const TextureFetch& base, uint32_t level, TextureFetch& out);
 
 // The bytes the base level occupies in memory (rows padded to the pitch, tiled surfaces to 32
