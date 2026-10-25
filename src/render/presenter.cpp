@@ -101,7 +101,31 @@ void EnsureDevice()
     {
         ComPtr<ID3D12Debug> debug;
         if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug))))
+        {
             debug->EnableDebugLayer();
+            // FM2_D3D12_GBV=1 (with the debug layer): GPU-based validation and synchronized command
+            // queue validation, which report resource state and barrier hazards as the GPU meets them
+            // (slow). From the FM4 port.
+            ComPtr<ID3D12Debug1> debug1;
+            if (getenv("FM2_D3D12_GBV") && SUCCEEDED(debug.As(&debug1)))
+            {
+                debug1->SetEnableGPUBasedValidation(TRUE);
+                debug1->SetEnableSynchronizedCommandQueueValidation(TRUE);
+                Log("presenter: D3D12 GPU-based validation on (FM2_D3D12_GBV)");
+            }
+        }
+    }
+    // FM2_DRED=1: device-removed breadcrumbs and page-fault reporting, so a removed device logs the
+    // command list and operation the GPU stopped at (renderer.cpp, LogDebugMessages). From the FM4 port.
+    if (getenv("FM2_DRED"))
+    {
+        ComPtr<ID3D12DeviceRemovedExtendedDataSettings> dred;
+        if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&dred))))
+        {
+            dred->SetAutoBreadcrumbsEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+            dred->SetPageFaultEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+            Log("presenter: device-removed breadcrumbs and page-fault reporting on (FM2_DRED)");
+        }
     }
     Check(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_12_0, IID_PPV_ARGS(&g_device)), "D3D12CreateDevice");
     LogSystemInfo(g_device.Get());

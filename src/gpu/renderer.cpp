@@ -327,6 +327,7 @@ struct ResolvedTexture
     uint32_t width = 0, height = 0;          // game pixels
     uint32_t hostWidth = 0, hostHeight = 0;  // the texture (see ScaleX/ScaleY)
     uint64_t frame = ~0ull;                  // renderer frame of the last resolve into it
+    uint64_t serial = 0;                     // stamp of the last resolve into it (g_resolveSerial)
     DXGI_FORMAT format = DXGI_FORMAT_R8G8B8A8_UNORM; // R32_FLOAT for depth resolves
     bool swapped = false; // resolved with the copy swap bit: guest memory has red and blue exchanged
     // Guest memory under the image when it was resolved (our resolves don't write it): if the title
@@ -515,10 +516,57 @@ struct TextureScope
     }
 };
 
+// With FM2_DRED: where the GPU was when the device went away. Each command list still in flight
+// logs its breadcrumb count and the last operation it completed, with the operations around it; a
+// page fault logs its address and the allocations at or recently freed from it. From the FM4 port.
+void LogDeviceRemovedData()
+{
+    ComPtr<ID3D12DeviceRemovedExtendedData> dred;
+    if (!g_r.device || FAILED(g_r.device->QueryInterface(IID_PPV_ARGS(&dred))))
+        return;
+    static const char* kOps[] = { "SetMarker", "BeginEvent", "EndEvent", "DrawInstanced", "DrawIndexedInstanced", "ExecuteIndirect",
+        "Dispatch", "CopyBufferRegion", "CopyTextureRegion", "CopyResource", "CopyTiles", "ResolveSubresource", "ClearRenderTargetView",
+        "ClearUnorderedAccessView", "ClearDepthStencilView", "ResourceBarrier", "ExecuteBundle", "Present", "ResolveQueryData",
+        "BeginSubmission", "EndSubmission" };
+    const auto op = [&](D3D12_AUTO_BREADCRUMB_OP o) { return UINT(o) < std::size(kOps) ? kOps[o] : "other"; };
+    D3D12_DRED_AUTO_BREADCRUMBS_OUTPUT crumbs{};
+    if (SUCCEEDED(dred->GetAutoBreadcrumbsOutput(&crumbs)))
+    {
+        int listed = 0;
+        for (const D3D12_AUTO_BREADCRUMB_NODE* n = crumbs.pHeadAutoBreadcrumbNode; n && listed < 16; n = n->pNext)
+        {
+            const UINT done = n->pLastBreadcrumbValue ? *n->pLastBreadcrumbValue : 0;
+            if (done >= n->BreadcrumbCount)
+                continue; // finished
+            listed++;
+            Log("renderer: dred: list %p (%s) on queue %p: %u of %u operations done", static_cast<const void*>(n->pCommandList),
+                n->pCommandListDebugNameA ? n->pCommandListDebugNameA : "unnamed", static_cast<const void*>(n->pCommandQueue), done, n->BreadcrumbCount);
+            const UINT from = done > 4 ? done - 4 : 0, to = std::min(n->BreadcrumbCount, done + 4);
+            for (UINT i = from; i < to; i++)
+                Log("renderer: dred:   %s%u %s", i == done ? "> " : "  ", i, op(n->pCommandHistory[i]));
+        }
+        if (!listed)
+            Log("renderer: dred: no command list was in flight");
+    }
+    D3D12_DRED_PAGE_FAULT_OUTPUT fault{};
+    if (SUCCEEDED(dred->GetPageFaultAllocationOutput(&fault)) && fault.PageFaultVA)
+    {
+        Log("renderer: dred: page fault at GPU VA %016llX", (unsigned long long)fault.PageFaultVA);
+        for (const D3D12_DRED_ALLOCATION_NODE* a = fault.pHeadExistingAllocationNode; a; a = a->pNext)
+            Log("renderer: dred:   existing allocation %s (type %d)", a->ObjectNameA ? a->ObjectNameA : "unnamed", int(a->AllocationType));
+        for (const D3D12_DRED_ALLOCATION_NODE* a = fault.pHeadRecentFreedAllocationNode; a; a = a->pNext)
+            Log("renderer: dred:   recently freed %s (type %d)", a->ObjectNameA ? a->ObjectNameA : "unnamed", int(a->AllocationType));
+    }
+    else
+        Log("renderer: dred: no page fault recorded");
+}
+
 void LogDebugMessages()
 {
     if (g_r.device)
         Log("renderer: device removed reason %08lX", g_r.device->GetDeviceRemovedReason());
+    if (getenv("FM2_DRED"))
+        LogDeviceRemovedData();
     ComPtr<ID3D12InfoQueue> queue;
     if (!g_r.device || FAILED(g_r.device->QueryInterface(IID_PPV_ARGS(&queue))))
         return;
@@ -693,6 +741,7 @@ void ReclaimTextureBlocks()
 // Bumped by every resolve: the per-slot texture bindings below are only reused while no
 // resolve has changed what an address maps to.
 uint64_t g_resolveEpoch = 0;
+uint64_t g_resolveSerial = 0; // counts resolves: what a mip chain was assembled from
 
 // The constants a texture fetch slot produced for the previous draw: draws usually bind
 // the same fetch constants as their neighbours, and a repeat within the frame (same fetch,
@@ -3049,7 +3098,13 @@ std::shared_ptr<PipelineEntry> EnsurePipeline(const CompiledShader& vs, const Co
             return op;
         };
         ds.FrontFace = faceOps(8);
-        ds.BackFace = (depth >> 7) & 1 ? faceOps(20) : ds.FrontFace;
+        // Rectangles and point sprites aren't polygons to the Xenos: they have no back face (the facing
+        // test applies to triangles only), so their host triangles take the front ops too. A rectangle
+        // list drawn clockwise with two-sided stencil (a depth reset under a windscreen: NOTEQUAL front,
+        // ALWAYS back) otherwise applied the back ops and reset the whole screen. From the FM4 port.
+        // FM2_RECT_BACK_STENCIL=1: the facing decides (A/B; read when a pipeline is built).
+        static LiveSwitch rectBackStencil("FM2_RECT_BACK_STENCIL");
+        ds.BackFace = (depth >> 7) & 1 && (cullable || rectBackStencil) ? faceOps(20) : ds.FrontFace;
     }
     // Culling: bit 0 front, bit 1 back; bit 2 set means clockwise faces are front.
     static LiveSwitch flip("FM2_CULL_FLIP");
@@ -3406,10 +3461,19 @@ ID3D12Resource* ResolvedMipChain(const TextureFetch& fetch, const ResolvedTextur
     const uint32_t hh = std::max(uint32_t(uint64_t(level0.hostHeight) * h / std::max(level0.height, 1u)), 1u);
 
     auto& chain = g_r.mipChains[fetch.Address()];
-    if (chain.resource && chain.checkedFrame == g_r.frame)
+    const UINT count = UINT(levels.size());
+    // Assembled again whenever one of its levels has been resolved since, not once per frame: a fetch
+    // reads memory as it is at the draw (one title blurs a shadow in two transposed passes, both
+    // resolved to level 0, and the chain built after the first was kept: the shadow came out
+    // sideways). From the FM4 port. FM2_MIP_CHAIN_PER_FRAME=1: once per frame (A/B).
+    static LiveSwitch perFrame("FM2_MIP_CHAIN_PER_FRAME");
+    uint64_t sources = count;
+    for (const ResolvedTexture* level : levels)
+        sources = (sources ^ level->serial) * 0x100000001B3ull;
+    if (chain.resource && (perFrame ? chain.checkedFrame == g_r.frame : chain.contentHash == sources))
         return chain.resource.Get();
     chain.checkedFrame = g_r.frame;
-    const UINT count = UINT(levels.size());
+    chain.contentHash = sources;
     if (!chain.resource || chain.width != hw || chain.height != hh || chain.format != level0.format ||
         chain.resource->GetDesc().MipLevels != count)
     {
@@ -4009,7 +4073,13 @@ bool BuildIndexList(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize, std:
         {
             const uint32_t pos = uint32_t(out.size());
             out.insert(out.end(), { g[i], g[i + 1], g[i + 2] });
-            for (uint32_t role : { 1u, 2u, 0u })
+            // The Xenos draws each rectangle as one primitive with the given triangle's facing. The second
+            // triangle is ordered (first hypotenuse end, fourth corner, second end), which keeps that
+            // winding: the other order faced the other way, so a draw with separate back-face stencil ops
+            // applied them to half of every rectangle. From the FM4 port. FM2_OLD_RECT_WINDING=1 (read
+            // at start): the old order (A/B).
+            static const bool oldWinding = getenv("FM2_OLD_RECT_WINDING") != nullptr;
+            for (uint32_t role : oldWinding ? std::initializer_list<uint32_t>{ 1u, 2u, 0u } : std::initializer_list<uint32_t>{ 1u, 0u, 2u })
                 out.push_back(0x80000000u | (role << 29) | pos);
         }
         return true;
@@ -4142,6 +4212,7 @@ void EnsureResolved(ResolvedTexture& dest, uint32_t width, uint32_t height, uint
         std::swap(a.hostWidth, b.hostWidth);
         std::swap(a.hostHeight, b.hostHeight);
         std::swap(a.frame, b.frame);
+        std::swap(a.serial, b.serial);
         std::swap(a.format, b.format);
         std::swap(a.swapped, b.swapped);
     };
@@ -4216,6 +4287,7 @@ void BlitResolve(bool depth, uint32_t base, uint32_t width, uint32_t height, DXG
     if (dest.frame != g_r.frame && (baselineEveryFrame || !continuing))
         NoteResolvedMemory(base, dest);
     dest.frame = g_r.frame;
+    dest.serial = ++g_resolveSerial;
     const D3D12_RECT sr{ rect.left, rect.top, std::min<LONG>(rect.right, width), std::min<LONG>(rect.bottom, height) };
     FrameResources& f = Frame();
     if (sr.right <= sr.left || sr.bottom <= sr.top || f.descriptorsUsed >= kDescriptorsPerFrame)
@@ -6613,6 +6685,18 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
     LiveSwitch &noRender = g_sw_FM2_NO_RENDER;
     if (noRender)
         return;
+    // A draw with PA_SC_VIZ_QUERY.kill_pix_post_hi_z (bit 7) is viz query survey geometry: it only feeds
+    // the hierarchical-Z visibility test of its query ID, and the hardware kills its pixels after hi-Z,
+    // so it writes no colour, depth or stencil and no ZPD report counts it. Nothing here predicates
+    // draws on viz queries, so a survey has nothing to feed and isn't drawn (titles may draw them with
+    // debug shaders: solid boxes). From the FM4 port. FM2_VIZ_QUERY_DRAWS=1 draws them (A/B).
+    static LiveSwitch vizQueryDraws("FM2_VIZ_QUERY_DRAWS");
+    if (!vizQueryDraws && (gpureg::Get(0x2293 /* PA_SC_VIZ_QUERY */) >> 7 & 1))
+    {
+        TraceSkip("viz query survey", initiator);
+        g_r.skippedThisFrame++;
+        return;
+    }
     if (!g_r.ok)
         Init();
     const uint32_t edramMode = gpureg::Get(RB_MODECONTROL) & 7;
