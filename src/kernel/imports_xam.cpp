@@ -68,8 +68,40 @@ constexpr uint32_t kContentDataSize = 0x134;
 // that way; unpacked here from the zip alone the folder was missing, so no DLC car was ever added to the
 // database (official packs and backported "mod" cars alike). The patch files are written there once (again
 // if the zip changes); everything else is still read from the zip.
-void UnpackDlcPatches(const std::filesystem::path& package)
+// A DLC package's root: the folder that holds Media. Packages extracted with other tools sometimes
+// sit one folder deeper (<pack>\<folder>\Media\...); the game then saw an empty pack (no cars or
+// tracks) and its database patches were never found.
+std::filesystem::path DlcPackageRoot(const std::filesystem::path& package)
 {
+    std::error_code ec;
+    if (std::filesystem::is_directory(package / "Media", ec))
+        return package;
+    std::filesystem::path only;
+    int dirs = 0;
+    for (const auto& e : std::filesystem::directory_iterator(package, ec))
+        if (e.is_directory(ec))
+        {
+            dirs++;
+            only = e.path();
+        }
+    if (dirs == 1 && std::filesystem::is_directory(only / "Media", ec))
+        return only;
+    return package;
+}
+
+void UnpackDlcPatches(const std::filesystem::path& packageFolder)
+{
+    const std::filesystem::path package = DlcPackageRoot(packageFolder);
+    {
+        // What the pack holds, for bug reports: its car zips and whether Media was found.
+        std::error_code ec;
+        int zipsFound = 0;
+        for (const auto& z : std::filesystem::directory_iterator(package / "Media" / "DLCZips", ec))
+            zipsFound += z.path().extension() == ".zip";
+        Log("content: DLC %s: %s%s, %d car zip(s)", packageFolder.filename().string().c_str(),
+            std::filesystem::is_directory(package / "Media", ec) ? "Media found" : "NO Media folder (not installed the way the game reads it)",
+            package == packageFolder ? "" : " (one folder deeper)", zipsFound);
+    }
     std::error_code ec;
     const std::filesystem::path zips = package / "Media" / "DLCZips";
     for (const auto& z : std::filesystem::directory_iterator(zips, ec))
@@ -877,7 +909,7 @@ GUEST_EXPORT(XamContentCreateEx)
     // A downloadable package installed in the shared folder: mounted read-only from there.
     const bool shared = contentType == 2 && std::filesystem::is_directory(DlcDir() / fileName, ec);
     if (shared)
-        dir = DlcDir() / fileName;
+        dir = DlcPackageRoot(DlcDir() / fileName);
     const bool existed = shared || std::filesystem::exists(dir, ec);
     const uint32_t flags = ctx.r6.u32;
     const uint32_t mode = flags & 0xF; // 1 create new, 2 create always, 3 open, 4 open always
