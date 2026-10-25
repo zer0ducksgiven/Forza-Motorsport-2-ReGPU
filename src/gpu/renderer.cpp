@@ -1898,6 +1898,7 @@ bool GetIndexBufferLocked(uint32_t base, uint32_t count, bool is32, uint32_t end
     if (arena.full && arena.entries.size())
     {
         // Start over: copies in this frame run after the frames in flight are done.
+        Log("index arena: full, starting over (%zu buffers)", arena.entries.size());
         arena.entries.clear();
         arena.free.clear();
         arena.used = 0;
@@ -1945,7 +1946,10 @@ bool GetIndexBufferLocked(uint32_t base, uint32_t count, bool is32, uint32_t end
     }
     e.checkedFrame = g_r.frame;
     const uint8_t* src = GuestPtr<uint8_t>(GpuPhysToGuest(base));
-    const uint64_t hash = ContentHash(src, bytes);
+    // Every index, not every 256 bytes: a track section streamed in at the same address and size
+    // can differ only between the sampled words, and its chunk of road then drew the old indices
+    // (black wedges on Sebring Club after a lap or two, report #4).
+    const uint64_t hash = ContentHash(src, bytes, 4);
     if (!inserted && hash == e.hash)
         return true;
     // Swap into the upload ring (as the vertex shader would read them), then copy.
