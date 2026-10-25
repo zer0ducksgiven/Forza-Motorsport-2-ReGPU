@@ -3470,7 +3470,6 @@ const ResolvedTexture* ResolvedFor(const TextureFetch& fetch)
     return &r;
 }
 
-// Decodes (if changed) and uploads a texture; returns its resource.
 // The guest bytes a texture check hashes, and how densely.
 void TextureHashSpan(const TextureFetch& fetch, uint32_t w, uint32_t h, const uint8_t*& source, size_t& bytes, size_t& stride)
 {
@@ -3484,6 +3483,7 @@ void TextureHashSpan(const TextureFetch& fetch, uint32_t w, uint32_t h, const ui
     stride = bytes <= (64u << 10) ? 4 : bytes <= (512u << 10) ? 64 : 256;
 }
 
+// Decodes (if changed) and uploads a texture; returns its resource.
 ID3D12Resource* GetTextureLocked(const TextureFetch& fetch, DXGI_FORMAT& format, bool& native);
 // Textures are checked and uploaded once per frame; each thread remembers what it got this
 // frame, so repeated bindings take no lock.
