@@ -2130,6 +2130,10 @@ struct Manifest
 // Shader compilation runs on worker threads so the command processor never
 // stalls on fxc: a draw whose shaders are still compiling is skipped. The
 // bytecode is cached on disk by HLSL hash, so later runs start warm.
+// Pixel shader cache entries' seed: 3 since they compile without FM2_VERTEX_STAGE (the 1 entries
+// sampled without mipmapping).
+constexpr uint64_t kPixelCacheSeed = 3;
+
 std::filesystem::path ShaderCachePath(uint64_t key)
 {
     char name[32];
@@ -2244,8 +2248,12 @@ struct ShaderCompiler
         const auto start = std::chrono::steady_clock::now();
         // The translated source picks its sampling form per stage (see hlsl.cpp: a vertex
         // shader cannot sample with an implicit LOD).
-        const D3D_SHADER_MACRO macros[] = { { "FM2_VERTEX_STAGE", cs.pixel ? nullptr : "" }, { nullptr, nullptr } };
-        const HRESULT hr = D3DCompile(cs.info.hlsl.data(), cs.info.hlsl.size(), nullptr, macros, nullptr, "main",
+        // Only for vertex shaders: D3DCompile ends the list at a null *name*, so { "FM2_VERTEX_STAGE",
+        // nullptr } still defined it, and every pixel shader sampled at the bias as an absolute LOD
+        // (mip 0): no mipmapping anywhere, minified ground textures sparkled (the grainy asphalt,
+        // sand and gravel since 0.5.3).
+        const D3D_SHADER_MACRO vertexMacros[] = { { "FM2_VERTEX_STAGE", "" }, { nullptr, nullptr } };
+        const HRESULT hr = D3DCompile(cs.info.hlsl.data(), cs.info.hlsl.size(), nullptr, cs.pixel ? nullptr : vertexMacros, nullptr, "main",
             cs.pixel ? "ps_5_1" : "vs_5_1", D3DCOMPILE_SKIP_OPTIMIZATION | D3DCOMPILE_ENABLE_UNBOUNDED_DESCRIPTOR_TABLES, 0, &cs.code, &errors);
         const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
         if (FAILED(hr))
@@ -2587,7 +2595,7 @@ const CompiledShader& GetShaderLocked(uint64_t hash, const std::vector<uint32_t>
             Log("debug: ps alias %016llx returns %s", (unsigned long long)hash, expr.c_str());
         }
     }
-    cs.cacheKey = Fnv(cs.info.hlsl.data(), cs.info.hlsl.size(), pixel ? 1 : 2);
+    cs.cacheKey = Fnv(cs.info.hlsl.data(), cs.info.hlsl.size(), pixel ? kPixelCacheSeed : 2);
     if (auto b = g_bytecode.find(cs.cacheKey); b != g_bytecode.end())
     {
         cs.code = b->second;
@@ -2719,7 +2727,7 @@ const CompiledShader* MotionShaderLookup(const CompiledShader& base)
         cs.state = CompiledShader::Failed;
         return nullptr;
     }
-    cs.cacheKey = Fnv(cs.info.hlsl.data(), cs.info.hlsl.size(), source.pixel ? 1 : 2);
+    cs.cacheKey = Fnv(cs.info.hlsl.data(), cs.info.hlsl.size(), source.pixel ? kPixelCacheSeed : 2);
     if (auto b = g_bytecode.find(cs.cacheKey); b != g_bytecode.end())
     {
         cs.code = b->second;
