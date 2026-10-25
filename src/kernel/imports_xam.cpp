@@ -178,6 +178,7 @@ struct EnumeratorObject : KernelObject
     EnumeratorObject() : KernelObject(Kind::Other) {}
     std::vector<ContentItem> items;
     size_t next = 0;
+    uint32_t guest = 0; // XamCreateEnumeratorHandle: the request the title fills in (its extra size)
 };
 
 std::mutex g_listenerMutex;
@@ -313,7 +314,23 @@ GUEST_EXPORT(XamUserReadProfileSettings)
 
 GUEST_EXPORT(XamUserCreateStatsEnumerator)
 {
-    Return(ctx, X_ERROR_FUNCTION_FAILED);
+    // (title, type, u64 pivot, rows, spec count, specs*, buffer size*, handle*): under FM2_LIVE an
+    // enumerator with no rows and the size its results would take, as Xenia answers offline (FM2
+    // tore its Xbox Live state down when this failed, then crashed using it: sub_822A01C8).
+    // X_USER_STATS_READ_RESULTS (8), a view (0x10) and rows (0x30) per spec, a column (0x18 + 4)
+    // per row and column; a spec is { view id, column count, u16 columns[64] } (0x88 bytes).
+    if (!LiveTrace() || !ctx.r9.u32 || !ctx.r10.u32)
+    {
+        Return(ctx, X_ERROR_FUNCTION_FAILED);
+        return;
+    }
+    const uint32_t rows = ctx.r6.u32, specs = ctx.r7.u32, specPtr = ctx.r8.u32;
+    uint32_t size = 8 + specs * (0x30 * rows + 0x10);
+    for (uint32_t i = 0; i < specs && specPtr; i++)
+        size += (0x18 + 4) * rows * LoadBE32(specPtr + i * 0x88 + 4);
+    StoreBE32(ctx.r9.u32, size);
+    StoreBE32(ctx.r10.u32, CreateHandle(std::make_shared<EnumeratorObject>()));
+    Return(ctx, X_ERROR_SUCCESS);
 }
 
 // System ------------------------------------------------------------------------
@@ -1189,8 +1206,28 @@ GUEST_EXPORT(XamContentCreateEnumerator)
 
 GUEST_EXPORT(XamCreateEnumeratorHandle)
 {
-    StoreIfNonNull(StackArg(ctx, 8), CreateHandle(std::make_shared<EnumeratorObject>()));
+    // (user, app, open message, close message, extra size, item count, flags, handle*): an
+    // enumerator with nothing in it (FM2 asks for its title servers this way: app 0xFC, 0x58039),
+    // with room for the request the title writes through XamGetPrivateEnumStructureFromHandle.
+    auto e = std::make_shared<EnumeratorObject>();
+    const uint32_t extra = std::min<uint32_t>(ctx.r7.u32, 0x10000);
+    e->guest = GuestAlloc(Heap::Virtual, 0x20 + extra);
+    memset(GuestPtr(e->guest), 0, 0x20 + extra);
+    StoreIfNonNull(ctx.r10.u32, CreateHandle(e));
     Return(ctx, X_ERROR_SUCCESS);
+}
+
+GUEST_EXPORT(XamGetPrivateEnumStructureFromHandle)
+{
+    // (handle, object*)
+    auto e = std::dynamic_pointer_cast<EnumeratorObject>(GetHandle(ctx.r3.u32));
+    if (!e || !e->guest)
+    {
+        Return(ctx, X_STATUS_INVALID_HANDLE);
+        return;
+    }
+    StoreIfNonNull(ctx.r4.u32, e->guest);
+    Return(ctx, X_STATUS_SUCCESS);
 }
 
 GUEST_EXPORT(XamEnumerate)

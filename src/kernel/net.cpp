@@ -268,6 +268,18 @@ public:
             SignalEvent(e);
     }
 
+    // XNetCleanup / WSACleanup: every socket goes, with its pending receives dropped without
+    // touching guest memory: the game frees their buffers and OVERLAPPEDs after a cleanup (leaving
+    // Arcade, for one), and completing them later wrote into whatever had taken that memory.
+    void CloseAll()
+    {
+        std::lock_guard lock(mutex_);
+        if (!sockets_.empty())
+            Log("net: network cleanup: %zu socket(s) closed", sockets_.size());
+        sockets_.clear();
+        cv_.notify_all();
+    }
+
     // WSARecvFrom/WSARecv with an OVERLAPPED: a queued datagram completes it now (0, or
     // kWsaEMsgSize when cut short; `bytes` set); otherwise it stays pending (kWsaIoPending) until
     // Deliver completes it.
@@ -1141,8 +1153,18 @@ void NetSendMatch(bool search, const std::vector<uint8_t>& body)
 // --- XNet -----------------------------------------------------------------------------
 
 GUEST_EXPORT(NetDll_XNetStartup) { Return(ctx, 0); }
-GUEST_EXPORT(NetDll_XNetCleanup) { Return(ctx, 0); }
-GUEST_EXPORT(NetDll_WSACleanup) { Return(ctx, 0); }
+GUEST_EXPORT(NetDll_XNetCleanup)
+{
+    if (NetOn() && VNet::Get().Ready())
+        VNet::Get().CloseAll();
+    Return(ctx, 0);
+}
+GUEST_EXPORT(NetDll_WSACleanup)
+{
+    if (NetOn() && VNet::Get().Ready())
+        VNet::Get().CloseAll();
+    Return(ctx, 0);
+}
 GUEST_EXPORT(NetDll_WSAGetLastError) { Return(ctx, NetOn() ? t_lastError : kWsaENetDown); }
 
 GUEST_EXPORT(NetDll_WSAStartup)
