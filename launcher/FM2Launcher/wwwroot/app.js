@@ -171,16 +171,12 @@ function render() {
   $("lang-note").textContent = o.missingLanguages.length
     ? `Your disc also has ${o.missingLanguages.join(", ")} text. Those can't be picked yet.` : ""
   for (const b of $("display").children) b.classList.toggle("on", (b.dataset.full === "1") === set.fullscreen)
-  for (const k of ["vsync", "enhance", "skipIntro", "lowPerformance", "wheelReverse"]) $(k).classList.toggle("on", !!set[k])
-  const percents = Array.from({ length: 21 }, (_, i) => ({ value: i * 5, name: i * 5 + "%" }))
-  fill($("wheelStrength"), percents, set.wheelStrength)
-  fill($("wheelSpring"), percents, set.wheelSpring)
+  for (const k of ["vsync", "enhance", "skipIntro", "lowPerformance"]) $(k).classList.toggle("on", !!set[k])
   const wheel = s.wheel, ws = $("wheel-status")
   ws.className = "check-item " + (wheel && wheel.found ? (wheel.forceFeedback ? "ok" : "warn") : "")
   ws.replaceChildren(el("span", "dot"), !wheel ? "No wheel seen yet: the game checks when it starts"
     : !wheel.found ? "No wheel found the last time the game started"
     : `${wheel.name} (${wheel.id})${wheel.forceFeedback ? ", force feedback" : ", no force feedback the game can use"}`)
-  fill($("wheelRotation"), [{ value: 0, name: "As set on the wheel" }, ...[270, 360, 540, 720, 900, 1080, 1440, 2520].map((d) => ({ value: d, name: d + "°" }))], set.wheelRotation)
 
   const lang = o.languages.find((l) => l.id === set.language)
   const aspect = o.aspects.find((a) => a.value === set.aspect)
@@ -301,9 +297,8 @@ $("msaa").onchange = (e) => change({ msaa: +e.target.value })
 $("anisotropy").onchange = (e) => change({ anisotropy: +e.target.value })
 $("language").onchange = (e) => change({ language: +e.target.value })
 $("display").onclick = (e) => { const b = e.target.closest("button"); if (b) change({ fullscreen: b.dataset.full === "1" }) }
-for (const k of ["vsync", "enhance", "skipIntro", "lowPerformance", "wheelReverse"]) $(k).onclick = () => change({ [k]: !state.settings[k] })
+for (const k of ["vsync", "enhance", "skipIntro", "lowPerformance"]) $(k).onclick = () => change({ [k]: !state.settings[k] })
 $("wheel-report").onclick = () => document.querySelector("[data-tab=report]").click()
-for (const k of ["wheelStrength", "wheelSpring", "wheelRotation"]) $(k).onchange = (e) => change({ [k]: +e.target.value })
 
 // ---- actions
 
@@ -346,6 +341,9 @@ async function addPackages(cmd, what) {
 $("dlc-add").onclick = () => guarded(() => addPackages("dlc.add", "package"))
 $("discord").onclick = () => guarded(() => call("discord"))
 for (const b of document.querySelectorAll("[data-open]")) b.onclick = () => guarded(() => call("open", b.dataset.open))
+$("wheel-bindings").onclick = () => guarded(() => call("bindings.open"))
+// The Bindings window changes the force feedback settings: pick them up when coming back here.
+window.addEventListener("focus", () => guarded(async () => { state = await call("state"); render() }))
 
 async function checkUpdates(quiet) {
   try {

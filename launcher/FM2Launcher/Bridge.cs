@@ -69,6 +69,9 @@ public sealed class Bridge(CoreWebView2 web, Form owner)
                     var (added, errors) = Dlc.Add(dialog.FileNames, false);
                     return new { added, errors, state = State() };
                 }
+            case "bindings.open":
+                BindingsForm.ShowWindow();
+                return null;
             case "discord":
                 System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("https://discord.gg/pVEpmSk2G3") { UseShellExecute = true });
                 return null;

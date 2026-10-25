@@ -23,7 +23,9 @@
 #include <windows.h>
 #include <Xinput.h>
 
+#include <algorithm>
 #include <atomic>
+#include <fstream>
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
@@ -73,7 +75,7 @@ struct Device
 {
     SDL_Joystick* joystick = nullptr;
     SDL_JoystickID id = 0;
-    std::string name;
+    std::string name, guid; // guid: SDL's, as text (the bindings name devices by it)
     uint16_t vid = 0, pid = 0;
     int axes = 0, buttons = 0, hats = 0;
     std::vector<int16_t> rest, logged; // each axis at rest (from SDL) and as last logged
@@ -198,6 +200,118 @@ void LogMoves(Device& dev)
     }
 }
 
+// Bindings (Documents\fm2\wheel_bindings.ini, from the launcher's Bindings window): for each pad input,
+// the wheel, pedal, shifter or button box inputs that drive it, as "<SDL GUID>/<source>" joined by
+// commas. A source is an axis (a5; a0- reversed), a button (b12) or a hat direction (h0u, h0d, h0l,
+// h0r). Pad inputs without a binding keep the defaults (steering on the wheel's axis 0, the detected
+// pedals, the T598 or generic button layout). Read when the wheel thread starts.
+enum Target { kSteer, kThrottle, kBrake, kA, kB, kX, kY, kLB, kRB, kBack, kStart, kLS, kRS, kUp, kDown, kLeft, kRight, kTargets };
+constexpr const char* kTargetNames[kTargets] = { "steer", "throttle", "brake", "a", "b", "x", "y", "lb", "rb", "back", "start", "ls", "rs",
+    "up", "down", "left", "right" };
+constexpr uint16_t kTargetButtons[kTargets] = { 0, 0, 0, XINPUT_GAMEPAD_A, XINPUT_GAMEPAD_B, XINPUT_GAMEPAD_X, XINPUT_GAMEPAD_Y,
+    XINPUT_GAMEPAD_LEFT_SHOULDER, XINPUT_GAMEPAD_RIGHT_SHOULDER, XINPUT_GAMEPAD_BACK, XINPUT_GAMEPAD_START, XINPUT_GAMEPAD_LEFT_THUMB,
+    XINPUT_GAMEPAD_RIGHT_THUMB, XINPUT_GAMEPAD_DPAD_UP, XINPUT_GAMEPAD_DPAD_DOWN, XINPUT_GAMEPAD_DPAD_LEFT, XINPUT_GAMEPAD_DPAD_RIGHT };
+
+struct Source
+{
+    std::string guid;
+    char kind = 0; // 'a' axis, 'b' button, 'h' hat
+    int index = 0;
+    bool reverse = false;
+    uint8_t hat = 0; // SDL_HAT_* for a hat
+};
+std::vector<Source> g_bindings[kTargets];
+
+std::string Trim(std::string v)
+{
+    v.erase(0, v.find_first_not_of(" \t\r"));
+    v.erase(v.find_last_not_of(" \t\r") + 1);
+    return v;
+}
+
+void LoadBindings()
+{
+    std::ifstream in(UserDir() / "wheel_bindings.ini");
+    std::string line;
+    int bound = 0;
+    while (std::getline(in, line))
+    {
+        if (line.empty() || line[0] == '#' || line[0] == ';')
+            continue;
+        const size_t eq = line.find('=');
+        if (eq == std::string::npos)
+            continue;
+        const std::string key = Trim(line.substr(0, eq));
+        const int t = int(std::find_if(std::begin(kTargetNames), std::end(kTargetNames), [&](const char* n) { return key == n; }) -
+            std::begin(kTargetNames));
+        if (t >= kTargets)
+            continue;
+        const std::string rest = line.substr(eq + 1);
+        for (size_t start = 0; start <= rest.size();)
+        {
+            const size_t comma = std::min(rest.find(',', start), rest.size());
+            const std::string item = Trim(rest.substr(start, comma - start));
+            start = comma + 1;
+            const size_t slash = item.find('/');
+            if (slash == std::string::npos || slash + 2 > item.size())
+                continue;
+            Source src;
+            src.guid = item.substr(0, slash);
+            src.kind = item[slash + 1];
+            src.index = atoi(item.c_str() + slash + 2);
+            if (src.kind == 'a')
+                src.reverse = item.back() == '-';
+            else if (src.kind == 'h')
+            {
+                const char dir = item.back();
+                src.hat = dir == 'u' ? SDL_HAT_UP : dir == 'd' ? SDL_HAT_DOWN : dir == 'l' ? SDL_HAT_LEFT : dir == 'r' ? SDL_HAT_RIGHT : 0;
+            }
+            else if (src.kind != 'b')
+                continue;
+            g_bindings[t].push_back(src);
+        }
+        bound += !g_bindings[t].empty();
+    }
+    if (bound)
+        Log("wheel: %d pad inputs bound (wheel_bindings.ini)", bound);
+}
+
+bool Bound(const std::string& guid)
+{
+    for (const auto& list : g_bindings)
+        for (const Source& s : list)
+            if (s.guid == guid)
+                return true;
+    return false;
+}
+
+const Device* DeviceOf(Driver& d, const std::string& guid)
+{
+    for (const Device& dev : d.devices)
+        if (dev.guid == guid)
+            return &dev;
+    return nullptr;
+}
+
+// A source's value: an axis from its centre (-1 to 1, steering) or from its rest (0 to 1, pedals),
+// a button or hat direction 0 or 1.
+float Value(Driver& d, const Source& s, bool centred)
+{
+    const Device* dev = DeviceOf(d, s.guid);
+    if (!dev)
+        return 0;
+    if (s.kind == 'b')
+        return s.index < dev->buttons && SDL_GetJoystickButton(dev->joystick, s.index) ? 1.0f : 0.0f;
+    if (s.kind == 'h')
+        return s.index < dev->hats && (SDL_GetJoystickHat(dev->joystick, s.index) & s.hat) ? 1.0f : 0.0f;
+    if (s.index >= dev->axes)
+        return 0;
+    const int v = SDL_GetJoystickAxis(dev->joystick, s.index);
+    if (centred)
+        return std::clamp(v / 32767.0f, -1.0f, 1.0f) * (s.reverse ? -1.0f : 1.0f);
+    return std::clamp(std::abs(v - dev->rest[s.index]) / 65535.0f, 0.0f, 1.0f);
+}
+
 void ReadInput(Driver& d)
 {
     for (Device& dev : d.devices)
@@ -242,6 +356,34 @@ void ReadInput(Driver& d)
                 (hat & SDL_HAT_LEFT ? XINPUT_GAMEPAD_DPAD_LEFT : 0) | (hat & SDL_HAT_RIGHT ? XINPUT_GAMEPAD_DPAD_RIGHT : 0);
         }
     }
+    // Bindings override the defaults, input by input.
+    bool any = false;
+    for (int t = 0; t < kTargets; t++)
+    {
+        if (g_bindings[t].empty())
+            continue;
+        any = true;
+        float v = 0;
+        if (t == kSteer)
+        {
+            for (const Source& s : g_bindings[t])
+                if (s.kind == 'a')
+                    v += Value(d, s, true);
+            in.steer = int16_t(std::lround(std::clamp(v * d.steerScale, -1.0f, 1.0f) * 32767.0f));
+            continue;
+        }
+        for (const Source& s : g_bindings[t])
+            v = std::max(v, Value(d, s, false));
+        if (t == kThrottle)
+            in.gas = uint8_t(std::lround(v * 255.0f));
+        else if (t == kBrake)
+            in.brake = uint8_t(std::lround(v * 255.0f));
+        else
+            in.buttons = uint16_t((in.buttons & ~kTargetButtons[t]) | (v >= 0.5f ? kTargetButtons[t] : 0));
+    }
+    // Bound devices play even without a wheel among them (pedals and a button box, say).
+    if (any && !d.devices.empty())
+        in.present = true;
     d.input = in;
 }
 
@@ -301,13 +443,17 @@ void Added(Driver& d, SDL_JoystickID id)
     const SDL_JoystickType type = SDL_GetJoystickTypeForID(id);
     const char* name = SDL_GetJoystickNameForID(id);
     const bool wheelType = type == SDL_JOYSTICK_TYPE_WHEEL, pedalType = type == SDL_JOYSTICK_TYPE_THROTTLE;
-    if (!wheelType && !pedalType && !WheelVendor(vid))
+    char guid[64] = {};
+    SDL_GUIDToString(SDL_GetJoystickGUIDForID(id), guid, sizeof(guid));
+    // A device the bindings name opens whatever it is (a shifter, a handbrake, a button box).
+    if (!wheelType && !pedalType && !WheelVendor(vid) && !Bound(guid))
         return;
     Device dev;
     if (!(dev.joystick = SDL_OpenJoystick(id)))
         return;
     dev.id = id;
     dev.name = name ? name : "?";
+    dev.guid = guid;
     dev.vid = vid, dev.pid = pid;
     dev.axes = SDL_GetNumJoystickAxes(dev.joystick);
     dev.buttons = SDL_GetNumJoystickButtons(dev.joystick);
@@ -461,6 +607,7 @@ void Thread()
     SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI, "0");
     SDL_SetHint(SDL_HINT_JOYSTICK_RAWINPUT, "0");
     SDL_SetHint(SDL_HINT_XINPUT_ENABLED, "0");
+    LoadBindings();
     Driver& d = g_wheel;
     {
         const Settings& st = GetSettings();

@@ -219,24 +219,10 @@
       <p class="hint">For a wheel with force feedback (Thrustmaster, Logitech, Fanatec, Moza and others), plugged in before the game starts. The game sees it as an Xbox 360 wheel.</p>
       <div class="check-item" id="wheel-status"></div>
       <p class="hint">New and only tested on a Thrustmaster T598 so far. Please try yours and tell us how it went: which wheel, whether steering, pedals, buttons and force feedback work, and how the force feels.</p>
+      <p class="hint">Force feedback strength, centring spring, wheel rotation and the bindings for every button, axis and pedal are in the Bindings window.</p>
       <div class="buttons-row">
+        <button class="primary small" id="wheel-bindings" data-tip="Opens the Bindings window: choose which button, axis or pedal does what, on any wheel, pedals, shifter or button box.">Bindings</button>
         <button class="ghost small" id="wheel-report" data-tip="Opens the Report tab. Your play.log says which wheel the game found and how it set it up.">Report how it went</button>
-      </div>
-      <label class="field" data-tip="How strong every force is. Direct drive wheels are strong: start low and turn it up.">
-        <span>Force feedback strength</span>
-        <select id="wheelStrength"></select>
-      </label>
-      <label class="field" data-tip="The pull back to the centre and the damping, on top of the strength above. The game made these for the weak motor of the Xbox 360 wheel; on a strong wheel less often feels more natural, with the steering force doing the work.">
-        <span>Centring spring and damper</span>
-        <select id="wheelSpring"></select>
-      </label>
-      <label class="field" data-tip="The rotation your wheel is set to in its own software. The game was made for the Xbox 360 wheel's 270 degrees, so from this it scales your steering to match. Choose 'As set on the wheel' to use the wheel's range one to one (set 270 degrees in the wheel's software then).">
-        <span>Wheel rotation</span>
-        <select id="wheelRotation"></select>
-      </label>
-      <div class="toggle-row" data-tip="Turn this on if the wheel pulls away from the centre in corners instead of back towards it.">
-        <div><div class="toggle-title">Reverse steering force</div><div class="toggle-sub">If the wheel pulls the wrong way</div></div>
-        <button class="switch" id="wheelReverse" role="switch"></button>
       </div>
     </section>
   </main>

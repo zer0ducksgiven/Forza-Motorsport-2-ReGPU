@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Wheel bindings</title>
+<link rel="stylesheet" href="app.css">
+<style>
+  .bind-top { display: flex; align-items: center; gap: 14px; padding: 16px 22px 6px; flex-wrap: wrap; }
+  .bind-top h1 { margin: 0; font: 800 17px/1.1 "Segoe UI Black", "Segoe UI", sans-serif; letter-spacing: 1.2px; }
+  .bind-top h1 span { color: var(--accent); }
+  .bind-top .grow { flex: 1; }
+  .bind-top select { min-width: 280px; }
+  .bind-note { padding: 0 22px 10px; color: var(--muted); font-size: 12.5px; }
+  .bind-note b { color: var(--text); font-weight: 600; }
+  .bind-warn { margin: 0 22px 10px; padding: 8px 12px; border-radius: 8px; background: #2a2113; border: 1px solid #5a4520; color: #f6d48a; font-size: 12.5px; }
+  .bind-grid { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.25fr); gap: 14px; padding: 0 22px 22px; }
+  .bind-grid .panel { overflow: auto; }
+  .bind-left { display: flex; flex-direction: column; gap: 14px; min-height: 0; }
+  .bind-left .panel:last-child { flex: 1; min-height: 0; }
+  .ffb-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 14px; align-items: end; }
+  .ffb-grid .field { margin-bottom: 8px; }
+  .axis-row { display: grid; grid-template-columns: 58px 1fr 64px; align-items: center; gap: 10px; margin: 6px 0; font-size: 12.5px; color: var(--muted); }
+  .axis-bar { position: relative; height: 10px; border-radius: 99px; background: var(--panel-2); border: 1px solid var(--line); overflow: hidden; }
+  .axis-bar i { position: absolute; top: 0; bottom: 0; background: var(--accent-2); border-radius: 99px; }
+  .axis-bar .rest { position: absolute; top: -2px; bottom: -2px; width: 2px; background: #ffffff66; }
+  .axis-row .val { text-align: right; font-variant-numeric: tabular-nums; }
+  .axis-row.hot { color: var(--text); }
+  .btn-grid { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 12px; }
+  .btn-grid span { width: 32px; height: 26px; display: grid; place-items: center; border-radius: 6px; font-size: 11.5px; background: var(--panel-2); border: 1px solid var(--line); color: var(--muted); }
+  .btn-grid span.down { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .hats { margin-top: 12px; color: var(--muted); font-size: 12.5px; }
+  .hats b { color: var(--text); }
+  .group { margin: 14px 0 6px; color: var(--muted); font-size: 11.5px; letter-spacing: 1px; text-transform: uppercase; }
+  .group:first-child { margin-top: 0; }
+  .bind-row { display: grid; grid-template-columns: minmax(150px, 1fr) minmax(0, 1.4fr) auto; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; border: 1px solid transparent; }
+  .bind-row:hover { background: var(--panel-2); }
+  .bind-row.listening { border-color: var(--accent); background: #2a1416; }
+  .bind-row .what { font-weight: 600; }
+  .bind-row .role { color: var(--muted); font-size: 12px; font-weight: 400; }
+  .chips-b { display: flex; flex-wrap: wrap; gap: 5px; min-width: 0; }
+  .chip-b { display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; border-radius: 99px; background: #262b35; border: 1px solid var(--line); font-size: 12px; max-width: 100%; }
+  .chip-b .dev { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 140px; }
+  .chip-b.missing { opacity: .6; }
+  .chip-b button { background: none; padding: 0 2px; color: var(--muted); font-size: 13px; line-height: 1; }
+  .chip-b button:hover { color: var(--text); }
+  .chip-b .rev { font-size: 11px; padding: 1px 6px; border-radius: 99px; border: 1px solid var(--line); }
+  .chip-b .rev.on { border-color: var(--accent-2); color: var(--accent-2); }
+  .default { color: var(--muted); font-size: 12.5px; font-style: italic; }
+  .acts { display: flex; gap: 6px; }
+  .listen-text { color: var(--accent-2); font-size: 12.5px; }
+</style>
+</head>
+<body>
+  <div class="bind-top">
+    <img class="mark" src="icon.png" alt="">
+    <h1>WHEEL <span>BINDINGS</span></h1>
+    <div class="grow"></div>
+    <label class="field" style="margin:0" data-tip="Which device's inputs are shown on the left. Bindings can use any connected device: press or move it when a row is listening.">
+      <select id="device"></select>
+    </label>
+  </div>
+  <div class="bind-note">Press <b>Bind</b> on a row, then press the button, move the axis or push the hat you want for it, on any connected wheel, pedals, shifter or button box. Rows left on <b>game default</b> use what the game picks for your wheel. Changes are saved straight away and apply the <b>next time the game starts</b>.</div>
+  <div class="bind-warn" id="running" hidden>The game is running: your changes apply after you restart it.</div>
+  <div class="bind-warn" id="nodev" hidden>No wheel, pedals or other controller found. Plug it in: this window picks it up within a couple of seconds.</div>
+  <main class="bind-grid">
+    <div class="bind-left">
+    <section class="panel">
+      <div class="panel-head"><h2>Force feedback</h2></div>
+      <div class="ffb-grid">
+        <label class="field" data-tip="How strong every force is. Direct drive wheels are strong: start low and turn it up.">
+          <span>Strength</span>
+          <select id="wheelStrength"></select>
+        </label>
+        <label class="field" data-tip="The pull back to the centre and the damping, on top of the strength. The game made these for the weak motor of the Xbox 360 wheel; on a strong wheel less often feels more natural, with the steering force doing the work.">
+          <span>Centring spring and damper</span>
+          <select id="wheelSpring"></select>
+        </label>
+        <label class="field" data-tip="The rotation your wheel is set to in its own software. The game was made for the Xbox 360 wheel's 270 degrees, so from this it scales your steering to match. Choose 'As set on the wheel' to use the wheel's range one to one (set 270 degrees in the wheel's software then).">
+          <span>Wheel rotation</span>
+          <select id="wheelRotation"></select>
+        </label>
+        <div class="toggle-row" data-tip="Turn this on if the wheel pulls away from the centre in corners instead of back towards it.">
+          <div><div class="toggle-title">Reverse steering force</div><div class="toggle-sub">If the wheel pulls the wrong way</div></div>
+          <button class="switch" id="wheelReverse" role="switch"></button>
+        </div>
+      </div>
+    </section>
+    <section class="panel">
+      <div class="panel-head"><h2 id="dev-title">Inputs</h2></div>
+      <p class="hint" id="dev-sub"></p>
+      <div id="axes"></div>
+      <div class="btn-grid" id="buttons"></div>
+      <div class="hats" id="hats"></div>
+    </section>
+    </div>
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Bindings</h2>
+        <button class="ghost small danger" id="reset-all" data-tip="Clears every binding: the game goes back to its own layout for your wheel.">Reset all to game default</button>
+      </div>
+      <div id="rows"></div>
+    </section>
+  </main>
+  <div class="tooltip" id="tooltip" hidden></div>
+  <div class="toast" id="toast" hidden></div>
+  <script src="bindings.js"></script>
+</body>
+</html>
