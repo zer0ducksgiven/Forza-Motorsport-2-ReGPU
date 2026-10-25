@@ -167,6 +167,8 @@ function render() {
   fill($("maxFps"), o.fps.map((f) => ({ value: f, name: f + " fps" })), set.maxFps)
   fill($("msaa"), o.msaa, set.msaa)
   fill($("anisotropy"), o.anisotropy, set.anisotropy)
+  fill($("renderScale"), o.renderScale, set.renderScale)
+  fill($("sharpening"), o.sharpening, set.sharpening)
   fill($("language"), o.languages.map((l) => ({ value: l.id, name: l.name })), set.language)
   $("lang-note").textContent = o.missingLanguages.length
     ? `Your disc also has ${o.missingLanguages.join(", ")} text. Those can't be picked yet.` : ""
@@ -295,6 +297,8 @@ $("aspect").onchange = (e) => change({ aspect: e.target.value })
 $("maxFps").onchange = (e) => change({ maxFps: +e.target.value })
 $("msaa").onchange = (e) => change({ msaa: +e.target.value })
 $("anisotropy").onchange = (e) => change({ anisotropy: +e.target.value })
+$("renderScale").onchange = (e) => change({ renderScale: +e.target.value })
+$("sharpening").onchange = (e) => change({ sharpening: +e.target.value })
 $("language").onchange = (e) => change({ language: +e.target.value })
 $("display").onclick = (e) => { const b = e.target.closest("button"); if (b) change({ fullscreen: b.dataset.full === "1" }) }
 for (const k of ["vsync", "enhance", "skipIntro", "lowPerformance"]) $(k).onclick = () => change({ [k]: !state.settings[k] })

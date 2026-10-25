@@ -49,6 +49,9 @@ public sealed class GameSettings
     public int MaxFps { get; set; } = 60;
     public int Msaa { get; set; } = 1;
     public int Anisotropy { get; set; } = 16;
+    // FSR 1 on the whole frame: render scale (percent per axis) and RCAS sharpening (0 off, 100 max).
+    public int RenderScale { get; set; } = 100;
+    public int Sharpening { get; set; }
     public bool Enhance { get; set; }
     public bool SkipIntro { get; set; }
     public bool LowPerformance { get; set; }
@@ -58,7 +61,7 @@ public sealed class GameSettings
     public int WheelRotation { get; set; }
     public int Language { get; set; } = 1;
 
-    static readonly string[] Known = ["profile", "resolution", "aspect", "fullscreen", "vsync", "max_fps", "msaa", "anisotropy", "enhance", "skip_intro", "low_performance", "wheel_strength", "wheel_spring", "wheel_reverse", "wheel_rotation", "language"];
+    static readonly string[] Known = ["profile", "resolution", "aspect", "fullscreen", "vsync", "max_fps", "msaa", "anisotropy", "upscaler", "render_scale", "sharpness", "enhance", "skip_intro", "low_performance", "wheel_strength", "wheel_spring", "wheel_reverse", "wheel_rotation", "language"];
 
     public static GameSettings Load()
     {
@@ -74,6 +77,11 @@ public sealed class GameSettings
                 case "max_fps": s.MaxFps = int.TryParse(v, out var f) ? f : 60; break;
                 case "msaa": s.Msaa = int.TryParse(v, out var m) ? m : 1; break;
                 case "anisotropy": s.Anisotropy = int.TryParse(v, out var an) ? an : 16; break;
+                case "render_scale": s.RenderScale = int.TryParse(v, out var rs) ? rs : 100; break;
+                case "sharpness":
+                    s.Sharpening = double.TryParse(v, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var sh)
+                        ? (int)Math.Round(sh * 100) : 0;
+                    break;
                 case "enhance": s.Enhance = v == "1"; break;
                 case "skip_intro": s.SkipIntro = v == "1"; break;
                 case "low_performance": s.LowPerformance = v == "1"; break;
@@ -95,6 +103,12 @@ public sealed class GameSettings
         sb.Append($"resolution={Resolution}\naspect={Aspect}\nfullscreen={B(Fullscreen)}\nvsync={B(Vsync)}\n");
         sb.Append($"max_fps={Math.Clamp(MaxFps, 30, 360)}\nmsaa={Msaa}\nanisotropy={Anisotropy}\nenhance={B(Enhance)}\nskip_intro={B(SkipIntro)}\nlow_performance={B(LowPerformance)}\nlanguage={Language}\n");
         sb.Append($"wheel_strength={Math.Clamp(WheelStrength, 0, 100)}\nwheel_spring={Math.Clamp(WheelSpring, 0, 100)}\nwheel_reverse={B(WheelReverse)}\nwheel_rotation={Math.Clamp(WheelRotation, 0, 3600)}\n");
+        var scale = Math.Clamp(RenderScale, 50, 100);
+        var sharp = Math.Clamp(Sharpening, 0, 100);
+        // FSR 3 and DLSS are set by hand for testing; the launcher keeps them.
+        var current = Read().LastOrDefault(kv => kv.Key == "upscaler").Value;
+        var upscaler = current is "fsr3" or "dlss" ? current : scale < 100 || sharp > 0 ? "fsr1" : "off";
+        sb.Append($"upscaler={upscaler}\nrender_scale={scale}\nsharpness={(sharp / 100.0).ToString(System.Globalization.CultureInfo.InvariantCulture)}\n");
         foreach (var (k, v) in keep) sb.Append($"{k}={v}\n");
         Directory.CreateDirectory(Paths.User);
         File.WriteAllText(Paths.SettingsFile, sb.ToString());
@@ -142,6 +156,8 @@ public static class Options
     public static readonly int[] Fps = [30, 60, 120, 144, 165, 240, 360];
     public static readonly (string Value, string Name)[] Aspects = [("auto", "Auto (match resolution)"), ("16:9", "16:9"), ("21:9", "21:9 (experimental)"), ("32:9", "32:9 (experimental)")];
     public static readonly (int Value, string Name)[] Msaa = [(1, "Off"), (2, "2x MSAA"), (4, "4x MSAA"), (8, "8x MSAA")];
+    public static readonly (int Value, string Name)[] RenderScale = [(100, "100% (native)"), (85, "85%"), (77, "77%"), (67, "67%"), (59, "59%"), (50, "50%")];
+    public static readonly (int Value, string Name)[] Sharpening = [(0, "Off"), (25, "Low"), (50, "Medium"), (75, "High"), (100, "Maximum")];
     public static readonly (int Value, string Name)[] Anisotropy = [(0, "Off (trilinear)"), (2, "2x"), (4, "4x"), (8, "8x"), (16, "16x")];
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]

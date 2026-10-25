@@ -86,6 +86,8 @@ void Load()
             g_settings.anisotropy = uint32_t(atoi(value.c_str()));
         else if (key == "upscaler")
             g_settings.upscaler = ParseUpscaler(value);
+        else if (key == "render_scale")
+            g_settings.renderScale = uint32_t(atoi(value.c_str()));
         else if (key == "upscale_quality")
             g_settings.quality = uint32_t(atoi(value.c_str()));
         else if (key == "sharpness")
@@ -108,6 +110,9 @@ void Load()
         g_settings.vsync = atoi(v) != 0;
     if (const char* v = getenv("FM2_UPSCALER"))
         g_settings.upscaler = ParseUpscaler(v);
+    if (const char* v = getenv("FM2_FSR_SCALE"))
+        g_settings.renderScale = uint32_t(atoi(v));
+    g_settings.renderScale = std::clamp<uint32_t>(g_settings.renderScale, 50, 100);
     if (const char* v = getenv("FM2_UPSCALE_QUALITY"))
         g_settings.quality = uint32_t(atoi(v));
     if (const char* v = getenv("FM2_SHARPNESS"))
@@ -180,6 +185,8 @@ float Settings::SceneScale() const
 {
     if (upscaler == Upscaler::Off)
         return 1.0f;
+    if (upscaler == Upscaler::Fsr1)
+        return float(renderScale) / 100.0f;
     // The usual presets (native, 1.5x, 1.7x, 2x, 3x per axis).
     static const float scales[] = { 1.0f, 1.0f / 1.5f, 1.0f / 1.7f, 0.5f, 1.0f / 3.0f };
     return scales[std::min<uint32_t>(quality, 4)];
@@ -219,4 +226,5 @@ void SaveSettings()
     out << "upscaler=" << UpscalerName(s.upscaler) << "\n";
     out << "upscale_quality=" << s.quality << "\n";
     out << "sharpness=" << s.sharpness << "\n";
+    out << "render_scale=" << s.renderScale << "\n";
 }

@@ -28,10 +28,13 @@ struct Settings
     uint32_t language = 1;               // the console language the game sees (XGetLanguage: 1 English, 3 German, ...)
     uint32_t msaa = 1;                   // anti-aliasing samples per pixel: 1 (off), 2, 4 or 8
     uint32_t anisotropy = 16;            // anisotropic filtering of surface textures: 0 (off: trilinear), 2, 4, 8 or 16
-    // Upscaling: the 3D scene renders smaller and is upscaled before post-processing and
-    // the HUD, which stay at full resolution.
+    // Upscaling. FSR 1 (the launcher's): the whole frame, HUD included, renders at render_scale
+    // and is upscaled (EASU) and sharpened (RCAS) as it is shown; at 100% it is only sharpened.
+    // FSR 3 and DLSS (testing only): the 3D scene renders smaller and is reconstructed before
+    // post-processing and the HUD, at the size `quality` picks.
     enum class Upscaler : uint32_t { Off, Fsr1, Fsr3, Dlss };
     Upscaler upscaler = Upscaler::Off;
+    uint32_t renderScale = 100; // FSR 1: percent of the output size per axis, 50-100
     uint32_t quality = 1;   // 0 native (anti-aliasing only), 1 quality, 2 balanced, 3 performance, 4 ultra performance
     float sharpness = 0.5f; // 0-1
     // The scene's resolution as a fraction of the output (1 when upscaling is off).

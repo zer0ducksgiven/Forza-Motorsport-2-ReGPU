@@ -65,6 +65,14 @@
         <span>Anisotropic filtering</span>
         <select id="anisotropy"></select>
       </label>
+      <label class="field" data-tip="Renders the game, HUD included, at fewer pixels and upscales it with AMD FSR 1. Lower is faster on weak graphics cards (laptops, older GPUs); most PCs are limited by the CPU and gain little. 100% renders at full resolution.">
+        <span>Render scale (FSR 1)</span>
+        <select id="renderScale"></select>
+      </label>
+      <label class="field" data-tip="AMD CAS-style sharpening (FSR 1's RCAS) on the final picture. Works at any render scale; at 100% it only sharpens. Almost free.">
+        <span>Sharpening</span>
+        <select id="sharpening"></select>
+      </label>
       <div class="toggle-row" data-tip="An extra local-contrast pass on the final picture. Experimental: it can look too strong on some tracks.">
         <div><div class="toggle-title">Enhanced lighting <span class="badge">beta</span></div><div class="toggle-sub">Extra contrast on the final frame</div></div>
         <button class="switch" id="enhance" role="switch"></button>

@@ -251,6 +251,8 @@ public sealed class Bridge(CoreWebView2 web, Form owner)
                 fps = Options.Fps,
                 msaa = Options.Msaa.Select(x => new { value = x.Value, name = x.Name }),
                 anisotropy = Options.Anisotropy.Select(x => new { value = x.Value, name = x.Name }),
+                renderScale = Options.RenderScale.Select(x => new { value = x.Value, name = x.Name }),
+                sharpening = Options.Sharpening.Select(x => new { value = x.Value, name = x.Name }),
                 languages = Options.InstalledLanguages().Select(l => new { id = l.Id, code = l.Code, name = l.Name }),
                 missingLanguages = Directory.Exists(stringTables)
                     ? new[] { "PL", "CZ", "HU" }.Where(c => File.Exists(Path.Combine(stringTables, c + ".zip"))).ToArray() : [],
