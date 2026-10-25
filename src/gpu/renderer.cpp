@@ -1453,6 +1453,8 @@ void SelectSurfaces(bool force)
 // dropped textures) go back to the free list; their resources are released
 // once the GPU is done with the frame that last used them.
 UINT BindlessIndexLocked(ID3D12Resource* resource, DXGI_FORMAT format, bool cube);
+LiveSwitch g_floatsViaStage("FM2_FLOATS_VIA_STAGE");
+
 // The per-draw functions' switches, at namespace scope: as function-local statics each one checked
 // its initialisation guard on every draw (dozens a draw).
 LiveSwitch g_sw_FM2_ALL_CONSTANTS("FM2_ALL_CONSTANTS");
@@ -6583,13 +6585,18 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
     const bool staged = !inRing;
     auto* vc = staged ? vcStage.get() : reinterpret_cast<VSConstants*>(f.ringCpu + vsOffset);
     auto* pc = staged ? pcStage.get() : reinterpret_cast<PSConstants*>(f.ringCpu + psOffset);
+    // The float constants go straight into the ring when nothing reads them back from the stage (from
+    // ReGPU 2fd47c3): staged, they were copied a second time at the flush, up to 4 KB a draw. Car draws
+    // (hooks/dealer.cpp reads and changes vc->c) and traced frames (logged from it) keep the stage.
+    // FM2_FLOATS_VIA_STAGE=1: always through the stage (A/B).
+    const bool floatsDirect = staged && !g_floatsViaStage && !vs.carBody && !vs.carPart && !RendererTracing();
     {
         // Byte-swapped block copy of both constant banks (1024 dwords each).
         const __m128i swap = _mm_setr_epi8(3, 2, 1, 0, 7, 6, 5, 4, 11, 10, 9, 8, 15, 14, 13, 12);
         // Only the constants each shader reads (the rest of the block is never read).
         const auto* src = reinterpret_cast<const __m128i*>(gpureg::File() + gpureg::AluConstants * 4);
-        auto* dv = reinterpret_cast<__m128i*>(vc->c);
-        auto* dp = reinterpret_cast<__m128i*>(pc->c);
+        auto* dv = reinterpret_cast<__m128i*>(floatsDirect ? reinterpret_cast<VSConstants*>(f.ringCpu + vsOffset)->c : vc->c);
+        auto* dp = reinterpret_cast<__m128i*>(floatsDirect ? reinterpret_cast<PSConstants*>(f.ringCpu + psOffset)->c : pc->c);
         LiveSwitch &allConstants = g_sw_FM2_ALL_CONSTANTS; // A/B
         const uint32_t nv = allConstants ? 256 : std::min(vs.info.constantsUsed, 256u), np = allConstants ? 256 : std::min(ps.info.constantsUsed, 256u);
         // Only the constants each shader reads, by its mask (from ReGPU 8a8bfa3). Car draws copy them
@@ -7117,8 +7124,11 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
         const size_t np = allConstantsFlush ? 256 : std::min(ps.info.constantsUsed, 256u);
         uint8_t* rv = f.ringCpu + vsOffset;
         uint8_t* rp = f.ringCpu + psOffset;
-        memcpy(rv, vc->c, nv * 16);
-        memcpy(rp, pc->c, np * 16);
+        if (!floatsDirect)
+        {
+            memcpy(rv, vc->c, nv * 16);
+            memcpy(rp, pc->c, np * 16);
+        }
         // Then only the vertex fetch and texture entries this draw's shaders read: the tables are sized for
         // 96 fetch constants and 32 slots, a draw uses a few, and the rest was ~3 KB of padding copied per
         // draw (the largest single cost on the command processor in a race; from ReGPU 4884e92). The ring
