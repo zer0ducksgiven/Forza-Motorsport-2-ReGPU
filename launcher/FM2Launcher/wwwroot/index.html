@@ -17,7 +17,7 @@
     <nav class="tabs" id="tabs">
       <button data-tab="play" class="on">Play</button>
       <button data-tab="profiles">Profiles</button>
-      <button data-tab="photos">Photos</button>
+      <button data-tab="controls">Controls</button>
       <button data-tab="settings">Settings</button>
       <button data-tab="report">Report</button>
       <button data-tab="updates">Updates <span class="dot-badge" id="update-badge" hidden></span></button>
@@ -124,6 +124,9 @@
         <button class="ghost small" id="prof-import" data-tip="Adds a profile from a zip made with Export or Back up (yours or someone else's).">Import…</button>
         <button class="ghost small" data-open="user" data-tip="Opens Documents\fm2. Profiles are in its profiles folder.">Open folder</button>
       </div>
+      <div class="buttons-col">
+        <button class="ghost" id="photos-open" data-tip="Opens the Photos window: every profile's Photo Mode pictures, to view, copy or save.">Photos</button>
+      </div>
     </section>
 
     <section class="panel">
@@ -171,26 +174,8 @@
   </main>
 
   <!-- PHOTOS -->
-  <main class="page grid-photos" id="page-photos" hidden>
-    <section class="panel viewer-panel">
-      <div class="panel-head">
-        <h2 id="photo-title">Photos</h2>
-        <div class="buttons-row tight">
-          <button class="ghost small" id="photo-copy" data-tip="Copies the picture so you can paste it into Discord, Paint and so on.">Copy</button>
-          <button class="ghost small" id="photo-save" data-tip="Saves a copy as a JPEG or PNG wherever you like (Pictures by default).">Save as…</button>
-          <button class="ghost small" id="photo-reveal" data-tip="Shows the photo's file in Explorer.">Show file</button>
-        </div>
-      </div>
-      <div class="viewer" id="viewer"><div class="empty">No photos yet. In a race, pause and pick Photo Mode, take a shot and save it.</div></div>
-      <div class="photo-meta" id="photo-meta"></div>
-    </section>
-    <section class="panel">
-      <div class="panel-head">
-        <h2>Gallery <span class="count" id="photo-count"></span></h2>
-        <button class="ghost small" id="photos-folder" data-tip="Opens Documents\fm2\profiles, where each profile keeps its photos.">Open folder</button>
-      </div>
-      <div class="thumbs" id="thumbs"></div>
-    </section>
+  <main class="page page-controls" id="page-controls" hidden>
+    <iframe name="controls" id="controls-frame" src="bindings.html?embedded=1" title="Controls"></iframe>
   </main>
 
   <!-- SETTINGS -->
@@ -218,8 +203,7 @@
       </section>
     </div>
 
-    <div class="stack content-stack">
-    <section class="panel grow">
+    <section class="panel">
       <div class="panel-head">
         <h2>DLC packs</h2>
         <button class="primary small" id="dlc-add" data-tip="Installs DLC packages (the files as downloaded from Xbox Live) into the game's DLC folder. They appear in the game next time it starts.">Add DLC</button>
@@ -239,19 +223,7 @@
       <p class="hint">Project Forza Plus 2: reworked cars, forced induction, PI classes and career modes. Use a separate profile for it: its saves don't mix with the original game's.</p>
       <div class="list" id="pfp"></div>
     </section>
-    </div>
 
-    <section class="panel">
-      <div class="panel-head"><h2>Racing wheel <span class="badge">beta</span></h2></div>
-      <p class="hint">For a wheel with force feedback (Thrustmaster, Logitech, Fanatec, Moza and others), plugged in before the game starts. The game sees it as an Xbox 360 wheel.</p>
-      <div class="check-item" id="wheel-status"></div>
-      <p class="hint">New and only tested on a Thrustmaster T598 so far. Please try yours and tell us how it went: which wheel, whether steering, pedals, buttons and force feedback work, and how the force feels.</p>
-      <p class="hint">Force feedback strength, centring spring, wheel rotation and the bindings for every button, axis and pedal are in the Bindings window.</p>
-      <div class="buttons-row">
-        <button class="primary small" id="wheel-bindings" data-tip="Opens the Bindings window: choose which button, axis or pedal does what, on any wheel, pedals, shifter or button box.">Bindings</button>
-        <button class="ghost small" id="wheel-report" data-tip="Opens the Report tab. Your play.log says which wheel the game found and how it set it up.">Report how it went</button>
-      </div>
-    </section>
   </main>
 
   <!-- REPORT -->

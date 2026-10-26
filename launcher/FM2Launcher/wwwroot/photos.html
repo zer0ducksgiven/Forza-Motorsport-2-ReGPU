@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Photos</title>
+<link rel="stylesheet" href="app.css">
+<style>
+  body { display: flex; flex-direction: column; }
+  .photos-page { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 2.4fr) minmax(240px, 1fr); gap: 14px; padding: 16px 22px 22px; }
+</style>
+</head>
+<body>
+  <main class="photos-page">
+    <section class="panel viewer-panel">
+      <div class="panel-head">
+        <h2 id="photo-title">Photos</h2>
+        <div class="buttons-row tight">
+          <button class="ghost small" id="photo-copy" data-tip="Copies the picture so you can paste it into Discord, Paint and so on.">Copy</button>
+          <button class="ghost small" id="photo-save" data-tip="Saves a copy as a JPEG or PNG wherever you like (Pictures by default).">Save as…</button>
+          <button class="ghost small" id="photo-reveal" data-tip="Shows the photo's file in Explorer.">Show file</button>
+        </div>
+      </div>
+      <div class="viewer" id="viewer"><div class="empty">No photos yet. In a race, pause and pick Photo Mode, take a shot and save it.</div></div>
+      <div class="photo-meta" id="photo-meta"></div>
+    </section>
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Gallery <span class="count" id="photo-count"></span></h2>
+        <button class="ghost small" id="photos-folder" data-tip="Opens Documents\fm2\profiles, where each profile keeps its photos.">Open folder</button>
+      </div>
+      <div class="thumbs" id="thumbs"></div>
+    </section>
+  </main>
+  <div class="tooltip" id="tooltip" hidden></div>
+  <div class="toast" id="toast" hidden></div>
+  <script src="photos.js"></script>
+</body>
+</html>

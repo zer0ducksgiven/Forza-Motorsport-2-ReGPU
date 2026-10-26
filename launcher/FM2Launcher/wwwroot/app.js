@@ -128,11 +128,15 @@ $("tabs").onclick = (e) => {
   const b = e.target.closest("button")
   if (!b) return
   for (const t of $("tabs").children) t.classList.toggle("on", t === b)
-  for (const p of ["play", "profiles", "photos", "settings", "report", "updates"]) $("page-" + p).hidden = p !== b.dataset.tab
-  if (b.dataset.tab === "photos") loadPhotos()
-  else if (b.dataset.tab === "profiles") loadProfiles()
+  for (const p of ["play", "profiles", "controls", "settings", "report", "updates"]) $("page-" + p).hidden = p !== b.dataset.tab
+  // The Controls tab streams live input only while it's shown.
+  if (host) call("controls.active", b.dataset.tab === "controls").catch(() => {})
+  // Leaving Controls: it may have changed the force feedback settings, which this page saves with the rest.
+  const left = $("tabs").dataset.shown
+  $("tabs").dataset.shown = b.dataset.tab
+  if (b.dataset.tab === "profiles") loadProfiles()
   else if (b.dataset.tab === "report") loadReport()
-  else if (b.dataset.tab !== "play") refresh()
+  else if (b.dataset.tab !== "controls" && (b.dataset.tab !== "play" || left === "controls")) refresh()
 }
 
 // ---- drawing
@@ -174,11 +178,6 @@ function render() {
     ? `Your disc also has ${o.missingLanguages.join(", ")} text. Those can't be picked yet.` : ""
   for (const b of $("display").children) b.classList.toggle("on", (b.dataset.full === "1") === set.fullscreen)
   for (const k of ["vsync", "enhance", "skipIntro", "xboxPrompts", "hideShaderOverlay", "lowPerformance"]) $(k).classList.toggle("on", !!set[k])
-  const wheel = s.wheel, ws = $("wheel-status")
-  ws.className = "check-item " + (wheel && wheel.found ? (wheel.forceFeedback ? "ok" : "warn") : "")
-  ws.replaceChildren(el("span", "dot"), !wheel ? "No wheel seen yet: the game checks when it starts"
-    : !wheel.found ? "No wheel found the last time the game started"
-    : `${wheel.name} (${wheel.id})${wheel.forceFeedback ? ", force feedback" : ", no force feedback the game can use"}`)
 
   const lang = o.languages.find((l) => l.id === set.language)
   const aspect = o.aspects.find((a) => a.value === set.aspect)
@@ -341,7 +340,6 @@ $("sharpening").onchange = (e) => change({ sharpening: +e.target.value })
 $("language").onchange = (e) => change({ language: +e.target.value })
 $("display").onclick = (e) => { const b = e.target.closest("button"); if (b) change({ fullscreen: b.dataset.full === "1" }) }
 for (const k of ["vsync", "enhance", "skipIntro", "xboxPrompts", "hideShaderOverlay", "lowPerformance"]) $(k).onclick = () => change({ [k]: !state.settings[k] })
-$("wheel-report").onclick = () => document.querySelector("[data-tab=report]").click()
 
 // ---- actions
 
@@ -391,8 +389,7 @@ $("pfp-install").onclick = () => guarded(async () => {
 })
 $("discord").onclick = () => guarded(() => call("discord"))
 for (const b of document.querySelectorAll("[data-open]")) b.onclick = () => guarded(() => call("open", b.dataset.open))
-$("wheel-bindings").onclick = () => guarded(() => call("bindings.open"))
-// The Bindings window changes the force feedback settings: pick them up when coming back here.
+// The Controls tab changes the force feedback settings: pick them up when coming back here.
 window.addEventListener("focus", () => guarded(async () => { state = await call("state"); render() }))
 
 async function checkUpdates(quiet) {
@@ -565,64 +562,9 @@ $("cheat-give-apply").onclick = () => {
   setCheats({ giveCredits: Math.min(999999999, (selectedProfile().cheats.giveCredits || 0) + n) }).then(() => toast(`${n.toLocaleString()} CR will be added the next time you play.`, true))
 }
 
-// ---- photos (Photo Mode saves, read straight from the profiles folder)
+// ---- photos: their own window (PhotosForm.cs, photos.html)
 
-let photos = []
-let photoId = null
-async function loadPhotos() {
-  await guarded(async () => {
-    photos = await call("photos.list")
-    if (!photos.some((p) => p.id === photoId)) photoId = photos.length ? photos[0].id : null
-    renderPhotos()
-  })
-}
-function renderPhotos() {
-  $("photo-count").textContent = photos.length ? String(photos.length) : ""
-  const t = $("thumbs")
-  t.replaceChildren()
-  if (!photos.length) t.append(el("div", "empty", "Nothing saved yet."))
-  for (const p of photos) {
-    const b = el("button", "thumb" + (p.id === photoId ? " on" : ""))
-    const img = el("img")
-    img.src = p.url
-    img.loading = "lazy"
-    img.alt = p.name
-    b.append(img, el("span", "", p.name))
-    b.onclick = () => { photoId = p.id; renderPhotos() }
-    t.append(b)
-  }
-  const p = photos.find((x) => x.id === photoId)
-  const v = $("viewer")
-  if (p) {
-    let img = v.querySelector("img")
-    if (!img) { img = el("img"); v.replaceChildren(img) }
-    if (img.src !== p.url) img.src = p.url
-    img.alt = p.name
-    $("photo-title").textContent = p.name
-    $("photo-meta").textContent = `${p.profile} · ${new Date(p.taken).toLocaleString()} · ${size(p.bytes)}`
-  } else {
-    v.replaceChildren(el("div", "empty", "No photos yet. In a race, pause and pick Photo Mode, take a shot and save it."))
-    $("photo-title").textContent = "Photos"
-    $("photo-meta").textContent = ""
-  }
-  for (const k of ["photo-copy", "photo-save", "photo-reveal"]) $(k).disabled = !p
-}
-function stepPhoto(d) {
-  const i = photos.findIndex((p) => p.id === photoId)
-  if (i < 0) return
-  const n = photos[Math.max(0, Math.min(photos.length - 1, i + d))]
-  if (n && n.id !== photoId) { photoId = n.id; renderPhotos(); document.querySelector(".thumb.on")?.scrollIntoView({ block: "nearest" }) }
-}
-document.addEventListener("keydown", (e) => {
-  if ($("page-photos").hidden || !$("confirm").hidden) return
-  if (e.key === "ArrowLeft" || e.key === "ArrowUp") { stepPhoto(-1); e.preventDefault() }
-  if (e.key === "ArrowRight" || e.key === "ArrowDown") { stepPhoto(1); e.preventDefault() }
-  if (e.key === "c" && e.ctrlKey && photoId) $("photo-copy").click()
-})
-$("photo-copy").onclick = () => guarded(async () => { await call("photos.copy", photoId); toast("Photo copied to the clipboard.", true) })
-$("photo-save").onclick = () => guarded(async () => { if (await call("photos.save", photoId)) toast("Photo saved.", true) })
-$("photo-reveal").onclick = () => guarded(() => call("photos.reveal", photoId))
-$("photos-folder").onclick = () => guarded(() => call("photos.reveal", null))
+$("photos-open").onclick = () => guarded(() => call("photos.open"))
 
 // ---- report a bug
 

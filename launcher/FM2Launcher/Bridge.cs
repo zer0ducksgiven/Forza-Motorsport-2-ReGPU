@@ -12,6 +12,8 @@ public sealed class Bridge(CoreWebView2 web, Form owner)
 {
     static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     Updater.Release? _latest;
+    /// <summary>The Controls tab's bindings (main window only).</summary>
+    public BindingsHost? Controls { get; init; }
 
     public async void OnMessage(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
     {
@@ -90,8 +92,11 @@ public sealed class Bridge(CoreWebView2 web, Form owner)
             case "pfp.remove":
                 await Task.Run(ForzaPlus2.Remove);
                 return State();
-            case "bindings.open":
-                BindingsForm.ShowWindow();
+            case "controls.active":
+                if (Controls is not null) Controls.Active = a!.GetValue<bool>();
+                return null;
+            case "photos.open":
+                PhotosForm.ShowWindow();
                 return null;
             case "discord":
                 System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("https://discord.gg/pVEpmSk2G3") { UseShellExecute = true });

@@ -257,7 +257,11 @@ function checkListen() {
     const base = listen.baseline.get(guid)
     if (!base) continue
     let found = null
-    s.axes.forEach((v, i) => { if (!found && Math.abs(v - base.axes[i]) > 22000) found = "a" + i })
+    // The axis that moved most, once it's past a tenth of its range: a direct drive base set to 900 degrees
+    // or more moves its steering axis little for a normal turn, and some pedals don't reach their full range
+    // (a Simagic base's pedals moved 8000 of 65535: the old 22000 never caught either).
+    let most = 6500
+    s.axes.forEach((v, i) => { const d = Math.abs(v - base.axes[i]); if (d > most) { most = d; found = "a" + i } })
     if (!listen.axisOnly) {
       s.buttons.forEach((down, i) => { if (!found && down && !base.buttons[i]) found = "b" + i })
       s.hats.forEach((h, i) => {

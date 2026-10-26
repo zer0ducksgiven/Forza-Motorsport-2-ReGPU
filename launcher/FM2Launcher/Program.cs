@@ -87,7 +87,7 @@ internal sealed class MainForm : Form
         core.Settings.AreBrowserAcceleratorKeysEnabled = false;
         core.SetVirtualHostNameToFolderMapping(Host, Path.Combine(AppContext.BaseDirectory, "wwwroot"), CoreWebView2HostResourceAccessKind.DenyCors);
         core.SetVirtualHostNameToFolderMapping(Photos.Host, Directory.CreateDirectory(Photos.Root).FullName, CoreWebView2HostResourceAccessKind.DenyCors);
-        var bridge = new Bridge(core, this);
+        var bridge = new Bridge(core, this) { Controls = new BindingsHost(core) };
         core.WebMessageReceived += bridge.OnMessage;
         _ = Reports.SendLastLogAsync(); // opted in: the last session's play.log
         // only its own page; links go to the browser

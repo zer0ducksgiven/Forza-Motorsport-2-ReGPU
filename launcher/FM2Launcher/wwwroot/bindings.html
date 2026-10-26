@@ -9,6 +9,10 @@
   .bind-top h1 { margin: 0; font: 800 17px/1.1 "Segoe UI Black", "Segoe UI", sans-serif; letter-spacing: 1.2px; }
   .bind-top h1 span { color: var(--accent); }
   .bind-top .grow { flex: 1; }
+  .embedded .bind-top .mark, .embedded .bind-top h1 { display: none; }
+  .embedded body { background: transparent; }
+  .embedded .bind-top { position: absolute; top: 10px; right: 22px; padding: 0; }
+  .embedded .bind-note { padding: 12px 340px 12px 22px; min-height: 40px; }
   .bind-top select { min-width: 280px; }
   .bind-note { padding: 0 22px 10px; color: var(--muted); font-size: 12.5px; }
   .bind-note b { color: var(--text); font-weight: 600; }
@@ -51,6 +55,7 @@
 </style>
 </head>
 <body>
+  <script>if (location.search.includes("embedded")) document.documentElement.classList.add("embedded")</script>
   <div class="bind-top">
     <img class="mark" src="icon.png" alt="">
     <h1>WHEEL <span>BINDINGS</span></h1>
