@@ -29,6 +29,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import screen as screener  # noqa: E402
 
 REPO = 'zer0ducksgiven/fm2-reports'
+# The project's own repo: issues people open there by hand. The desk lists both.
+FM2_REPO = 'zer0ducksgiven/Forza-Motorsport-2-ReGPU'
+ISSUE_REPOS = {'reports': REPO, 'fm2': FM2_REPO}
 # Triage labels the desk offers (created on first use).
 STATUSES = {
     'needs info': 'fbca04',
@@ -46,12 +49,15 @@ class GhError(Exception):
     pass
 
 
-def gh(path, method='GET', body=None, raw=False):
-    """A GitHub API call through gh. path is relative to the repo unless it starts with '/'."""
-    url = path if path.startswith('/') else f'/repos/{REPO}/{path}'
+def gh(path, method='GET', body=None, raw=False, repo=REPO, full=False):
+    """A GitHub API call through gh. path is relative to the repo unless it starts with '/'.
+    full: issue bodies also as GitHub's rendered HTML (body_html), whose image links are signed to load without a login."""
+    url = path if path.startswith('/') else f'/repos/{repo}/{path}'
     cmd = ['gh', 'api', '-X', method, url]
     if raw:
         cmd += ['-H', 'Accept: application/vnd.github.raw']
+    elif full:
+        cmd += ['-H', 'Accept: application/vnd.github.full+json']
     if body is not None:
         cmd += ['--input', '-']
     # No console window per call when the desk runs windowless (desk_window.pyw under pythonw).
@@ -63,11 +69,11 @@ def gh(path, method='GET', body=None, raw=False):
     return out if raw else (json.loads(out) if out.strip() else None)
 
 
-def gh_pages(path):
+def gh_pages(path, repo=REPO, full=False):
     items, page = [], 1
     while True:
         sep = '&' if '?' in path else '?'
-        batch = gh(f'{path}{sep}per_page=100&page={page}')
+        batch = gh(f'{path}{sep}per_page=100&page={page}', repo=repo, full=full)
         items += batch
         if len(batch) < 100:
             return items
@@ -80,13 +86,18 @@ ROW = re.compile(r'^\| (.+?) \| (.*) \|$', re.M)
 LOG_LINK = re.compile(r'play\.log: \[([^\]]+)\]')
 
 
-def parse_issue(i):
-    """The Worker's issue body: the quoted description, a table of fields, the log link."""
+def parse_issue(i, source='reports'):
+    """The Worker's issue body: the quoted description, a table of fields, the log link.
+    An FM2 repo issue is free text: all of its body is the description, its author the contact."""
     body = i.get('body') or ''
-    fields = {k.strip().lower(): v.strip() for k, v in ROW.findall(body) if k.strip() not in ('', '---')}
-    description = '\n'.join(l[2:] if l.startswith('> ') else l[1:] for l in body.splitlines() if l.startswith('>'))
-    m = LOG_LINK.search(body)
+    if source == 'reports':
+        fields = {k.strip().lower(): v.strip() for k, v in ROW.findall(body) if k.strip() not in ('', '---')}
+        description = '\n'.join(l[2:] if l.startswith('> ') else l[1:] for l in body.splitlines() if l.startswith('>'))
+        m = LOG_LINK.search(body)
+    else:
+        fields, description, m = {'contact': (i.get('user') or {}).get('login', '')}, body, None
     return {
+        'source': source,
         'number': i['number'],
         'title': i['title'],
         'state': i['state'],
@@ -110,42 +121,74 @@ def parse_issue(i):
     }
 
 
-def issues(state='all'):
-    return [parse_issue(i) for i in gh_pages(f'issues?state={state}') if 'pull_request' not in i]
+def issues(state='all', source='reports'):
+    return [parse_issue(i, source) for i in gh_pages(f'issues?state={state}', ISSUE_REPOS[source]) if 'pull_request' not in i]
 
 
-def issue(n):
-    i = parse_issue(gh(f'issues/{n}'))
-    i['commentList'] = [{'author': c['user']['login'], 'created': c['created_at'], 'body': c['body']}
-                        for c in gh_pages(f'issues/{n}/comments')]
+def all_issues(state='all'):
+    """Both repos' issues, newest first (if the FM2 repo can't be read, just the reports)."""
+    out = issues(state, 'reports')
+    try:
+        out += issues(state, 'fm2')
+    except GhError:
+        pass
+    return sorted(out, key=lambda i: i['created'], reverse=True)
+
+
+IMG_SRC = re.compile(r'<img\b[^>]*?\ssrc="([^"]+)"', re.I)
+# Only pictures GitHub hosts: a report's own links could point anywhere (a tracking pixel, say).
+IMG_HOST = re.compile(r'^https://([a-z0-9-]+\.)*(githubusercontent\.com|github\.com)/', re.I)
+MD_IMAGE = re.compile(r'!\[[^\]]*\]\([^)]*\)|<img\b[^>]*>', re.I)
+
+
+def images(html):
+    """The pictures in GitHub's rendered HTML of a body, in order, GitHub-hosted only."""
+    seen, out = set(), []
+    for src in IMG_SRC.findall(html or ''):
+        src = src.replace('&amp;', '&')
+        if IMG_HOST.match(src) and src not in seen:
+            seen.add(src)
+            out.append(src)
+    return out
+
+
+def issue(n, source='reports'):
+    repo = ISSUE_REPOS[source]
+    raw = gh(f'issues/{n}', repo=repo, full=True)
+    i = parse_issue(raw, source)
+    i['images'] = images(raw.get('body_html'))
+    i['description'] = MD_IMAGE.sub('', i['description']).strip()  # shown as pictures instead
+    i['commentList'] = [{'author': c['user']['login'], 'created': c['created_at'], 'body': MD_IMAGE.sub('', c['body'] or '').strip(),
+                         'images': images(c.get('body_html'))}
+                        for c in gh_pages(f'issues/{n}/comments', repo, full=True)]
     return i
 
 
-def ensure_label(name):
+def ensure_label(name, repo=REPO):
     try:
-        gh(f'labels/{name}')
+        gh(f'labels/{name}', repo=repo)
     except GhError:
-        gh('labels', 'POST', {'name': name, 'color': STATUSES.get(name, 'ededed')})
+        gh('labels', 'POST', {'name': name, 'color': STATUSES.get(name, 'ededed')}, repo=repo)
 
 
-def add_label(n, name):
-    ensure_label(name)
-    gh(f'issues/{n}/labels', 'POST', {'labels': [name]})
+def add_label(n, name, repo=REPO):
+    ensure_label(name, repo)
+    gh(f'issues/{n}/labels', 'POST', {'labels': [name]}, repo=repo)
 
 
-def remove_label(n, name):
-    gh(f'issues/{n}/labels/{name}', 'DELETE')
+def remove_label(n, name, repo=REPO):
+    gh(f'issues/{n}/labels/{name}', 'DELETE', repo=repo)
 
 
-def set_state(n, state, reason=None):
+def set_state(n, state, reason=None, repo=REPO):
     body = {'state': state}
     if reason:
         body['state_reason'] = reason  # completed | not_planned
-    gh(f'issues/{n}', 'PATCH', body)
+    gh(f'issues/{n}', 'PATCH', body, repo=repo)
 
 
-def comment(n, text):
-    gh(f'issues/{n}/comments', 'POST', {'body': text})
+def comment(n, text, repo=REPO):
+    gh(f'issues/{n}/comments', 'POST', {'body': text}, repo=repo)
 
 
 def issue_text(i):

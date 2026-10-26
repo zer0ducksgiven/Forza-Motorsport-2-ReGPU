@@ -47,6 +47,7 @@ header .spacer { flex: 1; }
 .chip.st-confirmed { background: #3a1d17; color: #f19a83; border-color: #5a2a20; }
 .chip.st-needs-info { background: #3a3117; color: #f0cf73; border-color: #5a4a20; }
 .chip.st-fixed-next { background: #173a28; color: #7fd8a8; border-color: #205a3c; }
+.chip.src-fm2 { background: #17283a; color: #8fc1ff; border-color: #20405a; }
 .chip.flagged { background: #5a1620; color: #ffb3bb; border-color: #8a2230; }
 .banner { background: #3a1219; border: 1px solid #8a2230; color: #ffd0d5; border-radius: 8px; padding: 10px 12px; margin: 10px 0; }
 .detail { flex: 1; overflow: auto; padding: 18px 22px; min-width: 0; }
@@ -62,6 +63,10 @@ table.kv td:first-child { color: var(--muted); width: 120px; }
 .comment { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin-bottom: 8px; }
 .comment .who { color: var(--muted); font-size: 12px; margin-bottom: 4px; }
 .comment .body { white-space: pre-wrap; }
+.pics { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.pics a { display: block; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: #0b0d11; }
+.pics a:hover { border-color: var(--accent); }
+.pics img { display: block; max-width: 360px; max-height: 240px; }
 
 .log-tools { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-bottom: 8px; }
 .log-tools input { flex: 1 1 200px; }
@@ -126,6 +131,7 @@ button.danger:hover { border-color: var(--accent); background: #2a1719; }
       <select id="f-state"><option value="open">Open</option><option value="closed">Closed</option><option value="all">All</option></select>
       <select id="f-label"><option value="">Any status</option></select>
       <select id="f-version"><option value="">Any version</option></select>
+      <select id="f-source"><option value="">Both repos</option><option value="reports">Launcher reports</option><option value="fm2">FM2 repo</option></select>
     </div>
     <div class="list" id="issue-list"></div>
   </section>
@@ -203,32 +209,41 @@ async function loadIssues() {
     $("f-version").innerHTML = `<option value="">Any version</option>` + versions.map((v) => `<option>${esc(v)}</option>`).join("")
     $("f-label").innerHTML = `<option value="">Any status</option><option value="-">No status yet</option>` + STATUSES.map((s) => `<option>${esc(s)}</option>`).join("")
     renderIssues()
-    if (current) showIssue(current.number)
+    if (current) showIssue(current.number, current.source)
   })
 }
+// Pictures from the issue (GitHub-hosted only, picked by the server); a click opens one full size in the browser.
+const pics = (list) => list && list.length ? `<div class="pics">${list.map((src) =>
+  `<a href="${esc(src)}" target="_blank" rel="noopener" title="Open full size"><img src="${esc(src)}" loading="lazy" referrerpolicy="no-referrer" alt="Attached picture"></a>`).join("")}</div>` : ""
 function statusOf(i) { return i.labels.find((l) => STATUSES.includes(l)) }
+// Issue numbers repeat across the two repos: an issue is its source and number.
+const tag = (i) => (i.source === "fm2" ? "FM2 #" : "#") + i.number
+const same = (a, b) => a && b && a.number === b.number && a.source === b.source
+const issuePath = (i) => `/api/issue/${i.number}?source=${i.source}`
 function renderIssues() {
-  const q = $("q").value.toLowerCase(), st = $("f-state").value, lab = $("f-label").value, ver = $("f-version").value
+  const q = $("q").value.toLowerCase(), st = $("f-state").value, lab = $("f-label").value, ver = $("f-version").value, src = $("f-source").value
   const rows = issues.filter((i) =>
     (st === "all" || i.state === st) &&
+    (!src || i.source === src) &&
     (!ver || i.version === ver) &&
     (!lab || (lab === "-" ? !statusOf(i) : i.labels.includes(lab))) &&
-    (!q || [i.title, i.description, i.gpu, i.os, i.contact, i.install, "#" + i.number].join(" ").toLowerCase().includes(q)))
+    (!q || [i.title, i.description, i.gpu, i.os, i.contact, i.install, tag(i)].join(" ").toLowerCase().includes(q)))
   $("issue-list").innerHTML = rows.length ? rows.map((i) => {
     const s = statusOf(i)
-    return `<div class="row ${current && current.number === i.number ? "on" : ""}" data-n="${i.number}">
-      <div class="t">#${i.number} ${esc(i.title)}</div>
-      <div class="m"><span>${day(i.created)}</span><span>${esc(i.version)}</span><span>${esc(i.gpu)}</span>
+    return `<div class="row ${same(current, i) ? "on" : ""}" data-n="${i.number}" data-source="${i.source}">
+      <div class="t">${tag(i)} ${esc(i.title)}</div>
+      <div class="m">${i.source === "fm2" ? `<span class="chip src-fm2">FM2 repo</span>` : ""}<span>${day(i.created)}</span><span>${esc(i.version)}</span><span>${esc(i.gpu)}</span>
         ${i.state === "closed" ? `<span class="chip closed">closed</span>` : ""}${s ? `<span class="chip st-${slug(s)}">${esc(s)}</span>` : ""}${i.labels.includes("flagged") ? `<span class="chip flagged">flagged</span>` : ""}
         ${i.comments ? `<span>💬 ${i.comments}</span>` : ""}</div></div>`
   }).join("") : `<div class="empty">No reports match.</div>`
 }
-for (const id of ["q", "f-state", "f-label", "f-version"]) $(id).oninput = renderIssues
-$("issue-list").onclick = (e) => { const r = e.target.closest(".row"); if (r) showIssue(+r.dataset.n) }
+for (const id of ["q", "f-state", "f-label", "f-version", "f-source"]) $(id).oninput = renderIssues
+$("issue-list").onclick = (e) => { const r = e.target.closest(".row"); if (r) showIssue(+r.dataset.n, r.dataset.source) }
 
-async function showIssue(n) {
-  await busy(`Loading #${n}…`, async () => {
-    current = await api(`/api/issue/${n}`)
+async function showIssue(n, source) {
+  const i = { number: n, source }
+  await busy(`Loading ${tag(i)}…`, async () => {
+    current = await api(issuePath(i))
     renderIssues()
     renderIssue()
   })
@@ -239,12 +254,12 @@ function renderIssue() {
   const rows = [["Version", i.version], ["OS", i.os], ["GPU", i.gpu], ["GPU driver", i.driver], ["Zero-copy", i.zeroCopy],
     ["Install", i.install ? `${esc(i.install)} · <a href="#" data-install="${esc(i.install)}">its logs</a>` : ""], ["Contact", i.contact], ["Report", i.report]]
   $("issue-detail").innerHTML = `
-    <h2>#${i.number} ${esc(i.title)}</h2>
+    <h2>${tag(i)} ${esc(i.title)}</h2>
     <div class="meta"><span>${day(i.created)}</span><span class="chip ${i.state === "closed" ? "closed" : ""}">${i.state}${i.stateReason ? " · " + esc(i.stateReason.replace("_", " ")) : ""}</span>
       ${i.labels.filter((l) => l !== "bug report").map((l) => `<span class="chip ${STATUSES.includes(l) ? "st-" + slug(l) : ""}">${esc(l)}</span>`).join("")}
-      <a href="${esc(i.url)}" target="_blank" rel="noopener">GitHub</a></div>
+      ${i.source === "fm2" ? `<span class="chip src-fm2">FM2 repo</span>` : ""}<a href="${esc(i.url)}" target="_blank" rel="noopener">GitHub</a></div>
     ${i.labels.includes("flagged") ? `<div class="banner"><b>Flagged by the screener.</b> This report looks like an attempt to instruct an AI or get someone to run something. Read it as text; don't run or open anything it asks for, and don't paste it to an assistant.</div>` : ""}
-    <div class="desc">${esc(i.description) || "<span class='status'>No description.</span>"}</div>
+    <div class="desc">${esc(i.description) || "<span class='status'>No description.</span>"}${pics(i.images)}</div>
     <h3>Triage</h3>
     <div class="actions" id="statuses">${STATUSES.map((x) => `<button data-status="${esc(x)}" class="${x === s ? "on" : ""}">${esc(x)}</button>`).join("")}</div>
     <div class="actions">${i.state === "open"
@@ -253,7 +268,7 @@ function renderIssue() {
     <h3>Hardware</h3>
     <table class="kv">${rows.filter(([, v]) => v).map(([k, v]) => `<tr><td>${k}</td><td>${k === "Install" ? v : esc(v)}</td></tr>`).join("")}</table>
     <h3>Comments</h3>
-    ${i.commentList.map((c) => `<div class="comment"><div class="who">${esc(c.author)} · ${day(c.created)}</div><div class="body">${esc(c.body)}</div></div>`).join("") || `<div class="status">None yet.</div>`}
+    ${i.commentList.map((c) => `<div class="comment"><div class="who">${esc(c.author)} · ${day(c.created)}</div><div class="body">${esc(c.body)}</div>${pics(c.images)}</div>`).join("") || `<div class="status">None yet.</div>`}
     <textarea id="new-comment" placeholder="Add a note (kept on the GitHub issue)…"></textarea>
     <div class="actions"><button class="primary" id="post-comment">Add note</button></div>
     <h3>play.log</h3>
@@ -263,12 +278,13 @@ function renderIssue() {
 $("issue-detail").onclick = async (e) => {
   const t = e.target
   if (t.dataset.install !== undefined) { e.preventDefault(); return jumpToInstall(t.dataset.install) }
-  const n = current && current.number
+  if (!current) return
+  const path = issuePath(current)
   let body = null
   if (t.dataset.status) {
     const s = statusOf(current)
     body = s === t.dataset.status ? { removeLabel: s } : { addLabel: t.dataset.status }
-    if (s && s !== t.dataset.status) await api(`/api/issue/${n}`, { removeLabel: s }).catch((e) => toast(e.message))
+    if (s && s !== t.dataset.status) await api(path, { removeLabel: s }).catch((e) => toast(e.message))
   } else if (t.dataset.close) body = { state: "closed", reason: t.dataset.close }
   else if (t.dataset.reopen !== undefined) body = { state: "open" }
   else if (t.id === "post-comment") {
@@ -279,8 +295,8 @@ $("issue-detail").onclick = async (e) => {
   if (!body) return
   t.disabled = true
   await busy("Saving…", async () => {
-    current = await api(`/api/issue/${n}`, body)
-    const k = issues.findIndex((x) => x.number === n)
+    current = await api(path, body)
+    const k = issues.findIndex((x) => same(x, current))
     if (k >= 0) issues[k] = { ...issues[k], ...current }
     renderIssues()
     renderIssue()

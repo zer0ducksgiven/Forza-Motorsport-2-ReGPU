@@ -4,10 +4,11 @@
 
 Serves desk.html and a JSON API over reports.py, so anything the page does is a gh call on the private repo.
 Only listens on 127.0.0.1. The same API is handy from scripts:
-  GET  /api/issues?state=all|open|closed      GET /api/issue/<n>
+  GET  /api/issues?state=all|open|closed      GET /api/issue/<n>?source=reports|fm2
+       (issues from both the reports repo and the FM2 repo; source says which an issue is in)
   GET  /api/logs                              GET /api/log?path=logs/...   (text and summary)
   GET  /api/stats                             hardware across installs (newest log of each)
-  POST /api/issue/<n>  {"state": "open"|"closed", "reason"?, "addLabel"?, "removeLabel"?, "comment"?}
+  POST /api/issue/<n>?source=reports|fm2  {"state": "open"|"closed", "reason"?, "addLabel"?, "removeLabel"?, "comment"?}
   POST /api/log/delete {"path": "logs/..."}
 
 Logs with nothing in them (reports.is_empty) are deleted from the repo in the background as the log list loads.
@@ -92,6 +93,13 @@ def stats():
     return data
 
 
+def source(q):
+    s = q.get('source', 'reports')
+    if s not in reports.ISSUE_REPOS:
+        raise ValueError('Unknown issue source.')
+    return s
+
+
 class Handler(BaseHTTPRequestHandler):
     def send(self, code, body, kind='application/json'):
         data = body if isinstance(body, bytes) else json.dumps(body).encode()
@@ -109,9 +117,9 @@ class Handler(BaseHTTPRequestHandler):
                 with open(os.path.join(HERE, 'desk.html'), 'rb') as f:
                     return self.send(200, f.read(), 'text/html; charset=utf-8')
             if u.path == '/api/issues':
-                return self.send(200, reports.issues(q.get('state', 'all')))
+                return self.send(200, reports.all_issues(q.get('state', 'all')))
             if u.path.startswith('/api/issue/'):
-                return self.send(200, reports.issue(int(u.path.rsplit('/', 1)[1])))
+                return self.send(200, reports.issue(int(u.path.rsplit('/', 1)[1]), source(q)))
             if u.path == '/api/logs':
                 # Each log with when it arrived and its PC (the CPU and GPU its install logged).
                 rows = logs()
@@ -145,15 +153,17 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(int(self.headers.get('content-length') or 0)) or b'{}')
             if u.path.startswith('/api/issue/'):
                 n = int(u.path.rsplit('/', 1)[1])
+                src = source({k: v[0] for k, v in parse_qs(u.query).items()})
+                repo = reports.ISSUE_REPOS[src]
                 if body.get('comment'):
-                    reports.comment(n, body['comment'])
+                    reports.comment(n, body['comment'], repo)
                 if body.get('addLabel'):
-                    reports.add_label(n, body['addLabel'])
+                    reports.add_label(n, body['addLabel'], repo)
                 if body.get('removeLabel'):
-                    reports.remove_label(n, body['removeLabel'])
+                    reports.remove_label(n, body['removeLabel'], repo)
                 if body.get('state'):
-                    reports.set_state(n, body['state'], body.get('reason'))
-                return self.send(200, reports.issue(n))
+                    reports.set_state(n, body['state'], body.get('reason'), repo)
+                return self.send(200, reports.issue(n, src))
             if u.path == '/api/log/delete':
                 reports.delete_log(body['path'])
                 _empty.add(body['path'])  # keeps it out of the list until GitHub's tree catches up
