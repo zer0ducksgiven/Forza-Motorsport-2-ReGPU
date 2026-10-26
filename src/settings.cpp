@@ -74,6 +74,8 @@ void Load()
             g_settings.skipIntro = value == "1";
         else if (key == "xbox_prompts")
             g_settings.xboxPrompts = value == "1";
+        else if (key == "hide_shader_overlay")
+            g_settings.hideShaderOverlay = value == "1";
         else if (key == "low_performance")
             g_settings.lowPerformance = value == "1";
         else if (key == "wheel_strength")
@@ -220,6 +222,7 @@ void SaveSettings()
     out << "enhance=" << (s.enhance ? 1 : 0) << "\n";
     out << "skip_intro=" << (s.skipIntro ? 1 : 0) << "\n";
     out << "xbox_prompts=" << (s.xboxPrompts ? 1 : 0) << "\n";
+    out << "hide_shader_overlay=" << (s.hideShaderOverlay ? 1 : 0) << "\n";
     out << "low_performance=" << (s.lowPerformance ? 1 : 0) << "\n";
     out << "wheel_strength=" << s.wheelStrength << "\n";
     out << "wheel_spring=" << s.wheelSpring << "\n";

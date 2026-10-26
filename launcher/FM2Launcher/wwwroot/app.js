@@ -173,7 +173,7 @@ function render() {
   $("lang-note").textContent = o.missingLanguages.length
     ? `Your disc also has ${o.missingLanguages.join(", ")} text. Those can't be picked yet.` : ""
   for (const b of $("display").children) b.classList.toggle("on", (b.dataset.full === "1") === set.fullscreen)
-  for (const k of ["vsync", "enhance", "skipIntro", "xboxPrompts", "lowPerformance"]) $(k).classList.toggle("on", !!set[k])
+  for (const k of ["vsync", "enhance", "skipIntro", "xboxPrompts", "hideShaderOverlay", "lowPerformance"]) $(k).classList.toggle("on", !!set[k])
   const wheel = s.wheel, ws = $("wheel-status")
   ws.className = "check-item " + (wheel && wheel.found ? (wheel.forceFeedback ? "ok" : "warn") : "")
   ws.replaceChildren(el("span", "dot"), !wheel ? "No wheel seen yet: the game checks when it starts"
@@ -301,7 +301,7 @@ $("renderScale").onchange = (e) => change({ renderScale: +e.target.value })
 $("sharpening").onchange = (e) => change({ sharpening: +e.target.value })
 $("language").onchange = (e) => change({ language: +e.target.value })
 $("display").onclick = (e) => { const b = e.target.closest("button"); if (b) change({ fullscreen: b.dataset.full === "1" }) }
-for (const k of ["vsync", "enhance", "skipIntro", "xboxPrompts", "lowPerformance"]) $(k).onclick = () => change({ [k]: !state.settings[k] })
+for (const k of ["vsync", "enhance", "skipIntro", "xboxPrompts", "hideShaderOverlay", "lowPerformance"]) $(k).onclick = () => change({ [k]: !state.settings[k] })
 $("wheel-report").onclick = () => document.querySelector("[data-tab=report]").click()
 
 // ---- actions

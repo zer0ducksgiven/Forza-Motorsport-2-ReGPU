@@ -5767,7 +5767,7 @@ struct Overlay
 bool OverlayWanted(std::vector<std::string>& lines)
 {
     static LiveSwitch disabled("FM2_NO_OVERLAY");
-    if (disabled)
+    if (disabled || GetSettings().hideShaderOverlay)
         return false;
     const uint64_t nowMs = uint64_t(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
     const bool recentCold = g_stats.lastColdMs.load() && nowMs - g_stats.lastColdMs.load() < 4000;
