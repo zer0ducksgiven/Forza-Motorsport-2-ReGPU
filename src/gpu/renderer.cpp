@@ -429,6 +429,7 @@ struct Renderer
     ComPtr<ID3D12RootSignature> motionRootSignature; // root signature + b2 (motion-vector pipelines)
     ComPtr<ID3D12PipelineState> depthBlit;                // depth buffer -> R32_FLOAT
     ComPtr<ID3D12PipelineState> colorBlit8, colorBlit16;  // colour -> 8888 / RGBA16F, scaled
+    ComPtr<ID3D12PipelineState> boxBlit8, boxBlit16;      // a texture averaged down (SceneAtGameSize)
     ComPtr<ID3D12PipelineState> depthBlitMs, colorBlitMs8, colorBlitMs16; // the same from multisampled surfaces
     // EDRAM surfaces: one host colour and one host depth target per EDRAM base
     // (RB_COLOR_INFO / RB_DEPTH_INFO bits 0-11), so passes that the title
@@ -449,6 +450,7 @@ struct Renderer
     std::unordered_map<uint64_t, CachedTexture> textures;
     std::unordered_map<uint64_t, CachedTexture> cubes;
     std::unordered_map<uint32_t, CachedTexture> mipChains; // resolved textures with their mips, by base
+    std::unordered_map<uint32_t, CachedTexture> gameSize;  // resolved textures averaged to game size, by base
     // Bindless texture descriptors.
     struct BindlessEntry
     {
@@ -1155,6 +1157,17 @@ float4 psColor(float4 pos : SV_Position) : SV_Target
     if (clampDest) c = clamp(c, destMin, destMax);
     return swapRB ? c.bgra : c;
 }
+// The average of the scale x scale block of texels under each output pixel.
+float4 psBox(float4 pos : SV_Position) : SV_Target
+{
+    const int k = max(int(scale + 0.5), 1);
+    const int2 base = int2(pos.xy) * k;
+    float4 c = 0;
+    for (int y = 0; y < k; y++)
+        for (int x = 0; x < k; x++)
+            c += colorTex.Load(int3(base + int2(x, y), 0));
+    return c / float(k * k);
+}
 )";
     ComPtr<ID3DBlob> vs, ps;
     Check(D3DCompile(kSource, sizeof(kSource) - 1, nullptr, nullptr, nullptr, "vs", "vs_5_0", 0, 0, &vs, &error), "D3DCompile(blit vs)");
@@ -1182,6 +1195,14 @@ float4 psColor(float4 pos : SV_Position) : SV_Target
     Check(d->CreateGraphicsPipelineState(&pd, IID_PPV_ARGS(&g_r.colorBlit8)), "CreateGraphicsPipelineState(colour blit 8)");
     pd.RTVFormats[0] = DXGI_FORMAT_R16G16B16A16_FLOAT;
     Check(d->CreateGraphicsPipelineState(&pd, IID_PPV_ARGS(&g_r.colorBlit16)), "CreateGraphicsPipelineState(colour blit 16)");
+    ComPtr<ID3DBlob> psBox;
+    Check(D3DCompile(kSource, sizeof(kSource) - 1, nullptr, nullptr, nullptr, "psBox", "ps_5_0", 0, 0, &psBox, &error), "D3DCompile(blit psBox)");
+    pd.PS = { psBox->GetBufferPointer(), psBox->GetBufferSize() };
+    Check(d->CreateGraphicsPipelineState(&pd, IID_PPV_ARGS(&g_r.boxBlit16)), "CreateGraphicsPipelineState(box blit 16)");
+    pd.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+    Check(d->CreateGraphicsPipelineState(&pd, IID_PPV_ARGS(&g_r.boxBlit8)), "CreateGraphicsPipelineState(box blit 8)");
+    pd.PS = { psColor->GetBufferPointer(), psColor->GetBufferSize() };
+    pd.RTVFormats[0] = DXGI_FORMAT_R16G16B16A16_FLOAT;
     if (g_msaa > 1)
     {
         // The same passes reading a multisampled surface: depth takes sample 0, colour averages all samples.
@@ -3621,6 +3642,79 @@ ID3D12Resource* GetTexture(const TextureFetch& fetch, DXGI_FORMAT& format, bool&
     return r;
 }
 
+// A resolved image averaged down to game size (its width x height), for bloom's reads (see
+// GetTextureLocked). Rebuilt when the image is resolved again.
+ID3D12Resource* SceneAtGameSize(uint32_t base, const ResolvedTexture& src)
+{
+    const float k = float(src.hostWidth) / float(std::max(src.width, 1u));
+    if (k < 1.5f || !src.resource)
+        return nullptr;
+    auto& c = g_r.gameSize[base];
+    if (c.resource && c.contentHash == src.serial && c.checkedFrame == g_r.frame)
+        return c.resource.Get();
+    FrameResources& f = Frame();
+    if (f.descriptorsUsed >= kDescriptorsPerFrame)
+        return nullptr;
+    if (!c.resource || c.width != src.width || c.height != src.height || c.format != src.format)
+    {
+        D3D12_HEAP_PROPERTIES hp{};
+        hp.Type = D3D12_HEAP_TYPE_DEFAULT;
+        D3D12_RESOURCE_DESC td{};
+        td.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        td.Width = src.width;
+        td.Height = src.height;
+        td.DepthOrArraySize = 1;
+        td.MipLevels = 1;
+        td.SampleDesc.Count = 1;
+        td.Format = src.format;
+        td.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+        if (c.resource)
+            f.garbage.push_back(std::move(c.resource));
+        Check(g_r.device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &td,
+                  D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, nullptr,
+                  IID_PPV_ARGS(&c.resource)),
+            "CreateCommittedResource(scene at game size)"); CountCreate("scene at game size");
+        c.width = src.width;
+        c.height = src.height;
+        c.format = src.format;
+    }
+    const UINT slot = f.descriptorBase + f.descriptorsUsed++;
+    D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
+    srv.Format = src.format;
+    srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    srv.Texture2D.MipLevels = 1;
+    g_r.device->CreateShaderResourceView(src.resource.Get(), &srv, Cpu(g_r.srvHeap.Get(), slot, g_r.srvStride));
+    const auto rtv = g_r.blitRtvHeap->GetCPUDescriptorHandleForHeapStart();
+    C().list->CreateRenderTargetView(g_r.device, c.resource.Get(), rtv);
+    D3D12_RESOURCE_BARRIER b{};
+    b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    b.Transition.pResource = c.resource.Get();
+    b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    b.Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    b.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    C().list->ResourceBarrier(1, &b);
+    C().list->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
+    C().list->SetGraphicsRootSignature(g_r.blitRootSignature.Get());
+    C().list->SetPipelineState(src.format == DXGI_FORMAT_R8G8B8A8_UNORM ? g_r.boxBlit8.Get() : g_r.boxBlit16.Get());
+    C().list->SetGraphicsRootDescriptorTable(0, Gpu(g_r.srvHeap.Get(), slot, g_r.srvStride));
+    const uint32_t constants[5] = { std::bit_cast<uint32_t>(k), 0, 0, 0, 0 };
+    C().list->SetGraphicsRoot32BitConstants(1, 5, constants, 0);
+    const D3D12_VIEWPORT vp{ 0, 0, float(src.width), float(src.height), 0, 1 };
+    const D3D12_RECT all{ 0, 0, LONG(src.width), LONG(src.height) };
+    C().list->RSSetViewports(1, &vp);
+    C().list->RSSetScissorRects(1, &all);
+    C().list->DrawInstanced(3, 1, 0, 0);
+    std::swap(b.Transition.StateBefore, b.Transition.StateAfter);
+    C().list->ResourceBarrier(1, &b);
+    C().list->OMSetRenderTargets(1, &C().rtv, FALSE, &C().dsv);
+    C().list->SetGraphicsRootSignature(g_r.rootSignature.Get());
+    g_drawState.Invalidate();
+    c.contentHash = src.serial;
+    c.checkedFrame = g_r.frame;
+    return c.resource.Get();
+}
+
 ID3D12Resource* GetTextureLocked(const TextureFetch& fetch, DXGI_FORMAT& format, bool& native)
 {
     TextureScope textureScope;
@@ -3635,6 +3729,19 @@ ID3D12Resource* GetTextureLocked(const TextureFetch& fetch, DXGI_FORMAT& format,
         if (resolvedTexture->frame == g_r.frame && fetch.Width() >= kWidth)
             g_drawSamplesResolve = true;
         format = resolvedTexture->format;
+        // Bloom reads at game size: its downsample reads the scene (into a quarter-size viewport)
+        // and its blur and composite read the 320x180 result, all with taps placed for game-size
+        // texels. Scaled up with the output they sampled sharp copies the taps didn't blend: the
+        // blur's glow came out as stacked stripes (report #9: lines above sunlit car roofs at
+        // 1440p, none at 720p). FM2_SCALED_BLOOM: A/B.
+        static LiveSwitch scaledBloom("FM2_SCALED_BLOOM");
+        const bool sixteenNine = fetch.Width() * 9 == fetch.Height() * 16;
+        const bool downsample = fetch.Width() >= kWidth && std::fabs(RegFloat(PA_CL_VPORT_XSCALE)) * 2.0f <= float(kWidth) / 4.0f + 1.0f;
+        const bool bloomBuffer = resolvedTexture->width <= kWidth / 4 && fetch.Width() >= 64;
+        if (!scaledBloom && sixteenNine && (downsample || bloomBuffer) && resolvedTexture->frame == g_r.frame &&
+            resolvedTexture->format != DXGI_FORMAT_R32_FLOAT && fetch.Width() <= resolvedTexture->width)
+            if (ID3D12Resource* averaged = SceneAtGameSize(fetch.Address(), *resolvedTexture))
+                return averaged;
         if (fetch.MipMaxLevel() > 0 && fetch.MipAddress())
             if (ID3D12Resource* chain = ResolvedMipChain(fetch, *resolvedTexture))
                 return chain;
