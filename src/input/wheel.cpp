@@ -600,11 +600,155 @@ void Apply(Driver& d, uint32_t block, float dt)
         d.running[i] = SDL_RunHapticEffect(d.haptic, id, SDL_HAPTIC_INFINITY);
 }
 
+// Controllers XInput doesn't see, through SDL's gamepad mapping (GamepadRead).
+struct Pad
+{
+    SDL_Gamepad* gamepad = nullptr;
+    SDL_JoystickID id = 0;
+    bool playstation = false;
+    GamepadInput input;
+};
+struct Pads
+{
+    std::mutex mutex;
+    std::vector<Pad> pads;
+    std::atomic<PromptStyle> style{ PromptStyle::Xbox360 };
+    std::atomic<bool> modernXbox{ false }; // an Xbox One / Series pad is connected (ModernXboxConnected)
+} g_pads;
+
+void PadAdded(Driver& d, SDL_JoystickID id)
+{
+    // Wheels and pedals stay with the wheel; Xbox pads with XInput (read there).
+    for (const Device& dev : d.devices)
+        if (dev.id == id)
+            return;
+    const SDL_GamepadType type = SDL_GetGamepadTypeForID(id);
+    const uint16_t vid = SDL_GetJoystickVendorForID(id);
+    if (vid == 0x045E || type == SDL_GAMEPAD_TYPE_XBOX360 || type == SDL_GAMEPAD_TYPE_XBOXONE)
+        return;
+    Pad pad;
+    if (!(pad.gamepad = SDL_OpenGamepad(id)))
+        return;
+    pad.id = id;
+    pad.playstation = type == SDL_GAMEPAD_TYPE_PS3 || type == SDL_GAMEPAD_TYPE_PS4 || type == SDL_GAMEPAD_TYPE_PS5;
+    const char* name = SDL_GetGamepadName(pad.gamepad);
+    Log("gamepad: %s (%04X:%04X, type %d) as an Xbox 360 pad", name ? name : "?", vid, SDL_GetJoystickProductForID(id), int(type));
+    std::lock_guard lock(g_pads.mutex);
+    // The only controller (no XInput pad connected): its icons from the start, not only once it is used.
+    XINPUT_STATE probe{};
+    bool xinput = false;
+    for (DWORD slot = 0; slot < XUSER_MAX_COUNT && !xinput; slot++)
+        xinput = XInputGetState(slot, &probe) == ERROR_SUCCESS;
+    if (!xinput && g_pads.pads.empty() && pad.playstation)
+        g_pads.style = PromptStyle::PlayStation;
+    g_pads.pads.push_back(pad);
+}
+
+void PadRemoved(SDL_JoystickID id)
+{
+    std::lock_guard lock(g_pads.mutex);
+    for (auto it = g_pads.pads.begin(); it != g_pads.pads.end(); ++it)
+        if (it->id == id)
+        {
+            Log("gamepad: disconnected");
+            SDL_CloseGamepad(it->gamepad);
+            g_pads.pads.erase(it);
+            return;
+        }
+}
+
+// Whether to show modern Xbox prompts for XInput pads: XInput doesn't say which pad it is, so Windows'
+// device list is checked. Any XInput pad (an IG_ interface) that isn't a genuine Xbox 360 one (Microsoft's
+// wired 028E, 028F and wireless receiver 0719, 0291) counts: Xbox One / Series pads and third-party pads,
+// most of which are modern-style even when they report as a 360 pad (an 8BitDo in X-input mode).
+bool ModernXboxConnected()
+{
+    UINT n = 0;
+    if (GetRawInputDeviceList(nullptr, &n, sizeof(RAWINPUTDEVICELIST)) != 0 || !n)
+        return false;
+    std::vector<RAWINPUTDEVICELIST> list(n);
+    if (GetRawInputDeviceList(list.data(), &n, sizeof(RAWINPUTDEVICELIST)) == UINT(-1))
+        return false;
+    for (UINT i = 0; i < n; i++)
+    {
+        if (list[i].dwType != RIM_TYPEHID)
+            continue;
+        char name[512] = {};
+        UINT size = sizeof(name);
+        if (GetRawInputDeviceInfoA(list[i].hDevice, RIDI_DEVICENAME, name, &size) == UINT(-1))
+            continue;
+        std::string s(name);
+        for (char& c : s)
+            c = char(toupper(uint8_t(c)));
+        if (s.find("IG_") == std::string::npos)
+            continue;
+        const size_t at = s.find("PID_");
+        const std::string pid = at == std::string::npos ? "" : s.substr(at + 4, 4);
+        const bool genuine360 = s.find("VID_045E") != std::string::npos && (pid == "028E" || pid == "028F" || pid == "0719" || pid == "0291");
+        if (!genuine360)
+            return true;
+    }
+    return false;
+}
+
+void ReadPads()
+{
+    static auto checked = steady_clock::time_point{};
+    if (steady_clock::now() - checked > seconds(2))
+    {
+        checked = steady_clock::now();
+        const bool modern = ModernXboxConnected();
+        if (modern != g_pads.modernXbox.exchange(modern))
+        {
+            Log("gamepad: %s", modern ? "an XInput pad other than a genuine Xbox 360 one: modern Xbox prompts" : "Xbox 360 prompts for XInput pads");
+            if (g_pads.style != PromptStyle::PlayStation)
+                g_pads.style = modern ? PromptStyle::XboxSeries : PromptStyle::Xbox360;
+        }
+    }
+    static const std::pair<SDL_GamepadButton, uint16_t> kButtons[] = { { SDL_GAMEPAD_BUTTON_SOUTH, XINPUT_GAMEPAD_A },
+        { SDL_GAMEPAD_BUTTON_EAST, XINPUT_GAMEPAD_B }, { SDL_GAMEPAD_BUTTON_WEST, XINPUT_GAMEPAD_X },
+        { SDL_GAMEPAD_BUTTON_NORTH, XINPUT_GAMEPAD_Y }, { SDL_GAMEPAD_BUTTON_BACK, XINPUT_GAMEPAD_BACK },
+        { SDL_GAMEPAD_BUTTON_START, XINPUT_GAMEPAD_START }, { SDL_GAMEPAD_BUTTON_LEFT_STICK, XINPUT_GAMEPAD_LEFT_THUMB },
+        { SDL_GAMEPAD_BUTTON_RIGHT_STICK, XINPUT_GAMEPAD_RIGHT_THUMB }, { SDL_GAMEPAD_BUTTON_LEFT_SHOULDER, XINPUT_GAMEPAD_LEFT_SHOULDER },
+        { SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER, XINPUT_GAMEPAD_RIGHT_SHOULDER }, { SDL_GAMEPAD_BUTTON_DPAD_UP, XINPUT_GAMEPAD_DPAD_UP },
+        { SDL_GAMEPAD_BUTTON_DPAD_DOWN, XINPUT_GAMEPAD_DPAD_DOWN }, { SDL_GAMEPAD_BUTTON_DPAD_LEFT, XINPUT_GAMEPAD_DPAD_LEFT },
+        { SDL_GAMEPAD_BUTTON_DPAD_RIGHT, XINPUT_GAMEPAD_DPAD_RIGHT },
+        // The touchpad click as Back too (the DualSense's Create button is small and out of the way).
+        { SDL_GAMEPAD_BUTTON_TOUCHPAD, XINPUT_GAMEPAD_BACK } };
+    auto trigger = [](int16_t v) { return uint8_t(std::clamp(int(v) * 255 / 32767, 0, 255)); };
+    auto flip = [](int16_t v) { return int16_t(std::clamp(-int(v), -32767, 32767)); }; // SDL: down is positive
+    std::lock_guard lock(g_pads.mutex);
+    for (Pad& pad : g_pads.pads)
+    {
+        GamepadInput in;
+        in.present = true;
+        for (auto [b, bit] : kButtons)
+            if (SDL_GetGamepadButton(pad.gamepad, b))
+                in.buttons |= bit;
+        in.leftTrigger = trigger(SDL_GetGamepadAxis(pad.gamepad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER));
+        in.rightTrigger = trigger(SDL_GetGamepadAxis(pad.gamepad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER));
+        in.lx = SDL_GetGamepadAxis(pad.gamepad, SDL_GAMEPAD_AXIS_LEFTX);
+        in.ly = flip(SDL_GetGamepadAxis(pad.gamepad, SDL_GAMEPAD_AXIS_LEFTY));
+        in.rx = SDL_GetGamepadAxis(pad.gamepad, SDL_GAMEPAD_AXIS_RIGHTX);
+        in.ry = flip(SDL_GetGamepadAxis(pad.gamepad, SDL_GAMEPAD_AXIS_RIGHTY));
+        // Used: a button, a trigger or a stick well off centre.
+        if (in.buttons || in.leftTrigger > 64 || in.rightTrigger > 64 || std::abs(in.lx) > 16000 || std::abs(in.ly) > 16000)
+        {
+            g_pads.style = pad.playstation ? PromptStyle::PlayStation : PromptStyle::Xbox360;
+        }
+        pad.input = in;
+    }
+}
+
 void Thread()
 {
     SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
-    // Wheels through DirectInput, where their force feedback is; controllers stay with XInput.
+    // Wheels through DirectInput, where their force feedback is; Xbox controllers stay with XInput.
+    // PlayStation and Switch pads through SDL's HID drivers (the right mapping, rumble, the type).
     SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI, "0");
+    SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_PS4, "1");
+    SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_PS5, "1");
+    SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_SWITCH, "1");
     SDL_SetHint(SDL_HINT_JOYSTICK_RAWINPUT, "0");
     SDL_SetHint(SDL_HINT_XINPUT_ENABLED, "0");
     LoadBindings();
@@ -618,7 +762,7 @@ void Thread()
         // The 360 wheel turns 270 degrees: a wheel set to 1080 needs a quarter of its turn for full lock.
         d.steerScale = st.wheelRotation ? st.wheelRotation / 270.0f : 1.0f;
     }
-    if (!SDL_Init(SDL_INIT_JOYSTICK | SDL_INIT_HAPTIC))
+    if (!SDL_Init(SDL_INIT_JOYSTICK | SDL_INIT_HAPTIC | SDL_INIT_GAMEPAD))
     {
         Log("wheel: SDL did not start: %s", SDL_GetError());
         return;
@@ -641,6 +785,10 @@ void Thread()
                     Added(d, ev.jdevice.which);
                 else if (ev.type == SDL_EVENT_JOYSTICK_REMOVED)
                     Removed(d, ev.jdevice.which);
+                else if (ev.type == SDL_EVENT_GAMEPAD_ADDED)
+                    PadAdded(d, ev.gdevice.which);
+                else if (ev.type == SDL_EVENT_GAMEPAD_REMOVED)
+                    PadRemoved(ev.gdevice.which);
             // The devices already plugged in come as events on the first pass.
             if (first && d.wheel < 0)
             {
@@ -648,6 +796,7 @@ void Thread()
                 RecordWheel(nullptr, false);
             }
             ReadInput(d);
+            ReadPads();
             if (d.haptic)
             {
                 // The game also turns driving off and back on within a fraction of a millisecond every
@@ -730,4 +879,27 @@ void WheelFfDeviceGain(uint32_t gain)
 {
     std::lock_guard lock(g_wheel.mutex);
     g_wheel.game.SetDeviceGain(gain);
+}
+
+GamepadInput GamepadRead(uint32_t index)
+{
+    std::lock_guard lock(g_pads.mutex);
+    return index < g_pads.pads.size() ? g_pads.pads[index].input : GamepadInput{};
+}
+
+void GamepadRumble(uint32_t index, uint16_t low, uint16_t high)
+{
+    std::lock_guard lock(g_pads.mutex);
+    if (index < g_pads.pads.size())
+        SDL_RumbleGamepad(g_pads.pads[index].gamepad, low, high, 1000); // renewed by the game's next call
+}
+
+PromptStyle PromptStyleInUse()
+{
+    return g_pads.style;
+}
+
+void NoteXInputPadUsed()
+{
+    g_pads.style = g_pads.modernXbox ? PromptStyle::XboxSeries : PromptStyle::Xbox360;
 }

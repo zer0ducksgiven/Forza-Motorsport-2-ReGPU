@@ -15,6 +15,7 @@ struct Settings
     uint32_t maxFps = 60;                // frame cap, 30-360 (the physics tick rate)
     bool enhance = false;                // enhanced lighting post pass (experimental)
     bool skipIntro = false;              // straight to the title screen (no legal text or splash videos)
+    bool xboxPrompts = false;            // keep the Xbox 360 button icons with a PlayStation pad
     // Low performance mode: for old CPUs, turns off renderer changes that help fast PCs but cost
     // slow ones (staged draw constants: an FX-8350 lost time copying them).
     bool lowPerformance = false;

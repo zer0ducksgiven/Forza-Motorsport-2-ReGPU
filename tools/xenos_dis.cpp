@@ -15,6 +15,9 @@
 #include "gpu/hlsl.h"
 #include "gpu/ucode.h"
 
+// log.cpp's Fatal stops the wheel's force feedback; no wheel here.
+void WheelStop() {}
+
 int main(int argc, char** argv)
 {
     bool hlsl = false, print = false, hashOnly = false;

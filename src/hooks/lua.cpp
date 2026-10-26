@@ -2,11 +2,15 @@
 // luaD_throw(L, errcode) has the message on the stack top for runtime
 // errors. Layout (32-bit big-endian): L->top at +8, TValue 16 bytes with
 // the type tag at +8, TString characters at +16.
+#include <algorithm>
 #include <cstring>
+#include <vector>
 
 #include "kernel/imports.h"
 #include "log.h"
 #include "memory.h"
+#include "input/wheel.h"
+#include "settings.h"
 
 PPC_FUNC_IMPL(__imp__sub_824B91F0);
 
@@ -25,4 +29,61 @@ PPC_FUNC(sub_824B91F0)
     else
         Log("lua: error %u (value type %u)", errcode, tag);
     __imp__sub_824B91F0(ctx, base);
+}
+
+// luaL_loadbuffer(L, buffer, size, name) and its variant: scripts on their way into the title's
+// Lua. With a PlayStation pad in use (input/wheel.cpp; not with the launcher's "original Xbox 360
+// button icons"), the options screen's controller layout labels its D-pad and left stick the other
+// way round: the DualSense picture there (gpu/ps_glyphs.h) has its D-pad where the 360 pad has its
+// left stick, and the game's label lines stay where they are. The script fills the label objects
+// "LeftThumbstick" and "DPad"; their two names are swapped in the compiled chunk (each a
+// length-prefixed constant, so the chunk keeps its size).
+static void SwapLayoutLabels(uint32_t buffer, uint32_t size, uint32_t name)
+{
+    if (!buffer || !name || size < 64 || !PlayStationPadInUse() || GetSettings().xboxPrompts)
+        return;
+    const char* n = GuestPtr<const char>(name);
+    if (!strstr(n, "P_OPT_ControllerBehavior"))
+        return;
+    uint8_t* p = GuestPtr<uint8_t>(buffer);
+    static const uint8_t kStick[] = { 0, 0, 0, 15, 'L', 'e', 'f', 't', 'T', 'h', 'u', 'm', 'b', 's', 't', 'i', 'c', 'k', 0 };
+    static const uint8_t kDPad[] = { 0, 0, 0, 5, 'D', 'P', 'a', 'd', 0 };
+    std::vector<uint8_t> chunk(p, p + size);
+    auto find = [&](const uint8_t* pat, size_t len) {
+        auto it = std::search(chunk.begin(), chunk.end(), pat, pat + len);
+        return it == chunk.end() ? SIZE_MAX : size_t(it - chunk.begin());
+    };
+    const size_t a = find(kStick, sizeof(kStick)), b = find(kDPad, sizeof(kDPad));
+    if (a == SIZE_MAX || b == SIZE_MAX)
+    {
+        Log("lua: %s: layout labels not found, left as they are", n);
+        return;
+    }
+    std::vector<uint8_t> out;
+    out.reserve(size);
+    const size_t first = std::min(a, b), second = std::max(a, b);
+    const bool stickFirst = a < b;
+    out.insert(out.end(), chunk.begin(), chunk.begin() + first);
+    out.insert(out.end(), stickFirst ? kDPad : kStick, (stickFirst ? kDPad : kStick) + (stickFirst ? sizeof(kDPad) : sizeof(kStick)));
+    out.insert(out.end(), chunk.begin() + first + (stickFirst ? sizeof(kStick) : sizeof(kDPad)), chunk.begin() + second);
+    out.insert(out.end(), stickFirst ? kStick : kDPad, (stickFirst ? kStick : kDPad) + (stickFirst ? sizeof(kStick) : sizeof(kDPad)));
+    out.insert(out.end(), chunk.begin() + second + (stickFirst ? sizeof(kDPad) : sizeof(kStick)), chunk.end());
+    if (out.size() != size)
+        return;
+    memcpy(p, out.data(), size);
+    Log("lua: %s: D-pad and left stick labels swapped for the DualSense picture", n);
+}
+
+PPC_FUNC_IMPL(__imp__sub_8254DDF8);
+PPC_FUNC(sub_8254DDF8)
+{
+    SwapLayoutLabels(ctx.r4.u32, ctx.r5.u32, ctx.r6.u32);
+    __imp__sub_8254DDF8(ctx, base);
+}
+
+PPC_FUNC_IMPL(__imp__sub_8254DF80);
+PPC_FUNC(sub_8254DF80)
+{
+    SwapLayoutLabels(ctx.r4.u32, ctx.r5.u32, ctx.r6.u32);
+    __imp__sub_8254DF80(ctx, base);
 }

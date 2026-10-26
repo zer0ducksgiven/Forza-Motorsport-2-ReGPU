@@ -294,3 +294,8 @@ microcode format. The renderer itself is our own code, written for this port; Xe
 documentation of the hardware made that possible.
 
 The game code is recompiled with [XenonRecomp](https://github.com/hedge-dev/XenonRecomp).
+
+Controller button icons: the PlayStation ones are from Kenney's
+[Input Prompts](https://kenney.nl/assets/input-prompts) (CC0). The Xbox One / Series icons and both
+controller pictures on the options screen are Button Icons and Controls by Zacksly
+(CC BY 3.0 Licensed | [zacksly.itch.io](https://zacksly.itch.io)), recoloured and resized.

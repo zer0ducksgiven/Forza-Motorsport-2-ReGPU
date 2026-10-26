@@ -515,6 +515,8 @@ void AddKeyboard(PadState& s)
         s.ry = Key('K') ? -32767 : 32767;
 }
 
+int g_xinputPads = 0; // connected XInput pads (PadSlot): SDL's pads (GamepadRead) are the players after them
+
 DWORD PadSlot(uint32_t user)
 {
     // Players are the connected pads in slot order: player 1 is the first connected pad whatever its
@@ -535,6 +537,7 @@ DWORD PadSlot(uint32_t user)
             for (DWORD slot = 0; slot < XUSER_MAX_COUNT; slot++)
                 if (XInputGetState(slot, &probe) == ERROR_SUCCESS)
                     slotOf[n++] = int(slot);
+            g_xinputPads = n;
             for (DWORD slot = 0; slot < XUSER_MAX_COUNT && n < int(XUSER_MAX_COUNT); slot++)
                 if (std::find(slotOf, slotOf + n, int(slot)) == slotOf + n)
                     slotOf[n++] = int(slot);
@@ -559,7 +562,22 @@ bool ReadPad(uint32_t user, PadState& s)
         s.ly = x.Gamepad.sThumbLY;
         s.rx = x.Gamepad.sThumbRX;
         s.ry = x.Gamepad.sThumbRY;
+        if (s.buttons || s.leftTrigger > 64 || s.rightTrigger > 64 || std::abs(s.lx) > 16000 || std::abs(s.ly) > 16000)
+            NoteXInputPadUsed();
     }
+    // A DualSense, DualShock 4 or other pad XInput doesn't see (input/wheel.cpp).
+    else if (user < XUSER_MAX_COUNT && int(user) >= g_xinputPads)
+        if (const GamepadInput g = GamepadRead(user - uint32_t(g_xinputPads)); g.present)
+        {
+            connected = true;
+            s.buttons = g.buttons;
+            s.leftTrigger = g.leftTrigger;
+            s.rightTrigger = g.rightTrigger;
+            s.lx = g.lx;
+            s.ly = g.ly;
+            s.rx = g.rx;
+            s.ry = g.ry;
+        }
     if (user == 0)
     {
         connected = true;
@@ -889,7 +907,10 @@ GUEST_EXPORT(XamInputSetState)
         XINPUT_VIBRATION v{};
         v.wLeftMotorSpeed = __builtin_bswap16(*GuestPtr<uint16_t>(ctx.r5.u32));
         v.wRightMotorSpeed = __builtin_bswap16(*GuestPtr<uint16_t>(ctx.r5.u32 + 2));
-        XInputSetState(PadSlot(user), &v); // ignored when no pad is connected
+        if (int(user) < g_xinputPads)
+            XInputSetState(PadSlot(user), &v);
+        else
+            GamepadRumble(user - uint32_t(g_xinputPads), v.wLeftMotorSpeed, v.wRightMotorSpeed);
     }
     Return(ctx, X_ERROR_SUCCESS);
 }

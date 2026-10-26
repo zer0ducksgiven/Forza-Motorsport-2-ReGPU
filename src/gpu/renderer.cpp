@@ -42,6 +42,8 @@
 #include "fsr1_cs.h"
 #include <DirectXPackedVector.h>
 #include "live_switch.h"
+#include "input/wheel.h"
+#include "gpu/ps_glyphs.h"
 #include "settings.h"
 #include "gpu/regs.h"
 #include "gpu/texture.h"
@@ -3715,6 +3717,102 @@ ID3D12Resource* SceneAtGameSize(uint32_t base, const ResolvedTexture& src)
     return c.resource.Get();
 }
 
+// PlayStation button prompts (gpu/ps_glyphs.h, tools/ps_glyphs.py) in place of the game's Xbox
+// ones while a PlayStation pad is the controller in use (input/wheel.cpp). Each Xbox prompt is
+// recognised by its size, format and a hash of its data; checked again every 60 frames.
+ID3D12Resource* PsGlyphFor(const TextureFetch& fetch)
+{
+    const uint32_t w = fetch.Width(), h = fetch.Height(), fmt = fetch.Format();
+    bool candidate = false;
+    for (const PsGlyph& g : kPsGlyphs)
+        candidate |= g.width == w && g.height == h && g.format == fmt;
+    if (!candidate)
+        return nullptr;
+    struct Seen { uint64_t frame = ~0ull; int glyph = -1; };
+    static std::unordered_map<uint32_t, Seen> seen;
+    Seen& s = seen[fetch.Address()];
+    if (s.frame == ~0ull || g_r.frame - s.frame >= 60)
+    {
+        s.frame = g_r.frame;
+        s.glyph = -1;
+        for (size_t i = 0; i < std::size(kPsGlyphs) && s.glyph < 0; i++)
+        {
+            const PsGlyph& g = kPsGlyphs[i];
+            if (g.width != w || g.height != h || g.format != fmt)
+                continue;
+            const uint8_t* p = GuestPtr<uint8_t>(GpuPhysToGuest(fetch.Address()));
+            uint64_t hash = 0xCBF29CE484222325ull;
+            for (uint32_t k = 0; k < g.bytes; k++)
+                hash = (hash ^ p[k]) * 0x100000001B3ull;
+            if (hash == g.hash)
+                s.glyph = int(i);
+
+        }
+    }
+    if (s.glyph < 0)
+        return nullptr;
+    // kSeriesGlyphs holds the same textures in the same order.
+    const bool series = PromptStyleInUse() == PromptStyle::XboxSeries;
+    if (series && size_t(s.glyph) >= std::size(kSeriesGlyphs))
+        return nullptr;
+    static ComPtr<ID3D12Resource> made[2][std::size(kPsGlyphs)];
+    ComPtr<ID3D12Resource>& r = made[series][s.glyph];
+    if (r)
+        return r.Get();
+    const PsGlyph& g = series ? kSeriesGlyphs[s.glyph] : kPsGlyphs[s.glyph];
+    // An overlay: the game's own texture with the button's box cleared, the PlayStation one over it.
+    std::vector<uint8_t> pixels(g.rgba, g.rgba + size_t(g.width) * g.height * 4);
+    if (g.clear[2] > g.clear[0])
+    {
+        std::vector<uint8_t> base;
+        if (!DecodeTexture(fetch, base) || base.size() < pixels.size())
+            return nullptr;
+        for (uint32_t y = g.clear[1]; y < g.clear[3]; y++)
+            for (uint32_t x = g.clear[0]; x < g.clear[2]; x++)
+                base[(size_t(y) * g.width + x) * 4 + 3] = 0;
+        for (size_t i = 0; i < pixels.size(); i += 4)
+        {
+            const uint32_t a = pixels[i + 3], ba = base[i + 3], oa = a + ba * (255 - a) / 255;
+            for (int c = 0; c < 3; c++)
+                base[i + c] = uint8_t(oa ? (pixels[i + c] * a + base[i + c] * ba * (255 - a) / 255) / oa : 0);
+            base[i + 3] = uint8_t(oa);
+        }
+        pixels.swap(base);
+    }
+    const UINT rowPitch = (g.width * 4 + 255) & ~255u;
+    const UINT64 offset = RingAlloc(UINT64(rowPitch) * g.height, 512);
+    if (offset == ~0ull)
+        return nullptr;
+    D3D12_RESOURCE_DESC td{};
+    td.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    td.Width = g.width;
+    td.Height = g.height;
+    td.DepthOrArraySize = 1;
+    td.MipLevels = 1;
+    td.SampleDesc.Count = 1;
+    td.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    r = CreateTexture(td, D3D12_RESOURCE_STATE_COPY_DEST, "PlayStation prompt");
+    for (uint32_t y = 0; y < g.height; y++)
+        memcpy(Frame().ringCpu + offset + UINT64(y) * rowPitch, pixels.data() + size_t(y) * g.width * 4, size_t(g.width) * 4);
+    D3D12_TEXTURE_COPY_LOCATION dst{};
+    dst.pResource = r.Get();
+    dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    D3D12_TEXTURE_COPY_LOCATION src{};
+    src.pResource = Frame().ring.Get();
+    src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    src.PlacedFootprint.Offset = offset;
+    src.PlacedFootprint.Footprint = { DXGI_FORMAT_R8G8B8A8_UNORM, g.width, g.height, 1, rowPitch };
+    C().list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+    D3D12_RESOURCE_BARRIER b{};
+    b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    b.Transition.pResource = r.Get();
+    b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    b.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+    b.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    C().list->ResourceBarrier(1, &b);
+    return r.Get();
+}
+
 ID3D12Resource* GetTextureLocked(const TextureFetch& fetch, DXGI_FORMAT& format, bool& native)
 {
     TextureScope textureScope;
@@ -3752,6 +3850,13 @@ ID3D12Resource* GetTextureLocked(const TextureFetch& fetch, DXGI_FORMAT& format,
         NoteTextureFailure("not a supported 2D texture", fetch);
         return nullptr;
     }
+    static LiveSwitch noPsGlyphs("FM2_NO_PS_PROMPTS");
+    if (!noPsGlyphs && !GetSettings().xboxPrompts && PromptStyleInUse() != PromptStyle::Xbox360)
+        if (ID3D12Resource* glyph = PsGlyphFor(fetch))
+        {
+            format = DXGI_FORMAT_R8G8B8A8_UNORM;
+            return glyph;
+        }
     const uint32_t w = fetch.Width(), h = fetch.Height();
     auto& cached = g_r.textures[TextureKey(fetch.Address(), fetch.Format(), w, h)];
     LiveSwitch &dumpAll = g_sw_FM2_DUMP_TEXTURES;

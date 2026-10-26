@@ -72,6 +72,8 @@ void Load()
             g_settings.language = uint32_t(atoi(value.c_str()));
         else if (key == "skip_intro")
             g_settings.skipIntro = value == "1";
+        else if (key == "xbox_prompts")
+            g_settings.xboxPrompts = value == "1";
         else if (key == "low_performance")
             g_settings.lowPerformance = value == "1";
         else if (key == "wheel_strength")
@@ -217,6 +219,7 @@ void SaveSettings()
     out << "max_fps=" << s.maxFps << "\n";
     out << "enhance=" << (s.enhance ? 1 : 0) << "\n";
     out << "skip_intro=" << (s.skipIntro ? 1 : 0) << "\n";
+    out << "xbox_prompts=" << (s.xboxPrompts ? 1 : 0) << "\n";
     out << "low_performance=" << (s.lowPerformance ? 1 : 0) << "\n";
     out << "wheel_strength=" << s.wheelStrength << "\n";
     out << "wheel_spring=" << s.wheelSpring << "\n";

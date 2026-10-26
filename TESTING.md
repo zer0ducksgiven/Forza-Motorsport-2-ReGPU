@@ -75,6 +75,9 @@ The keyboard only works while the game window has focus.
   cannot be skipped by a button. Tick "Skip intro videos" in the launcher (or set
   FM2_SKIP_INTRO=1) to go straight to the title screen. Input recordings made before the clock
   fix start about 90 seconds too early.
+- PlayStation controllers: the button icons switch to PlayStation ones, but text that names a
+  button still says the Xbox name (photo mode's "LS", "RS", "LB / RB", "X Button", "Y Button",
+  "START" and the LT / RT on its tabs). Those come from the game's string tables.
 - Photo Mode: saved photos include the "A Save / B Back" prompt. The saver reads the picture
   from memory, which our copy updates a frame or two late; whether the console's photos have
   the prompt is not known yet.
