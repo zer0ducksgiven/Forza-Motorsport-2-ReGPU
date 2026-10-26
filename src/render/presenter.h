@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <string>
 #include <vector>
 
 // Window + D3D12 swap chain (FM2_HEADLESS=1 disables it).
@@ -16,6 +17,11 @@ void PresenterSubmitFrame(uint64_t frame);
 void PresenterSubmitImage(uint32_t width, uint32_t height, std::vector<uint8_t> rgba);
 // Keyboard input goes to the game only while the window has focus.
 bool PresenterHasFocus();
+// A controller was used: the mouse cursor hides over the game window until the mouse moves (GitHub #12).
+void PresenterControllerUsed();
+// The console's on-screen keyboard (XamShowKeyboardUI): a small text box over the game window. Blocks
+// until OK (true, text set) or Cancel (false). text holds the default on entry.
+bool PresenterAskText(const std::wstring& title, const std::wstring& description, std::wstring& text, uint32_t maxLength);
 
 struct ID3D12Device;
 struct ID3D12CommandQueue;

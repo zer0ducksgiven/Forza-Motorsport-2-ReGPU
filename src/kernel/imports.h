@@ -71,6 +71,7 @@ std::string FormatGuestStack(PPCContext& ctx, uint32_t fmt, int firstArg);
 std::string FormatGuestVaList(uint32_t fmt, uint32_t vaList);
 
 constexpr uint32_t X_ERROR_SUCCESS = 0;
+constexpr uint32_t X_ERROR_CANCELLED = 0x4C7;
 constexpr uint32_t X_ERROR_FILE_NOT_FOUND = 2;
 constexpr uint32_t X_ERROR_NO_MORE_FILES = 18;
 constexpr uint32_t X_ERROR_FUNCTION_FAILED = 1627;

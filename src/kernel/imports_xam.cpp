@@ -442,20 +442,31 @@ GUEST_EXPORT(XamShowMessageBoxUIEx)
 GUEST_EXPORT(XamShowKeyboardUI)
 {
     // (user, flags, default text, title, description, result buffer, max length, overlapped)
+    // A text box over the game window stands in for the console's keyboard (GitHub #13: handing back
+    // the default, empty for a new tune's name, made the game ask again forever).
     const uint32_t def = ctx.r5.u32, out = ctx.r8.u32, max = ctx.r9.u32;
+    auto read = [](uint32_t p) {
+        std::wstring s;
+        for (uint32_t i = 0; p && i < 512; i++)
+        {
+            const uint16_t c = __builtin_bswap16(GuestPtr<uint16_t>(p)[i]);
+            if (!c)
+                break;
+            s += wchar_t(c);
+        }
+        return s;
+    };
+    std::wstring text = read(def);
+    const bool ok = PresenterAskText(read(ctx.r6.u32), read(ctx.r7.u32), text, max ? max - 1 : 0);
+    Log("keyboard: %s", ok ? "entered text" : "cancelled");
     if (out && max)
     {
         uint32_t i = 0;
-        for (; def && i + 1 < max; i++)
-        {
-            const uint16_t c = GuestPtr<uint16_t>(def)[i];
-            if (!c)
-                break;
-            GuestPtr<uint16_t>(out)[i] = c;
-        }
+        for (; i < text.size() && i + 1 < max; i++)
+            GuestPtr<uint16_t>(out)[i] = __builtin_bswap16(uint16_t(text[i]));
         GuestPtr<uint16_t>(out)[i] = 0;
     }
-    FinishUi(ctx, ctx.r10.u32);
+    FinishUi(ctx, ctx.r10.u32, ok ? X_ERROR_SUCCESS : X_ERROR_CANCELLED);
 }
 
 // Input ----------------------------------------------------------------------------------
@@ -563,7 +574,10 @@ bool ReadPad(uint32_t user, PadState& s)
         s.rx = x.Gamepad.sThumbRX;
         s.ry = x.Gamepad.sThumbRY;
         if (s.buttons || s.leftTrigger > 64 || s.rightTrigger > 64 || std::abs(s.lx) > 16000 || std::abs(s.ly) > 16000)
+        {
             NoteXInputPadUsed();
+            PresenterControllerUsed();
+        }
     }
     // A DualSense, DualShock 4 or other pad XInput doesn't see (input/wheel.cpp).
     else if (user < XUSER_MAX_COUNT && int(user) >= g_xinputPads)
@@ -577,6 +591,8 @@ bool ReadPad(uint32_t user, PadState& s)
             s.ly = g.ly;
             s.rx = g.rx;
             s.ry = g.ry;
+            if (s.buttons || s.leftTrigger > 64 || s.rightTrigger > 64 || std::abs(s.lx) > 16000 || std::abs(s.ly) > 16000)
+                PresenterControllerUsed();
         }
     if (user == 0)
     {
