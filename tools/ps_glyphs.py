@@ -118,16 +118,20 @@ def build(original, icons, region=None, shine=True):
     """The replacement for one texture: its size, the icons fitted to the Xbox icon's box (within
     region, fractions of the texture, when given)."""
     w, h = original.size
-    alpha = original.split()[3].point(lambda v: 255 if v > 40 else 0)
+    # The button itself: its opaque part, without the soft shadow below and to the right.
+    alpha = original.split()[3].point(lambda v: 255 if v > 200 else 0)
     if region:
         r = (int(region[0] * w), int(region[1] * h), int(region[2] * w), int(region[3] * h))
         sub = alpha.crop(r).getbbox()
         box = (r[0] + sub[0], r[1] + sub[1], r[0] + sub[2], r[1] + sub[3]) if sub else r
     else:
         box = alpha.getbbox() or (0, 0, w, h)
-    # The outline and shadow need a margin: the box is kept that far inside the texture.
+    # The outline and shadow need a margin: the box is kept that far inside the texture, shrunk
+    # evenly on both sides so it stays centred on the button.
     m = max(2, round(min(box[2] - box[0], box[3] - box[1]) / 8))
-    box = (max(box[0], m), max(box[1], m), min(box[2], w - m), min(box[3], h - m))
+    dx = max(0, m - box[0], box[2] - (w - m))
+    dy = max(0, m - box[1], box[3] - (h - m))
+    box = (box[0] + dx, box[1] + dy, box[2] - dx, box[3] - dy)
     bw, bh = box[2] - box[0], box[3] - box[1]
     glossy = [gloss(i) if shine else i for i in icons]
     gap = max(1, bh // 8)
