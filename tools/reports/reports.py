@@ -181,9 +181,30 @@ def logs():
     for t in tree:
         m = LOG_NAME.match(t['path'])
         if m:
-            out.append({'path': t['path'], 'date': m.group(1), 'install': m.group(2), 'id': m.group(3), 'size': t.get('size', 0)})
+            out.append({'path': t['path'], 'date': m.group(1), 'install': m.group(2), 'id': m.group(3), 'size': t.get('size', 0),
+                        'sha': t['sha']})
     out.sort(key=lambda l: (l['date'], l['path']), reverse=True)
     return out
+
+
+def delete_log(path, sha=None):
+    """Removes a log from the repo (a commit, so git history still has it)."""
+    if not LOG_NAME.match(path):
+        raise GhError('Not a log path.')
+    if not sha:
+        sha = gh(f'contents/{path}')['sha']
+    gh(f'contents/{path}', 'DELETE', {'message': f'Delete {path}', 'sha': sha})
+    with _cache_lock:
+        _log_cache.pop(path, None)
+
+
+# A real log line: "[   1.2345] system: ...". Setup test lines don't count.
+REAL_LINE = re.compile(r'^\[\s*\d+\.\d+\]\s+[\w .()/-]+:')
+
+
+def is_empty(text):
+    """Nothing to read in it: no real log line (an unreadable upload, the launcher's setup test)."""
+    return not any(REAL_LINE.match(l) and 'test' not in l.lower() for l in text.splitlines())
 
 
 def log_text(path):
@@ -217,10 +238,12 @@ def log_summary(text):
         if m and line.startswith('['):
             swaps.append((float(line[1:line.find(']')]), int(m.group(1))))
     # Logs without FM2_PERF: the game logs every 60th frame, so the fps of each stretch between them
-    # (stretches over 10 s are pauses or a window in the background, not frames).
+    # (stretches over 10 s are pauses or a window in the background, not frames). Its first swaps are
+    # logged one by one at startup (#1, #2 a fraction of a millisecond apart: "10000 fps"), so only
+    # stretches of 30+ frames over a quarter second or more count.
     average = None
     if not fps:
-        spans = [(t1 - t0, n1 - n0) for (t0, n0), (t1, n1) in zip(swaps, swaps[1:]) if 0 < t1 - t0 <= 10 and n1 > n0]
+        spans = [(t1 - t0, n1 - n0) for (t0, n0), (t1, n1) in zip(swaps, swaps[1:]) if 0.25 <= t1 - t0 <= 10 and n1 - n0 >= 30]
         fps = [n / t for t, n in spans]
         if spans:
             average = sum(n for _, n in spans) / sum(t for t, _ in spans)

@@ -8,10 +8,14 @@ Only listens on 127.0.0.1. The same API is handy from scripts:
   GET  /api/logs                              GET /api/log?path=logs/...   (text and summary)
   GET  /api/stats                             hardware across installs (newest log of each)
   POST /api/issue/<n>  {"state": "open"|"closed", "reason"?, "addLabel"?, "removeLabel"?, "comment"?}
+  POST /api/log/delete {"path": "logs/..."}
+
+Logs with nothing in them (reports.is_empty) are deleted from the repo in the background as the log list loads.
 """
 import json
 import os
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -22,23 +26,68 @@ import reports  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 _stats = {'at': 0, 'data': None}
+_checked = set()  # logs already read for the empty check
+_empty = set()    # empty logs found (deleted, or being deleted)
+_purge_lock = threading.Lock()
+
+
+def purge_empty(all_logs):
+    """Reads each log not yet checked and deletes the empty ones. Runs in the background."""
+    if not _purge_lock.acquire(blocking=False):
+        return
+    try:
+        todo = [l for l in all_logs if l['path'] not in _checked]
+        def check(l):
+            try:
+                empty = reports.is_empty(reports.log_text(l['path']))
+            except reports.GhError:
+                return
+            _checked.add(l['path'])
+            if empty:
+                _empty.add(l['path'])
+                try:
+                    reports.delete_log(l['path'], l['sha'])
+                    print(f'Deleted empty log {l["path"]}', flush=True)
+                except reports.GhError as e:
+                    print(f'Could not delete empty log {l["path"]}: {e}', flush=True)
+        with ThreadPoolExecutor(8) as pool:
+            list(pool.map(check, todo))
+        if todo:
+            _stats['at'] = 0
+    finally:
+        _purge_lock.release()
+
+
+def logs():
+    all_logs = reports.logs()
+    threading.Thread(target=purge_empty, args=(all_logs,), daemon=True).start()
+    return [l for l in all_logs if l['path'] not in _empty]
 
 
 def stats():
-    # The newest log of each install, summarised (logs are cached once read); at most once a minute.
+    # Each install's newest log that names its hardware (a session can end before the system lines),
+    # summarised (logs are cached once read); at most once a minute. Installs that never logged their
+    # hardware (most never got the game running) are only counted, with the reason their newest log gives.
     if _stats['data'] and time.time() - _stats['at'] < 60:
         return _stats['data']
-    newest = {}
-    for l in reports.logs():
-        newest.setdefault(l['install'], l)
-    def summary(l):
-        s = reports.log_summary(reports.log_text(l['path']))
-        return {'install': l['install'], 'date': l['date'], 'path': l['path'], 'gpu': s['gpu'], 'cpu': s['cpu'], 'os': s['os'],
-                'wine': s['wine'], 'version': s['version'], 'zeroCopy': s['zeroCopy'], 'fps': s['fps']['median'],
-                'settings': s['settings'], 'errors': len(s['errors'])}
+    per_install = {}
+    all_logs = logs()
+    for l in all_logs:
+        per_install.setdefault(l['install'], []).append(l)  # newest first
+    def summary(install_logs):
+        for l in install_logs:
+            s = reports.log_summary(reports.log_text(l['path']))
+            if s['gpu'] or s['os']:
+                return {'install': l['install'], 'date': l['date'], 'path': l['path'], 'gpu': s['gpu'], 'cpu': s['cpu'], 'os': s['os'],
+                        'wine': s['wine'], 'version': s['version'], 'zeroCopy': s['zeroCopy'], 'fps': s['fps']['median'],
+                        'settings': s['settings'], 'errors': len(s['errors'])}
+        text = reports.log_text(install_logs[0]['path'])
+        fatal = next((line[line.find(']') + 1:].strip() for line in text.splitlines() if 'FATAL' in line), '')
+        return {'install': install_logs[0]['install'], 'noHardware': True, 'reason': 'title update missing' if 'title update' in fatal else 'other'}
     with ThreadPoolExecutor(8) as pool:
-        installs = list(pool.map(summary, newest.values()))
-    data = {'logs': sum(1 for _ in reports.logs()), 'installs': installs}
+        results = list(pool.map(summary, per_install.values()))
+    data = {'logs': len(all_logs), 'installs': [r for r in results if not r.get('noHardware')],
+            'noHardware': [r for r in results if r.get('noHardware')]}
     _stats.update(at=time.time(), data=data)
     return data
 
@@ -64,7 +113,7 @@ class Handler(BaseHTTPRequestHandler):
             if u.path.startswith('/api/issue/'):
                 return self.send(200, reports.issue(int(u.path.rsplit('/', 1)[1])))
             if u.path == '/api/logs':
-                return self.send(200, reports.logs())
+                return self.send(200, logs())
             if u.path == '/api/log':
                 text = reports.log_text(q.get('path', ''))
                 return self.send(200, {'path': q['path'], 'text': text, 'summary': reports.log_summary(text)})
@@ -94,6 +143,11 @@ class Handler(BaseHTTPRequestHandler):
                 if body.get('state'):
                     reports.set_state(n, body['state'], body.get('reason'))
                 return self.send(200, reports.issue(n))
+            if u.path == '/api/log/delete':
+                reports.delete_log(body['path'])
+                _empty.add(body['path'])  # keeps it out of the list until GitHub's tree catches up
+                _stats['at'] = 0
+                return self.send(200, {'deleted': body['path']})
             return self.send(404, {'error': 'Not found.'})
         except reports.GhError as e:
             return self.send(502, {'error': str(e)})
@@ -106,7 +160,7 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8790
-    print(f'Reports desk: http://127.0.0.1:{port}  (Ctrl+C to stop)')
+    print(f'Reports desk: http://127.0.0.1:{port}  (Ctrl+C to stop)', flush=True)
     ThreadingHTTPServer(('127.0.0.1', port), Handler).serve_forever()
 
 

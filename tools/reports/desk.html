@@ -86,6 +86,15 @@ table.grid tr.click:hover td { background: #141820; }
 .bar-row .b i { position: absolute; inset: 0 auto 0 0; background: #2a1719; border-radius: 4px; z-index: 0; }
 .bar-row .b span { position: relative; }
 .bar-row .n { text-align: right; color: var(--muted); }
+.bar-row.pick { cursor: pointer; border-radius: 4px; }
+.bar-row.pick:hover .b span { text-decoration: underline; }
+.bar-row.on .b i { background: var(--accent); }
+.bar-row.on .b span { color: #fff; font-weight: 600; }
+.hw-filters { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin: 0 0 10px; min-height: 26px; }
+.chip.filter { cursor: pointer; background: #2a1719; border-color: #5a2a20; color: #ffd0d5; }
+.chip.filter:hover { border-color: var(--accent); }
+button.danger { border-color: #5a2a20; color: #f19a83; }
+button.danger:hover { border-color: var(--accent); background: #2a1719; }
 .yes { color: var(--good); } .no { color: var(--accent); }
 .toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: #2a1719; border: 1px solid #5a2a20; padding: 8px 14px; border-radius: 8px; display: none; }
 .toast.good { background: #173a28; border-color: #205a3c; }
@@ -135,6 +144,7 @@ table.grid tr.click:hover td { background: #141820; }
 
 <main class="view wide" id="view-hardware">
   <div class="bars" id="hw-bars"></div>
+  <div class="hw-filters" id="hw-filters"></div>
   <table class="grid" id="hw-table"></table>
 </main>
 
@@ -346,8 +356,26 @@ $("log-list").onclick = (e) => {
   if (!r) return
   openLog = r.dataset.path
   renderLogs()
-  $("log-detail").innerHTML = `<h2>${esc(openLog.split("/").pop())}</h2><div id="log-view"><div class="status">Loading log…</div></div>`
+  $("log-detail").innerHTML = `<h2>${esc(openLog.split("/").pop())}</h2>
+    <div class="actions" style="margin-bottom:10px"><button class="danger" id="delete-log">Delete this log</button></div>
+    <div id="log-view"><div class="status">Loading log…</div></div>`
   loadLogInto("log-view", openLog)
+}
+$("log-detail").onclick = async (e) => {
+  if (e.target.id !== "delete-log" || !openLog) return
+  const path = openLog
+  if (!confirm(`Delete ${path.split("/").pop()} from the reports repo?\n\nIt's removed with a commit, so git history keeps a copy.`)) return
+  e.target.disabled = true
+  await busy("Deleting…", async () => {
+    await api("/api/log/delete", { path })
+    logs = logs.filter((l) => l.path !== path)
+    openLog = null
+    renderLogs()
+    $("log-detail").innerHTML = `<div class="empty">Deleted ${esc(path.split("/").pop())}.</div>`
+    hw = null
+    toast("Log deleted.", true)
+  })
+  e.target.disabled = false
 }
 async function jumpToInstall(install) {
   document.querySelector('#nav [data-view="logs"]').click()
@@ -357,7 +385,8 @@ async function jumpToInstall(install) {
 }
 
 // ---- hardware
-let hw = null, hwSort = "date"
+let hw = null, hwSort = "date", hwAsc = false
+const hwFilter = new Map() // group title -> value picked in its bars; the table shows installs matching all of them
 async function loadHardware() {
   await busy("Reading the newest log of every install (first time takes a while)…", async () => {
     hw = await api("/api/stats")
@@ -371,35 +400,69 @@ function count(list, key) {
 }
 function bars(title, pairs, total) {
   return `<div class="stat"><div class="k">${esc(title)}</div>${pairs.slice(0, 8).map(([k, n]) =>
-    `<div class="bar-row"><div class="b"><i style="width:${(100 * n / total).toFixed(0)}%"></i><span>${esc(k)}</span></div><div class="n">${n}</div></div>`).join("")}</div>`
+    `<div class="bar-row pick ${hwFilter.get(title) === k ? "on" : ""}" data-group="${esc(title)}" data-value="${esc(k)}" title="Show only these installs">
+      <div class="b"><i style="width:${(100 * n / total).toFixed(0)}%"></i><span>${esc(k)}</span></div><div class="n">${n}</div></div>`).join("")}</div>`
 }
+const vendor = (g) => /nvidia|geforce|rtx|gtx/i.test(g) ? "NVIDIA" : /amd|radeon/i.test(g) ? "AMD" : /intel|arc/i.test(g) ? "Intel" : g ? "Other" : ""
+const fpsBand = (f) => f == null ? "" : f >= 60 ? "60+ fps" : f >= 45 ? "45-59 fps" : f >= 30 ? "30-44 fps" : "under 30 fps"
+const osName = (x) => x.wine ? "Linux (Proton)" : /Windows 11/.test(x.os) ? "Windows 11" : /Windows 10/.test(x.os) ? "Windows 10" : x.os
+// Each overview group and how an install falls into it (count() files a blank as "unknown").
+const HW_GROUPS = [
+  ["GPU vendor", (x) => vendor(x.gpu)],
+  ["Zero-copy", (x) => x.zeroCopy === null ? "" : x.zeroCopy ? "yes" : "no (copy path)"],
+  ["OS", osName],
+  ["Median fps", (x) => fpsBand(x.fps)],
+  ["Version", (x) => x.version],
+  ["GPU", (x) => x.gpu],
+]
 function renderHardware() {
-  const list = hw.installs, n = list.length || 1
-  const vendor = (g) => /nvidia|geforce|rtx|gtx/i.test(g) ? "NVIDIA" : /amd|radeon/i.test(g) ? "AMD" : /intel|arc/i.test(g) ? "Intel" : g ? "Other" : ""
-  const fpsBand = (f) => f == null ? "" : f >= 60 ? "60+ fps" : f >= 45 ? "45-59 fps" : f >= 30 ? "30-44 fps" : "under 30 fps"
-  const osName = (x) => x.wine ? "Linux (Proton)" : /Windows 11/.test(x.os) ? "Windows 11" : /Windows 10/.test(x.os) ? "Windows 10" : x.os
+  const list = hw.installs, n = list.length || 1, none = hw.noHardware || []
+  const noUpdate = none.filter((x) => x.reason === "title update missing").length
   $("hw-bars").innerHTML =
-    `<div class="stat"><div class="k">Shared logs</div><div class="v">${hw.logs} from ${list.length} installs</div></div>` +
-    bars("GPU vendor", count(list, (x) => vendor(x.gpu)), n) +
-    bars("Zero-copy", count(list, (x) => x.zeroCopy === null ? "" : x.zeroCopy ? "yes" : "no (copy path)"), n) +
-    bars("OS", count(list, osName), n) +
-    bars("Median fps", count(list, (x) => fpsBand(x.fps)), n) +
-    bars("Version", count(list, (x) => x.version), n) +
-    bars("GPU", count(list, (x) => x.gpu), n)
+    `<div class="stat"><div class="k">Shared logs</div><div class="v">${hw.logs} from ${list.length + none.length} installs</div>
+      ${none.length ? `<div class="status" style="margin-top:6px">${none.length} never logged their hardware and aren't counted below` +
+        (noUpdate ? ` (${noUpdate} stopped at "title update missing")` : "") + `.</div>` : ""}</div>` +
+    HW_GROUPS.map(([title, key]) => bars(title, count(list, key), n)).join("")
+  const shown = list.filter((x) => HW_GROUPS.every(([title, key]) => !hwFilter.has(title) || (key(x) || "unknown") === hwFilter.get(title)))
+  $("hw-filters").innerHTML = hwFilter.size
+    ? `<span class="status">Showing ${shown.length} of ${list.length} installs:</span>` +
+      [...hwFilter].map(([g, v]) => `<span class="chip filter" data-unfilter="${esc(g)}" title="Remove this filter">${esc(g)}: ${esc(v)} ✕</span>`).join("") +
+      `<button data-unfilter="*">Clear</button>`
+    : `<span class="status">Click any bar above to show only those installs.</span>`
   const cols = [["date", "Last log"], ["gpu", "GPU"], ["cpu", "CPU"], ["os", "OS"], ["version", "Version"], ["zeroCopy", "Zero-copy"], ["fps", "Fps"], ["errors", "Errors"]]
-  const sorted = [...list].sort((a, b) => {
+  const blank = (v) => v === null || v === undefined || v === ""
+  const sorted = [...shown].sort((a, b) => {
     const x = a[hwSort], y = b[hwSort]
-    return typeof x === "number" || typeof y === "number" ? (y ?? -1) - (x ?? -1) : String(y ?? "").localeCompare(String(x ?? ""))
+    if (blank(x) || blank(y)) return blank(x) - blank(y) // blanks last either way
+    const d = typeof x === "number" && typeof y === "number" ? y - x : String(y).localeCompare(String(x))
+    return hwAsc ? -d : d
   })
-  $("hw-table").innerHTML = `<thead><tr>${cols.map(([k, t]) => `<th data-sort="${k}">${t}${hwSort === k ? " ▾" : ""}</th>`).join("")}</tr></thead><tbody>` +
+  $("hw-table").innerHTML = `<thead><tr>${cols.map(([k, t]) => `<th data-sort="${k}" title="Click again to reverse">${t}${hwSort === k ? (hwAsc ? " ▴" : " ▾") : ""}</th>`).join("")}</tr></thead><tbody>` +
     sorted.map((x) => `<tr class="click" data-install="${esc(x.install)}">
       <td>${fromYmd(x.date)}</td><td>${esc(x.gpu)}</td><td>${esc(x.cpu)}</td><td>${esc(x.wine ? "Wine " + x.wine : x.os)}</td><td>${esc(x.version)}</td>
       <td class="${x.zeroCopy ? "yes" : x.zeroCopy === false ? "no" : ""}">${x.zeroCopy === null ? "?" : x.zeroCopy ? "yes" : "no"}</td>
       <td>${x.fps ?? "–"}</td><td>${x.errors}</td></tr>`).join("") + `</tbody>`
 }
+$("hw-bars").onclick = (e) => {
+  const r = e.target.closest(".bar-row[data-group]")
+  if (!r) return
+  const g = r.dataset.group, v = r.dataset.value
+  hwFilter.get(g) === v ? hwFilter.delete(g) : hwFilter.set(g, v)
+  renderHardware()
+}
+$("hw-filters").onclick = (e) => {
+  const g = e.target.closest("[data-unfilter]")?.dataset.unfilter
+  if (!g) return
+  g === "*" ? hwFilter.clear() : hwFilter.delete(g)
+  renderHardware()
+}
 $("hw-table").onclick = (e) => {
   const th = e.target.closest("th")
-  if (th) { hwSort = th.dataset.sort; return renderHardware() }
+  if (th) {
+    hwAsc = th.dataset.sort === hwSort ? !hwAsc : false // a new column starts highest / newest first
+    hwSort = th.dataset.sort
+    return renderHardware()
+  }
   const tr = e.target.closest("tr[data-install]")
   if (tr) jumpToInstall(tr.dataset.install)
 }
