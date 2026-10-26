@@ -937,13 +937,11 @@ GUEST_EXPORT(XamContentCreateEx)
     VfsAddLink(root + ":", device);
     Log("content: %s: -> %s", root.c_str(), dir.string().c_str());
     StoreIfNonNull(ctx.r7.u32, existed ? 2 : 1); // XCONTENT_OPENED_EXISTING : XCONTENT_CREATED_NEW
-    // The license mask of a downloadable package (<package>.license, from its header; see
-    // tools/stfs.py install): titles skip content that is not licensed.
-    uint32_t licenseMask = 0;
-    if (shared)
-        if (std::ifstream in(DlcDir() / (fileName + ".license")); in)
-            in >> std::hex >> licenseMask;
-    StoreIfNonNull(ctx.r8.u32, licenseMask);
+    // The license mask of a downloadable package: titles skip content that is not licensed. All bits
+    // are set: the header's mask (<package>.license, tools/stfs.py) depends on how and where the
+    // package was bought, and FM2 hid ten of the December Car Pack's eleven cars from a copy whose
+    // header said 00000001 instead of 00000003 (report #7).
+    StoreIfNonNull(ctx.r8.u32, shared ? 0xFFFFFFFFu : 0u);
     FinishUi(ctx, StackArg(ctx, 8));
 }
 
