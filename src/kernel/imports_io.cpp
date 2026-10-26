@@ -12,6 +12,7 @@
 #include "live_switch.h"
 #include "loader.h"
 #include "kernel/vfs.h"
+#include "user_dir.h"
 
 namespace fs = std::filesystem;
 
@@ -143,6 +144,48 @@ bool WildcardMatch(const char* pattern, const char* name)
 
 // Path mapping ------------------------------------------------------------------
 
+namespace
+{
+// The enabled mod folders, in apply order (read once).
+const std::vector<fs::path>& ModDirs()
+{
+    static const std::vector<fs::path> dirs = [] {
+        std::vector<fs::path> out;
+        std::error_code ec;
+        if (getenv("FM2_NO_MODS"))
+            return out;
+        // DocumentsUserDir, not UserDir: the loader asks before the runtime has set that.
+        for (const auto& e : fs::directory_iterator(DocumentsUserDir() / "mods", ec))
+        {
+            const std::string name = e.path().filename().string();
+            if (e.is_directory(ec) && !name.empty() && name[0] != '_' && name[0] != '.')
+                out.push_back(e.path());
+        }
+        std::sort(out.begin(), out.end());
+        for (const fs::path& d : out)
+            Log("mods: %s", d.filename().string().c_str());
+        return out;
+    }();
+    return dirs;
+}
+}
+
+bool VfsModFile(const std::string& root, const std::string& rest, fs::path& host)
+{
+    const auto& dirs = ModDirs();
+    std::error_code ec;
+    for (auto it = dirs.rbegin(); it != dirs.rend(); ++it)
+    {
+        const fs::path p = *it / root / fs::path(rest);
+        if (fs::exists(p, ec))
+        {
+            host = p;
+            return true;
+        }
+    }
+    return false;
+}
+
 void VfsAddLink(const std::string& name, const std::string& target)
 {
     std::lock_guard lock(g_linkMutex);
@@ -205,6 +248,19 @@ bool VfsResolve(std::string guest, fs::path& host, bool* readOnly)
     while (!rest.empty() && rest.front() == '\\')
         rest.erase(rest.begin());
     host = rest.empty() ? root : root / fs::path(rest);
+    // A mod's loose file in place of the game's or the update's.
+    if (ro && !rest.empty() && (root == GameDir()
+#ifdef FM2_TITLE_UPDATE
+            || root == TitleUpdateDir()
+#endif
+            ))
+    {
+        fs::path mod;
+        // Folders the game has stay its own (a mod's folder holds only the mod's files).
+        std::error_code ec;
+        if (VfsModFile(root == GameDir() ? "game" : "update", rest, mod) && !(fs::is_directory(mod, ec) && fs::exists(host, ec)))
+            host = mod;
+    }
     // The game's and the update's zips, with built-in changes and mods (zip_overlay.cpp).
     if (ro && rest.size() > 4 && Lower(rest.substr(rest.size() - 4)) == ".zip" && root != DlcDir())
     {

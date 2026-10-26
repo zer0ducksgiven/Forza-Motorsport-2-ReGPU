@@ -230,6 +230,45 @@ function render() {
   }
   $("dlc-add").disabled = s.checks.running
 
+  const pf = s.forzaPlus2, pl = $("pfp")
+  pl.replaceChildren()
+  $("pfp-install").textContent = pf.installed ? "Reinstall" : "Install"
+  $("pfp-install").disabled = s.checks.running
+  if (!pf.installed) pl.append(el("div", "empty", "Not installed. Download Project Forza Plus 2, unzip it, then Install and choose its folder."))
+  else {
+    const it = el("div", "item" + (pf.enabled ? "" : " off"))
+    const main = el("div", "main")
+    main.append(el("div", "title", "Project Forza Plus 2"), el("div", "meta", pf.enabled ? `${pf.mode} Mode${pf.harderAi ? ", harder AI" : ""}` : "Off: the original game"))
+    const sw = el("button", "switch" + (pf.enabled ? " on" : ""))
+    sw.dataset.tip = pf.enabled ? "On: the game starts with Forza Plus 2. Click for the original game." : "Off: the original game. Click to play Forza Plus 2."
+    sw.disabled = s.checks.running
+    sw.onclick = () => guarded(async () => { state = await call("pfp.toggle", !pf.enabled); render() })
+    it.append(main, sw)
+    pl.append(it)
+    const row = el("div", "toggle-row")
+    const mode = el("select")
+    for (const m of pf.modes) { const o = el("option", "", m + " Mode"); o.value = m; o.selected = m === pf.mode; mode.append(o) }
+    mode.disabled = s.checks.running
+    mode.dataset.tip = "Normal: everything unlocked. Hard: start in F class, longer races. Sandbox: everything costs 1 CR. Vanilla: the original career with the mod's cars."
+    const harder = el("button", "switch" + (pf.harderAi ? " on" : ""))
+    harder.dataset.tip = "The mod's harder AI (optional: some found the normal AI hard enough)."
+    harder.disabled = s.checks.running
+    const set = (m, h) => guarded(async () => { state = await call("pfp.mode", { mode: m, harderAi: h }); render() })
+    mode.onchange = () => set(mode.value, pf.harderAi)
+    harder.onclick = () => set(pf.mode, !pf.harderAi)
+    const label = el("div")
+    label.append(el("div", "toggle-title", "Career mode"), el("div", "toggle-sub", "Harder AI on the right"))
+    row.append(label, mode, harder)
+    pl.append(row)
+    const rm = el("button", "ghost small", "Remove")
+    rm.dataset.tip = "Deletes the mod's copy in Documents\\fm2\\mods (your saves stay)."
+    rm.disabled = s.checks.running
+    rm.onclick = () => guarded(async () => { if (confirm("Remove Forza Plus 2?")) { state = await call("pfp.remove"); render() } })
+    const br = el("div", "buttons-row")
+    br.append(rm)
+    pl.append(br)
+  }
+
   const f = $("folders")
   f.replaceChildren()
   for (const [k, v] of [["Install", s.paths.root], ["User data", s.paths.user]]) f.append(el("div", "k", k), el("div", "v", v))
@@ -343,6 +382,13 @@ async function addPackages(cmd, what) {
   else if (r.added) toast(`${r.added} ${what}${r.added > 1 ? "s" : ""} installed. ${r.added > 1 ? "They appear" : "It appears"} in the game next time it starts.`, true)
 }
 $("dlc-add").onclick = () => guarded(() => addPackages("dlc.add", "package"))
+$("pfp-install").onclick = () => guarded(async () => {
+  $("progress").classList.add("on")
+  try {
+    const r = await call("pfp.install")
+    if (r) { state = r; render(); toast("Forza Plus 2 installed (Normal Mode). It's on from the next start.", true) }
+  } finally { $("progress").classList.remove("on") }
+})
 $("discord").onclick = () => guarded(() => call("discord"))
 for (const b of document.querySelectorAll("[data-open]")) b.onclick = () => guarded(() => call("open", b.dataset.open))
 $("wheel-bindings").onclick = () => guarded(() => call("bindings.open"))

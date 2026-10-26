@@ -15,6 +15,10 @@
 #include "log.h"
 #include "memory.h"
 #include "user_dir.h"
+#include "kernel/vfs.h"
+
+#include <cstring>
+#include <filesystem>
 
 LoadedTitle g_title;
 
@@ -258,6 +262,26 @@ void LoadTitle(const std::filesystem::path& xexPath)
     for (const PPCFuncMapping* m = PPCFuncMappings; m->host; m++, mapped++)
         PPC_LOOKUP_FUNC(g_base, m->guest) = m->host;
     Log("loader: %zu recompiled functions mapped", mapped);
+    // The game checks two of its data files against SHA-1 hashes kept in the image (a table of
+    // "camera\camerasettings.ini" and "db\gamedb.slt", each with its hash) and refuses changed ones. A mod
+    // that replaces one of them (Forza Plus 2's gamedb.slt) gets its entry renamed, so it is never
+    // matched: what the Forza Plus 2 executable does to the disc's.
+    for (const char* name : { "camera\\camerasettings.ini", "db\\gamedb.slt" })
+    {
+        std::filesystem::path mod;
+        if (!VfsModFile("game", std::string("Media\\") + name, mod))
+            continue;
+        const size_t len = strlen(name) + 1;
+        for (uint32_t a = 0x82A00000; a + len < 0x82B00000; a++)
+        {
+            char* p = reinterpret_cast<char*>(g_base + a);
+            if (memcmp(p, name, len) == 0 && p[-1] != '\\')
+            {
+                p[0] = 'x';
+                Log("loader: %s comes from a mod: its hash check is off", name);
+            }
+        }
+    }
 
     // XEX header, kept in guest memory for RtlImageXexHeaderField and XAM.
     const uint32_t headerSize = Be32(file.data() + 8);

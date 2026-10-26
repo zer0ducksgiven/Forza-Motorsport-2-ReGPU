@@ -69,6 +69,27 @@ public sealed class Bridge(CoreWebView2 web, Form owner)
                     var (added, errors) = Dlc.Add(dialog.FileNames, false);
                     return new { added, errors, state = State() };
                 }
+            case "pfp.install":
+                {
+                    using var dialog = new FolderBrowserDialog
+                    {
+                        Description = "Choose the unzipped Forza Plus 2 folder (the one with \"Main Game Changes\" in it)",
+                        UseDescriptionForTitle = true,
+                    };
+                    if (dialog.ShowDialog(owner) != DialogResult.OK) return null;
+                    var folder = dialog.SelectedPath;
+                    await Task.Run(() => ForzaPlus2.Install(folder, (p, text) => Push("progress", new { p, text })));
+                    return State();
+                }
+            case "pfp.mode":
+                ForzaPlus2.SetMode(Str(a, "mode"), a?["harderAi"]?.GetValue<bool>() ?? false);
+                return State();
+            case "pfp.toggle":
+                ForzaPlus2.SetEnabled(a!.GetValue<bool>());
+                return State();
+            case "pfp.remove":
+                await Task.Run(ForzaPlus2.Remove);
+                return State();
             case "bindings.open":
                 BindingsForm.ShowWindow();
                 return null;
@@ -258,6 +279,7 @@ public sealed class Bridge(CoreWebView2 web, Form owner)
                     ? new[] { "PL", "CZ", "HU" }.Where(c => File.Exists(Path.Combine(stringTables, c + ".zip"))).ToArray() : [],
             },
             shaders = ShaderCache.Get(),
+            forzaPlus2 = ForzaPlus2.State(),
             dlc = Dlc.List(),
             mods = Dlc.Mods(),
         };
