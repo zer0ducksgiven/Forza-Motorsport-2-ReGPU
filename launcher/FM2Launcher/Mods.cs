@@ -31,8 +31,8 @@ public static class ForzaPlus2
         if (!Directory.Exists(main) || !Directory.Exists(modes))
             throw new InvalidOperationException("That isn't the Forza Plus 2 folder: choose the unzipped folder with \"Main Game Changes\" and \"Game Mode DBs\" in it.");
         if (Game.Running) throw new InvalidOperationException("Close the game first.");
-        if (Directory.Exists(On)) Directory.Delete(On, true);
-        if (Directory.Exists(Off)) Directory.Delete(Off, true);
+        DeleteTree(On);
+        DeleteTree(Off);
         var media = Path.Combine(On, "game", "Media");
         // The DLC media first, then the main changes over it (as the mod's instructions copy them).
         var jobs = new List<(string From, string To)>();
@@ -40,12 +40,19 @@ public static class ForzaPlus2
         jobs.AddRange(Files(main, media));
         jobs.AddRange(Files(modes, Path.Combine(On, "modes")));
         long total = jobs.Sum(j => new FileInfo(j.From).Length), done = 0;
+        var shown = DateTime.MinValue;
         foreach (var (from, to) in jobs)
         {
             Directory.CreateDirectory(Path.GetDirectoryName(to)!);
             File.Copy(from, to, true);
+            File.SetAttributes(to, FileAttributes.Normal); // the mod's files come read-only (off a disc image)
             done += new FileInfo(from).Length;
-            progress(total > 0 ? (double)done / total : 1, $"Copying Forza Plus 2: {done >> 20} of {total >> 20} MB");
+            // About ten updates a second: 15,000 files would otherwise queue 15,000 messages for the page.
+            if (DateTime.UtcNow - shown > TimeSpan.FromMilliseconds(100))
+            {
+                shown = DateTime.UtcNow;
+                progress(total > 0 ? (double)done / total : 1, $"Copying Forza Plus 2: {done >> 20} of {total >> 20} MB");
+            }
         }
         SetMode("Normal", false);
     }
@@ -60,7 +67,10 @@ public static class ForzaPlus2
         if (Game.Running) throw new InvalidOperationException("Close the game first: the mode is read when it starts.");
         var from = Path.Combine(Dir, "modes", mode + " Mode", harderAi ? "Harder AI" : "", "gamedb.slt");
         if (!File.Exists(from)) throw new InvalidOperationException($"The mod's {mode} Mode database is missing: install Forza Plus 2 again.");
-        File.Copy(from, Path.Combine(Dir, "game", "Media", "DB", "gamedb.slt"), true);
+        var db = Path.Combine(Dir, "game", "Media", "DB", "gamedb.slt");
+        if (File.Exists(db)) File.SetAttributes(db, FileAttributes.Normal);
+        File.Copy(from, db, true);
+        File.SetAttributes(db, FileAttributes.Normal);
         File.WriteAllText(Settings, $"mode={mode}\nharder_ai={(harderAi ? 1 : 0)}\n");
     }
 
@@ -74,8 +84,17 @@ public static class ForzaPlus2
     public static void Remove()
     {
         if (Game.Running) throw new InvalidOperationException("Close the game first.");
-        if (Directory.Exists(On)) Directory.Delete(On, true);
-        if (Directory.Exists(Off)) Directory.Delete(Off, true);
+        DeleteTree(On);
+        DeleteTree(Off);
+    }
+
+    // Read-only files (copied from the mod as they came, by older launchers) stop Directory.Delete.
+    static void DeleteTree(string dir)
+    {
+        if (!Directory.Exists(dir)) return;
+        foreach (var f in Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories))
+            File.SetAttributes(f, FileAttributes.Normal);
+        Directory.Delete(dir, true);
     }
 
     static (string Mode, bool Harder) ReadSettings()

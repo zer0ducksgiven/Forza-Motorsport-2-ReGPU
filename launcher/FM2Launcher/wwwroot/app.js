@@ -381,11 +381,19 @@ async function addPackages(cmd, what) {
 }
 $("dlc-add").onclick = () => guarded(() => addPackages("dlc.add", "package"))
 $("pfp-install").onclick = () => guarded(async () => {
-  $("progress").classList.add("on")
+  pfpInstalling = true
+  $("pfp-install").disabled = true
+  $("pfp-progress").classList.add("on")
+  $("pfp-status").textContent = "Choose the Forza Plus 2 folder..."
   try {
     const r = await call("pfp.install")
     if (r) { state = r; render(); toast("Forza Plus 2 installed (Normal Mode). It's on from the next start.", true) }
-  } finally { $("progress").classList.remove("on") }
+  } finally {
+    pfpInstalling = false
+    $("pfp-progress").classList.remove("on")
+    $("pfp-status").textContent = ""
+    $("pfp-install").disabled = !!(state && state.checks.running)
+  }
 })
 $("discord").onclick = () => guarded(() => call("discord"))
 for (const b of document.querySelectorAll("[data-open]")) b.onclick = () => guarded(() => call("open", b.dataset.open))
@@ -427,9 +435,12 @@ $("update-apply").onclick = () => guarded(async () => {
     $("progress").classList.remove("on")
   }
 })
+let pfpInstalling = false
 function onProgress(d) {
-  $("progress").querySelector(".bar").style.width = Math.round(d.p * 100) + "%"
-  $("update-status").textContent = d.text
+  // Forza Plus 2's copy shows in its own panel (Settings), an update's on the Updates tab.
+  const bar = pfpInstalling ? $("pfp-progress") : $("progress")
+  bar.querySelector(".bar").style.width = Math.round(d.p * 100) + "%"
+  $(pfpInstalling ? "pfp-status" : "update-status").textContent = d.text
 }
 
 // ---- profiles: each one's saves, backups and cheats (Profiles.cs)

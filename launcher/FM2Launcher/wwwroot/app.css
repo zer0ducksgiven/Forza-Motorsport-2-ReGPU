@@ -139,6 +139,9 @@ textarea { resize: vertical; min-height: 120px; }
 .update-state.new { color: var(--accent-2); font-weight: 600; }
 .progress { height: 6px; background: var(--panel-2); border-radius: 99px; overflow: hidden; margin-top: 14px; visibility: hidden; }
 .progress.on { visibility: visible; }
+#pfp-progress { margin: 4px 0 6px; }
+#pfp-progress:not(.on) { display: none; }
+#pfp-status:empty { display: none; }
 .progress .bar { height: 100%; width: 0; background: linear-gradient(90deg, var(--accent), var(--accent-2)); transition: width .2s; }
 .notes { color: #c9ccd4; font-size: 13px; line-height: 1.6; user-select: text; }
 .notes h3 { font-size: 13px; margin: 14px 0 6px; color: var(--text); }

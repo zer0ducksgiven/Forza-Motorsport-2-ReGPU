@@ -34,7 +34,12 @@ public sealed class Bridge(CoreWebView2 web, Form owner)
     }
 
     void Post(object o) => web.PostWebMessageAsJson(JsonSerializer.Serialize(o, Json));
-    void Push(string name, object data) => Post(new { @event = name, data });
+    // Progress can come from a worker thread (Forza Plus 2's copy); WebView2 only takes calls on the UI thread.
+    void Push(string name, object data)
+    {
+        if (owner.InvokeRequired) owner.BeginInvoke(() => Post(new { @event = name, data }));
+        else Post(new { @event = name, data });
+    }
 
     async Task<object?> Run(string cmd, JsonNode? a)
     {
