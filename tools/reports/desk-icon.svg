@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- FM2 Reports Desk icon: a red racing helmet, side on, facing right, "FM2" on the shell. -->
+  <defs>
+    <linearGradient id="shell" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ff5a52"/>
+      <stop offset="0.55" stop-color="#e5323b"/>
+      <stop offset="1" stop-color="#9e1620"/>
+    </linearGradient>
+    <linearGradient id="visor" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3a4250"/>
+      <stop offset="1" stop-color="#0b0d11"/>
+    </linearGradient>
+    <clipPath id="shellClip">
+      <path d="M70 300 C 62 170 160 72 290 70 C 405 68 470 150 468 252 L 466 330 C 465 368 440 392 402 396 L 300 404 C 250 408 214 430 186 452 L 120 452 C 92 452 74 432 72 404 Z"/>
+    </clipPath>
+  </defs>
+  <!-- shell -->
+  <path d="M70 300 C 62 170 160 72 290 70 C 405 68 470 150 468 252 L 466 330 C 465 368 440 392 402 396 L 300 404 C 250 408 214 430 186 452 L 120 452 C 92 452 74 432 72 404 Z"
+        fill="url(#shell)" stroke="#5c0d13" stroke-width="12" stroke-linejoin="round"/>
+  <g clip-path="url(#shellClip)">
+    <!-- white racing stripe over the top -->
+    <path d="M40 250 C 90 120 210 60 330 62 L 352 98 C 240 100 140 160 92 292 Z" fill="#ffffff" opacity="0.95"/>
+    <!-- dark lower edge / neck roll -->
+    <path d="M60 410 L 470 380 L 470 470 L 60 470 Z" fill="#1a1d24"/>
+    <!-- shine -->
+    <path d="M150 150 C 190 112 240 96 290 94 C 250 110 210 134 178 170 Z" fill="#ffffff" opacity="0.35"/>
+  </g>
+  <!-- visor -->
+  <path d="M300 168 C 360 160 430 176 462 214 L 466 300 C 420 312 350 314 300 302 C 278 296 268 280 270 246 C 272 200 280 172 300 168 Z"
+        fill="url(#visor)" stroke="#5c0d13" stroke-width="10" stroke-linejoin="round"/>
+  <path d="M312 186 C 360 180 410 190 440 212 C 400 204 356 202 316 210 Z" fill="#9fb6d6" opacity="0.55"/>
+  <!-- visor pivot -->
+  <circle cx="292" cy="250" r="16" fill="#1a1d24" stroke="#ffffff" stroke-width="5"/>
+  <!-- FM2 -->
+  <text x="196" y="350" text-anchor="middle" font-family="Segoe UI Black, Arial Black, Impact, sans-serif" font-weight="900" font-style="italic"
+        font-size="100" fill="#ffffff" stroke="#5c0d13" stroke-width="10" paint-order="stroke" letter-spacing="-4">FM2</text>
+</svg>

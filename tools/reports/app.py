@@ -113,7 +113,18 @@ class Handler(BaseHTTPRequestHandler):
             if u.path.startswith('/api/issue/'):
                 return self.send(200, reports.issue(int(u.path.rsplit('/', 1)[1])))
             if u.path == '/api/logs':
-                return self.send(200, logs())
+                # Each log with when it arrived and its PC (the CPU and GPU its install logged).
+                rows = logs()
+                try:
+                    times = reports.log_times()
+                except reports.GhError:
+                    times = {}
+                hw = {i['install']: i for i in stats()['installs']}
+                for l in rows:
+                    l['time'] = times.get(l['id'])
+                    h = hw.get(l['install'])
+                    l['cpu'], l['gpu'] = (h['cpu'], h['gpu']) if h else ('', '')
+                return self.send(200, rows)
             if u.path == '/api/log':
                 text = reports.log_text(q.get('path', ''))
                 return self.send(200, {'path': q['path'], 'text': text, 'summary': reports.log_summary(text)})

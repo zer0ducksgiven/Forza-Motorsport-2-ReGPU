@@ -339,24 +339,35 @@ function renderLog(id, l) {
 // ---- logs
 async function loadLogs() {
   await busy("Loading logs…", async () => {
-    logs = await api("/api/logs")
+    const key = (l) => l.time || fromYmd(l.date) + "T00:00:00Z"
+    logs = (await api("/api/logs")).sort((a, b) => key(b).localeCompare(key(a))) // newest first, to the minute
     renderLogs()
   })
 }
+// "AMD Ryzen 5 5500X3D 6-Core Processor" -> "Ryzen 5 5500X3D", "NVIDIA GeForce RTX 3070" -> "RTX 3070"
+const shortCpu = (s) => (s || "").replace(/\((R|TM)\)/gi, "").replace(/\b(AMD|Intel|Core|Processor|CPU|with Radeon Graphics)\b|\d+-Core|@.*$/gi, "").replace(/\s+/g, " ").trim()
+const shortGpu = (s) => (s || "").replace(/\((R|TM)\)/gi, "").replace(/\b(NVIDIA|GeForce|AMD|Radeon\(TM\)|Intel)\b/gi, "").replace(/\s+/g, " ").trim()
+const pcName = (l) => [shortCpu(l.cpu), shortGpu(l.gpu)].filter(Boolean).join(" · ")
+const when = (l) => l.time ? new Date(l.time).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }) : fromYmd(l.date)
 function renderLogs() {
   const q = $("lq").value.toLowerCase()
-  const rows = logs.filter((l) => !q || (l.install + " " + l.date + " " + l.path).toLowerCase().includes(q))
+  const rows = logs.filter((l) => !q || [l.install, l.date, l.path, l.cpu, l.gpu, when(l)].join(" ").toLowerCase().includes(q))
   $("log-list").innerHTML = rows.length ? rows.map((l) => `<div class="row ${openLog === l.path ? "on" : ""}" data-path="${esc(l.path)}">
-      <div class="t">${fromYmd(l.date)} · ${esc(l.install)}</div>
-      <div class="m"><span>${(l.size / 1024).toFixed(0)} KB</span><span>${esc(l.id)}</span></div></div>`).join("") : `<div class="empty">No logs yet.</div>`
+      <div class="t">${esc(pcName(l) || "Unknown PC")}</div>
+      <div class="m"><span>${esc(when(l))}</span><span>${(l.size / 1024).toFixed(0)} KB</span><span title="Install ID">${esc(l.install.slice(0, 6))}</span></div></div>`).join("") : `<div class="empty">No logs match.</div>`
 }
 $("lq").oninput = renderLogs
 $("log-list").onclick = (e) => {
   const r = e.target.closest(".row")
-  if (!r) return
-  openLog = r.dataset.path
+  if (r) openLogPath(r.dataset.path)
+}
+function openLogPath(path) {
+  openLog = path
+  const l = logs.find((x) => x.path === path)
   renderLogs()
-  $("log-detail").innerHTML = `<h2>${esc(openLog.split("/").pop())}</h2>
+  document.querySelector("#log-list .row.on")?.scrollIntoView({ block: "nearest" })
+  $("log-detail").innerHTML = `<h2>${esc((l && pcName(l)) || "Unknown PC")}</h2>
+    <div class="meta" style="margin-bottom:10px"><span>${esc(l ? when(l) : "")}</span><span>install ${esc(l ? l.install : "")}</span><span>${esc(path.split("/").pop())}</span></div>
     <div class="actions" style="margin-bottom:10px"><button class="danger" id="delete-log">Delete this log</button></div>
     <div id="log-view"><div class="status">Loading log…</div></div>`
   loadLogInto("log-view", openLog)
@@ -377,11 +388,14 @@ $("log-detail").onclick = async (e) => {
   })
   e.target.disabled = false
 }
+// The Logs view narrowed to one install, with its newest log open.
 async function jumpToInstall(install) {
   document.querySelector('#nav [data-view="logs"]').click()
   if (!logs.length) await loadLogs()
   $("lq").value = install
-  renderLogs()
+  const newest = logs.find((l) => l.install === install) // logs come newest first
+  if (newest) openLogPath(newest.path)
+  else renderLogs()
 }
 
 // ---- hardware

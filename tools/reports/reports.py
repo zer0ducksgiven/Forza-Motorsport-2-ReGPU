@@ -54,7 +54,9 @@ def gh(path, method='GET', body=None, raw=False):
         cmd += ['-H', 'Accept: application/vnd.github.raw']
     if body is not None:
         cmd += ['--input', '-']
-    p = subprocess.run(cmd, input=json.dumps(body).encode() if body is not None else None, capture_output=True)
+    # No console window per call when the desk runs windowless (desk_window.pyw under pythonw).
+    p = subprocess.run(cmd, input=json.dumps(body).encode() if body is not None else None, capture_output=True,
+                       creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
     if p.returncode != 0:
         raise GhError((p.stderr or p.stdout).decode('utf-8', 'replace').strip()[:400])
     out = p.stdout.decode('utf-8', 'replace')
@@ -185,6 +187,27 @@ def logs():
                         'sha': t['sha']})
     out.sort(key=lambda l: (l['date'], l['path']), reverse=True)
     return out
+
+
+_log_times = {}
+LOG_COMMIT = re.compile(r'^Log \d{8}-([0-9a-f]+)\b')
+
+
+def log_times():
+    """When each log arrived: the Worker's commit "Log <date>-<id> (...)" is the upload. id -> ISO time.
+    Pages of commits until one adds nothing new (later calls only read the newest page or two)."""
+    page = 1
+    while True:
+        batch = gh(f'commits?per_page=100&page={page}')
+        new = 0
+        for c in batch:
+            m = LOG_COMMIT.match(c['commit']['message'])
+            if m and m.group(1) not in _log_times:
+                _log_times[m.group(1)] = c['commit']['committer']['date']
+                new += 1
+        if len(batch) < 100 or (not new and page > 1):
+            return _log_times
+        page += 1
 
 
 def delete_log(path, sha=None):
