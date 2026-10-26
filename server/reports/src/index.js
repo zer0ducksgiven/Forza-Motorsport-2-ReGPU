@@ -1,6 +1,8 @@
 // FM2 reports server: the launcher's bug reports and opted-in play.logs, filed in a private GitHub repo.
-//   POST /v1/report  { kind: "bug" | "log", title?, description?, contact?, version, installId, system, log? }
+//   POST /v1/report  { kind: "bug" | "log", title?, description?, contact?, version, installId, system, log?, pipelines? }
 //   log: gzip, base64. Bug reports become issues; logs are stored as files (logs/<date>/...).
+//   pipelines: the game's pipelines.manifest (gzip, base64), stored per install as manifests/<installId>.manifest
+//   (only well-formed "P <6 hex>" lines are kept) for tools/pipeline_seed.py.
 // Secrets: GITHUB_TOKEN (fine-grained: Contents and Issues read/write on REPORTS_REPO only).
 // Vars: REPORTS_REPO ("owner/name"). Binding: LIMITER (rate limit per client address).
 
@@ -65,6 +67,13 @@ export default {
         });
         return json({ id: `#${issue.number}` });
       }
+      if (typeof r.pipelines === "string" && r.pipelines.length) {
+        try {
+          await storeManifest(gh, installId, await gunzip(r.pipelines), id);
+        } catch (e) {
+          console.log("manifest", e.message); // the log is saved: never fail the report over it
+        }
+      }
       return json({ id });
     } catch (e) {
       console.log("github", e.message);
@@ -74,6 +83,19 @@ export default {
     }
   },
 };
+
+// One file per install, replaced by each upload (a manifest only grows). Anything that isn't a manifest
+// line is dropped: it is sender text.
+async function storeManifest(gh, installId, text, id) {
+  const lines = [...new Set(text.split(/\r?\n/).filter((l) => /^P( [0-9a-f]{1,16}){6}$/.test(l)))];
+  if (!lines.length || lines.length > 50000) return;
+  const path = `/contents/manifests/${installId}.manifest`;
+  let sha;
+  try {
+    sha = (await gh(path, "GET")).sha;
+  } catch {}
+  await gh(path, "PUT", { message: `Pipelines ${installId} (${lines.length}, ${id})`, content: base64(lines.join("\n") + "\n"), sha });
+}
 
 function json(o, status = 200) {
   return new Response(JSON.stringify(o), { status, headers: { "content-type": "application/json" } });
@@ -125,7 +147,7 @@ function github(env) {
         "user-agent": "fm2-reports",
         "content-type": "application/json",
       },
-      body: JSON.stringify(body),
+      body: body === undefined ? undefined : JSON.stringify(body),
     });
     if (!res.ok) throw new Error(`${method} ${path}: ${res.status} ${(await res.text()).slice(0, 300)}`);
     return res.json();

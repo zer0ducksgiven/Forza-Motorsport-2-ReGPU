@@ -44,6 +44,7 @@
 #include "live_switch.h"
 #include "input/wheel.h"
 #include "gpu/ps_glyphs.h"
+#include "gpu/pipeline_seed.h"
 #include "settings.h"
 #include "gpu/regs.h"
 #include "gpu/texture.h"
@@ -5708,11 +5709,37 @@ void PredictBeginImpl()
     g_predPsDwords = uint32_t(C().psCode.size());
 }
 
+std::vector<PipelineKey> g_seedLater; // seed pipelines waiting for a shader the game makes at run time
+
+// Seed pipelines whose shaders the game has made since the boot: started in the background (checked
+// about once a second, while it sits in menus or loads a race).
+void SeedStep()
+{
+    static auto last = std::chrono::steady_clock::time_point{};
+    if (g_seedLater.empty() || std::chrono::steady_clock::now() - last < std::chrono::seconds(1))
+        return;
+    last = std::chrono::steady_clock::now();
+    size_t started = 0;
+    std::erase_if(g_seedLater, [&](const PipelineKey& key) {
+        if (g_r.pipelines.count(key))
+            return true;
+        const auto vs = g_r.shaders.find(key.vs), ps = g_r.shaders.find(key.ps);
+        if (vs == g_r.shaders.end() || ps == g_r.shaders.end() || !vs->second->IsReady() || !ps->second->IsReady())
+            return false;
+        EnsurePipeline(*vs->second, *ps->second, key);
+        started++;
+        return true;
+    });
+    if (started)
+        Log("seed pipelines: %zu started now their shaders exist (%zu still waiting)", started, g_seedLater.size());
+}
+
 // ---- Warm-up: rebuilds every shader/pipeline recorded in the manifest in the
 // background (on this thread a few ms per frame) while the game boots and sits in menus.
 void WarmupStep()
 {
     DrainScan(3.0);
+    SeedStep();
     static LiveSwitch off("FM2_NO_WARMUP");
     if (off || g_manifest.next >= g_manifest.pending.size())
         return;
@@ -8154,6 +8181,82 @@ void RendererOnSwap(uint64_t frameNumber, uint32_t frontBuffer)
 // been played, the more is covered. FM2_NO_PRECOMPILE=1 turns it off.
 bool g_precompileDone = false;
 
+// The shipped list of pipelines (gpu/pipeline_seed.h: ours and players' manifests merged): built once,
+// on the first boot, so a first race on a track doesn't stop for each new one (report #10). Only those
+// whose shaders are in the game data can be built here; built ones join pipelines.manifest, so later
+// boots rebuild them with the rest.
+void BuildSeedPipelines(std::vector<uint8_t>& bootFrame)
+{
+    if (getenv("FM2_NO_SEED_PIPELINES"))
+        return;
+    const auto start = std::chrono::steady_clock::now();
+    std::vector<std::pair<PipelineKey, std::pair<const CompiledShader*, const CompiledShader*>>> todo;
+    size_t known = 0, missing = 0;
+    std::unordered_set<uint64_t> missingShaders;
+    for (const SeedPipeline& s : kSeedPipelines)
+    {
+        const PipelineKey key{ s.vs, s.ps, s.blend, s.depth, s.stencilMaskMode, s.flags };
+        if (g_manifest.known.count(key) || g_r.pipelines.count(key))
+        {
+            known++;
+            continue;
+        }
+        const auto vs = g_r.shaders.find(key.vs), ps = g_r.shaders.find(key.ps);
+        if (vs == g_r.shaders.end() || ps == g_r.shaders.end())
+        {
+            // Made by the game at run time: built in the background once it appears (SeedStep).
+            missing++;
+            missingShaders.insert(vs == g_r.shaders.end() ? key.vs : key.ps);
+            g_seedLater.push_back(key);
+            continue;
+        }
+        todo.push_back({ key, { vs->second.get(), ps->second.get() } });
+    }
+    Log("seed pipelines: %zu listed, %zu already built, %zu to build, %zu need %zu shaders the game makes at run time",
+        std::size(kSeedPipelines), known, todo.size(), missing, missingShaders.size());
+    if (todo.empty())
+        return;
+    std::vector<std::shared_ptr<PipelineEntry>> building;
+    size_t next = 0, failed = 0;
+    auto lastShown = std::chrono::steady_clock::time_point{};
+    for (;;)
+    {
+        // A few at a time: the pool works through them while the screen updates.
+        while (next < todo.size() && building.size() - std::count_if(building.begin(), building.end(),
+                   [](const auto& e) { return e->state.load() != 0; }) < 32)
+        {
+            const auto& [key, shaders] = todo[next++];
+            const auto [vs, ps] = shaders;
+            while (vs->state.load() == CompiledShader::Pending || ps->state.load() == CompiledShader::Pending)
+                Sleep(1);
+            if (vs->IsReady() && ps->IsReady())
+                building.push_back(EnsurePipeline(*vs, *ps, key));
+            else
+                failed++;
+        }
+        const size_t done = size_t(std::count_if(building.begin(), building.end(), [](const auto& e) { return e->state.load() != 0; }));
+        if (next >= todo.size() && done == building.size())
+            break;
+        const auto now = std::chrono::steady_clock::now();
+        if (now - lastShown > std::chrono::milliseconds(100))
+        {
+            lastShown = now;
+            if (BootScreenCompose(L"BUILDING PIPELINES", uint32_t(done + failed), uint32_t(todo.size()), bootFrame))
+                BootPresent(bootFrame);
+            else
+            {
+                g_hold.active = true;
+                HoldPresent();
+            }
+        }
+        Sleep(5);
+    }
+    g_hold.active = false;
+    g_lastLongHold = std::chrono::steady_clock::now();
+    Log("seed pipelines: %zu built in %.1f s (%zu skipped: a shader didn't compile)", building.size(),
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count(), failed);
+}
+
 void PrecompileAll()
 {
     if (g_precompileDone)
@@ -8295,7 +8398,10 @@ void PrecompileAll()
     Log("static shaders: %zu new, %d to compile (prepared in %.1f s)", queued, toCompile,
         std::chrono::duration<double>(std::chrono::steady_clock::now() - staticStart).count());
     if (!toCompile)
+    {
+        BuildSeedPipelines(bootFrame);
         return;
+    }
     g_stats.staticTotal = uint32_t(toCompile);
     g_stats.staticDone = 0;
     const auto compileStart = std::chrono::steady_clock::now();
@@ -8336,6 +8442,7 @@ void PrecompileAll()
     g_stats.staticTotal = 0;
     g_lastLongHold = std::chrono::steady_clock::now();
     Log("static shaders: %zu compiled in %.1f s (%zu found in memory meanwhile)", compiling.size(), std::chrono::duration<double>(std::chrono::steady_clock::now() - compileStart).count(), compiling.size() - size_t(toCompile));
+    BuildSeedPipelines(bootFrame);
 }
 
 void RendererOnSwapImpl(uint64_t frameNumber, uint32_t frontBuffer)

@@ -183,7 +183,7 @@ bool BootScreenCompose(const wchar_t* title, uint32_t done, uint32_t total, std:
     {
         swprintf(text, 96, L"%d%%", int(progress * 100.0f));
         DrawText(rgba, text, bx1 + 22, by0 - 4, 32, FW_SEMIBOLD, 0, white);
-        swprintf(text, 96, L"%u / %u game shaders · first start only", done, total);
+        swprintf(text, 96, L"%u / %u %ls · first start only", done, total, wcsstr(title, L"PIPELINES") ? L"pipelines" : L"game shaders");
     }
     else
         swprintf(text, 96, L"Searching the game files · first start only");

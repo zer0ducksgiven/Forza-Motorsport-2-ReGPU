@@ -88,6 +88,19 @@ public static class Reports
         return Redact(r.ReadToEnd());
     }
 
+    /// <summary>The game's pipelines.manifest (which shader and render-state combinations it has built: hashes only),
+    /// gzipped; null when there is none. Sent with shared logs so the next release can build them all on the first boot.</summary>
+    static string? Pipelines()
+    {
+        try
+        {
+            var path = Path.Combine(Paths.User, "pipelines.manifest");
+            if (!System.IO.File.Exists(path) || new FileInfo(path).Length > (2 << 20)) return null;
+            return Gzip64(System.IO.File.ReadAllText(path));
+        }
+        catch { return null; }
+    }
+
     static string Gzip64(string text)
     {
         using var ms = new MemoryStream();
@@ -151,6 +164,7 @@ public static class Reports
                 installId = o.InstallId,
                 system = SystemInfo(),
                 log = Gzip64(log),
+                pipelines = Pipelines(),
             });
             o.LastSentLog = written;
             o.Save();
