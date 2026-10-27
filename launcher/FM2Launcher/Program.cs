@@ -39,6 +39,10 @@ internal static class Program
             return 0;
         }
         Updater.CleanUp();
+        // WebKitGTK's DMA-BUF renderer fails on some Wayland setups (Gdk "Error 71 (Protocol error)", issue #16).
+        // setenv, not Environment.SetEnvironmentVariable: .NET keeps its own copy that native code never sees.
+        if (Platform.Linux && Environment.GetEnvironmentVariable("WEBKIT_DISABLE_DMABUF_RENDERER") == null)
+            setenv("WEBKIT_DISABLE_DMABUF_RENDERER", "1", 0);
         Photino.NET.PhotinoWindow window;
         try { window = Web.Create("Forza Motorsport 2 ReGPU", "index.html", 1680, 960, 1000, 700); }
         catch (Exception ex)
@@ -56,4 +60,7 @@ internal static class Program
 
     [System.Runtime.InteropServices.DllImport("user32.dll")]
     static extern bool SetForegroundWindow(IntPtr hWnd);
+
+    [System.Runtime.InteropServices.DllImport("libc")]
+    static extern int setenv(string name, string value, int overwrite);
 }
