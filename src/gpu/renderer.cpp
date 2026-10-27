@@ -2930,6 +2930,12 @@ struct PipelineLibrary
     std::shared_mutex access;
     std::chrono::steady_clock::time_point lastSave = std::chrono::steady_clock::now();
     std::vector<char> loaded;
+    // Compaction: entries are never removed, and every translator or driver change leaves the old
+    // ones behind (574 MB read at every boot on a dev PC). Every pipeline this session loads or
+    // builds also goes into `fresh`; once that holds every pipeline the manifest lists, it replaces
+    // the old library and is what gets saved.
+    ComPtr<ID3D12PipelineLibrary> fresh;
+    std::atomic<size_t> freshCount{ 0 };
 
     static std::filesystem::path Path() { return UserDir() / "pipelines.bin"; }
 
@@ -2951,6 +2957,8 @@ struct PipelineLibrary
                 library.Reset();
         }
         Log("renderer: pipeline library %s (%zu bytes loaded)", library ? "ready" : "unavailable", loaded.size());
+        if (library && !loaded.empty() && !getenv("FM2_NO_LIBRARY_COMPACT") && FAILED(d1->CreatePipelineLibrary(nullptr, 0, IID_PPV_ARGS(&fresh))))
+            fresh.Reset();
     }
 
     // The shaders' compiled code is part of the name: the game's shader hashes alone stay the same
@@ -2985,11 +2993,12 @@ struct PipelineLibrary
             const std::wstring name = Name(key, pd);
             {
                 std::shared_lock lock(access);
-                if (SUCCEEDED(library->LoadGraphicsPipeline(name.c_str(), &pd, IID_PPV_ARGS(&pso))))
-                {
-                    *hit = true;
-                    return S_OK;
-                }
+                *hit = SUCCEEDED(library->LoadGraphicsPipeline(name.c_str(), &pd, IID_PPV_ARGS(&pso)));
+            }
+            if (*hit)
+            {
+                KeepFresh(name, pso.Get());
+                return S_OK;
             }
             // The slow part (the driver compiling) runs outside the lock.
             const HRESULT hr = device->CreateGraphicsPipelineState(&pd, IID_PPV_ARGS(&pso));
@@ -2999,9 +3008,47 @@ struct PipelineLibrary
                 if (SUCCEEDED(library->StorePipeline(name.c_str(), pso.Get())))
                     stored++;
             }
+            if (SUCCEEDED(hr))
+                KeepFresh(name, pso.Get());
             return hr;
         }
         return device->CreateGraphicsPipelineState(&pd, IID_PPV_ARGS(&pso));
+    }
+
+    void KeepFresh(const std::wstring& name, ID3D12PipelineState* pso)
+    {
+        if (!fresh)
+            return;
+        {
+            std::shared_lock lock(access); // (stores share the library, as in CreateOrLoad)
+            if (!fresh)
+                return;
+            if (SUCCEEDED(fresh->StorePipeline(name.c_str(), pso)))
+                freshCount++;
+        }
+        size_t listed;
+        {
+            std::lock_guard manifestLock(g_manifest.mutex);
+            listed = g_manifest.known.size();
+        }
+        if (!listed || freshCount < listed)
+            return;
+        bool swap = false;
+        {
+            std::unique_lock lock(access);
+            // Only when it saves something: else the old library stays and is not written again.
+            if (fresh && fresh->GetSerializedSize() * 10 < loaded.size() * 9)
+            {
+                library = fresh;
+                swap = true;
+            }
+            fresh.Reset();
+        }
+        if (swap)
+        {
+            Log("renderer: pipeline library compacted to this session's %zu pipelines; saved at the next save", freshCount.load());
+            stored++;
+        }
     }
 
     // Writes the library out when new pipelines were stored (at most every 10 s). Never on
