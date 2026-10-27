@@ -67,7 +67,12 @@ using Microsoft::WRL::ComPtr;
 
 
 void LogAllHostThreadStacks(const char* why); // hang.cpp
-bool CameraAspectWidened(); // hooks/camera_aspect.cpp: a race is on screen (the game widened its camera)
+bool CameraAspectWidened(); // hooks/camera_aspect.cpp: the game is setting its race camera
+// A race is on screen (ultrawide): the game sets its race camera, and the last frame drew depth-tested scenery
+// in a full-screen pass. The camera alone starts before a race's loading screen ends and runs on a moment
+// after it, which squeezed those screens.
+bool g_depthThisFrame = false, g_depthLastFrame = false;
+bool RaceView() { return g_depthLastFrame && CameraAspectWidened(); }
 void DealerCarDraw(uint64_t vs, const float c[256][4], float squash[4][4], bool body); // hooks/dealer.cpp: the easter egg, per car draw
 
 namespace
@@ -5314,7 +5319,7 @@ ID3D12Resource* EnhanceFrontBuffer(ID3D12Resource* image)
 // into the middle 16:9 on black. `image` is in COPY_SOURCE and so is the result; null when not needed.
 ID3D12Resource* PillarFrontBuffer(ID3D12Resource* image)
 {
-    if (!image || OutputWide() <= 1.001f || CameraAspectWidened() || !InitUpscale())
+    if (!image || OutputWide() <= 1.001f || RaceView() || !InitUpscale())
         return nullptr;
     const D3D12_RESOURCE_DESC desc = image->GetDesc();
     FrameResources& f = Frame();
@@ -7999,7 +8004,9 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
     {
         // Menus on an ultrawide output are drawn as at 16:9, stretched across the width, and squeezed back
         // to 16:9 when shown (PillarFrontBuffer): every layer alike, transitions and loading screens too.
-        const bool wideView = WidePass() && CameraAspectWidened();
+        if (WidePass() && (gpureg::Get(0x2200 /* RB_DEPTHCONTROL */) & 2)) // Z_ENABLE
+            g_depthThisFrame = true;
+        const bool wideView = WidePass() && RaceView();
         const float wide = wideView ? OutputWide() : 1.0f;
         const float extent = wideView ? ViewExtent() : 1.0f;
         const bool gameWidened = CameraAspectWidened();
@@ -8334,7 +8341,7 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
     // A scissor narrower than the screen in a wide pass clips 2D content (the track map),
     // which the vertex shader keeps in the centred 16:9 area: map it the same way. Not for
     // screen layers (post-processing done in halves would leave a seam), nor menus (drawn stretched, see vwide).
-    if (WidePass() && ScaleWide() != ScaleY() && !g_drawSamplesResolve && CameraAspectWidened() && (scissor.left > 0 || scissor.right < LONG(kWidth)))
+    if (WidePass() && ScaleWide() != ScaleY() && !g_drawSamplesResolve && RaceView() && (scissor.left > 0 || scissor.right < LONG(kWidth)))
     {
         const double centre = kWidth * ScaleWide() / 2.0, s = ScaleY();
         hostScissor.left = LONG(std::lround(centre + (scissor.left - double(kWidth) / 2) * s));
@@ -9224,6 +9231,12 @@ void RendererOnSwapImpl(uint64_t frameNumber, uint32_t frontBuffer)
         }
     }
     ++g_r.frame;
+    g_depthLastFrame = std::exchange(g_depthThisFrame, false);
+    if (static bool lastRace = false; OutputWide() > 1.001f && RaceView() != lastRace)
+    {
+        lastRace = RaceView();
+        Log("ultrawide: frame %llu %s (camera %d, depth %d)", (unsigned long long)g_r.frame, lastRace ? "race" : "menu", int(CameraAspectWidened()), int(g_depthLastFrame));
+    }
     prehash::StartFrame();
     DebugOnSwap(g_r.frame);
     if (int st = g_drawStats.load(); st) // drawstats: arm at one swap, stop at the next
