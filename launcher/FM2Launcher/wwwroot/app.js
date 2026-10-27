@@ -357,7 +357,10 @@ function change(patch) {
   Object.assign(state.settings, patch)
   render()
   clearTimeout(saveTimer)
-  saveTimer = setTimeout(() => guarded(async () => { state = await call("save", state.settings); render() }), 250)
+  saveTimer = setTimeout(() => guarded(async () => {
+    try { state = await call("save", state.settings) } finally { saveTimer = 0 }
+    render()
+  }), 250)
 }
 $("resolution").onchange = (e) => change({ resolution: e.target.value })
 $("aspect").onchange = (e) => change({ aspect: e.target.value })
@@ -436,7 +439,12 @@ $("pfp-install").onclick = () => guarded(async () => {
 $("discord").onclick = () => guarded(() => call("discord"))
 for (const b of document.querySelectorAll("[data-open]")) b.onclick = () => guarded(() => call("open", b.dataset.open))
 // The Controls tab changes the force feedback settings: pick them up when coming back here.
-window.addEventListener("focus", () => guarded(async () => { state = await call("state"); render() }))
+// Not while a dropdown is open or a change is still being saved: on Linux closing a dropdown's pop-up focuses the
+// window, and the settings fetched then would put the old choice back.
+window.addEventListener("focus", () => {
+  if (saveTimer || ["SELECT", "INPUT"].includes(document.activeElement.tagName)) return
+  guarded(async () => { state = await call("state"); render() })
+})
 
 async function checkUpdates(quiet) {
   try {

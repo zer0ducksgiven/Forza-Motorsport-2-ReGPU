@@ -43,6 +43,7 @@ internal static class Program
         // setenv, not Environment.SetEnvironmentVariable: .NET keeps its own copy that native code never sees.
         if (Platform.Linux && Environment.GetEnvironmentVariable("WEBKIT_DISABLE_DMABUF_RENDERER") == null)
             setenv("WEBKIT_DISABLE_DMABUF_RENDERER", "1", 0);
+        if (Platform.Linux) Platform.DesktopEntry();
         Photino.NET.PhotinoWindow window;
         try { window = Web.Create("Forza Motorsport 2 ReGPU", "index.html", 1680, 960, 1000, 700); }
         catch (Exception ex)

@@ -312,7 +312,13 @@ public static class Game
         // The session's play.log goes as soon as the game closes (with sharing on), not only at the next
         // launcher start: most people keep the launcher open while they play.
         game.EnableRaisingEvents = true;
-        game.Exited += (_, _) => _ = Reports.SendLastLogAsync();
+        game.Exited += (_, _) =>
+        {
+            // Under Proton the game's stderr never reaches play.log (only Proton's own lines do): add its fm2.log.
+            if (Platform.Linux)
+                try { File.AppendAllText(log, File.ReadAllText(Path.Combine(Paths.Root, "fm2.log"))); } catch (IOException) { }
+            _ = Reports.SendLastLogAsync();
+        };
     }
 
     // robocopy /XC /XN /XO in install-content.cmd: what is already there is left alone. A DLC package the game has

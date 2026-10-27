@@ -1,4 +1,5 @@
 :root {
+  color-scheme: dark;
   --bg: #0b0d11;
   --panel: #14171d;
   --panel-2: #1b1f27;
@@ -76,6 +77,13 @@ select, input, textarea {
   background: var(--panel-2); color: var(--text); border: 1px solid var(--line); border-radius: 8px;
   padding: 7px 10px; font: inherit; outline: none; user-select: text;
 }
+/* drawn here, not by the system: GTK's light theme otherwise gives a white box with the page's light text */
+select {
+  appearance: none; -webkit-appearance: none; padding-right: 30px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0h10L5 6z' fill='%239aa0ad'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 11px center;
+}
+option { background: var(--panel-2); color: var(--text); }
 select:hover, input:hover, textarea:hover { border-color: #333947; }
 select:focus, input:focus, textarea:focus { border-color: var(--accent); }
 textarea { resize: vertical; min-height: 120px; }
