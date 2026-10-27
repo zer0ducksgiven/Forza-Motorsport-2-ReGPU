@@ -629,6 +629,10 @@ uint64_t g_passFrames = 0;
 ComPtr<ID3D12Resource> g_timestampReadback;
 double g_gpuFrameMs = 0, g_gpuFrameMaxMs = 0;
 uint32_t g_gpuFrames = 0;
+// The every-600-frames log line's GPU time (timestamps are always on: two queries a frame), so
+// players' logs tell a GPU-bound PC (iGPUs, APUs) from a CPU-bound one.
+double g_logGpuMs = 0;
+uint32_t g_logGpuFrames = 0;
 uint32_t g_waitBlend = 0;
 std::map<std::string, uint64_t> g_created; // FM2_PERF: committed resources created, by kind
 // FM2_PERF: what happened during the current frame, for the slow-frame log.
@@ -1732,7 +1736,7 @@ void BeginFrameIfNeeded()
         }
         g_occlusionPending[frameIndex].clear();
     }
-    if (perf && !g_timestamps)
+    if (!g_timestamps)
     {
         D3D12_QUERY_HEAP_DESC qd{};
         qd.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
@@ -1793,7 +1797,7 @@ void BeginFrameIfNeeded()
         }
     }
     g_passMarks[frameIndex].clear();
-    if (perf && f.timed && g_timestampReadback)
+    if (f.timed && g_timestampReadback)
     {
         // This slot's previous frame has completed (waited for above).
         uint64_t* t = nullptr;
@@ -1806,6 +1810,11 @@ void BeginFrameIfNeeded()
             const D3D12_RANGE none{ 0, 0 };
             g_timestampReadback->Unmap(0, &none);
             if (ms > 0 && ms < 1000)
+            {
+                g_logGpuMs += ms;
+                g_logGpuFrames++;
+            }
+            if (perf && ms > 0 && ms < 1000)
             {
                 g_gpuFrameMs += ms;
                 g_gpuFrameMaxMs = std::max(g_gpuFrameMaxMs, ms);
@@ -1832,7 +1841,7 @@ void BeginFrameIfNeeded()
             BeginTemporalFrame();
     }
     PassMark("frame start %u%u", 0, 0);
-    if (perf && g_timestamps)
+    if (g_timestamps)
         C().list->EndQuery(g_timestamps.Get(), D3D12_QUERY_TYPE_TIMESTAMP, frameIndex * 2);
     if (const UINT64 used = f.ringUsed.load(); used > g_ringPeak)
     {
@@ -8901,9 +8910,27 @@ void RendererOnSwapImpl(uint64_t frameNumber, uint32_t frontBuffer)
         Log("renderer: wrote frame.png (frame %llu: %u draws, %u skipped)", (unsigned long long)frameNumber, g_r.drawsThisFrame.load(),
             g_r.skippedThisFrame.load());
     }
+    // Frame times since the last line: the average, the slowest 1% and the GPU's share.
+    static std::vector<float> frameMs;
+    static auto lastFrameAt = std::chrono::steady_clock::now();
+    const auto frameAt = std::chrono::steady_clock::now();
+    frameMs.push_back(std::chrono::duration<float, std::milli>(frameAt - lastFrameAt).count());
+    lastFrameAt = frameAt;
     if (frameNumber % 600 == 0)
+    {
         Log("renderer: frame %llu: %u draws, %u skipped, %zu shaders, %zu pipelines, %zu textures", (unsigned long long)frameNumber,
             g_r.drawsThisFrame.load(), g_r.skippedThisFrame.load(), g_r.shaders.size(), g_r.pipelines.size(), g_r.textures.size());
+        double sum = 0;
+        for (float ms : frameMs)
+            sum += ms;
+        const size_t worst = frameMs.size() / 100;
+        std::nth_element(frameMs.begin(), frameMs.begin() + worst, frameMs.end(), std::greater<float>());
+        Log("renderer: frames %.2f ms average, %.2f ms 1%% slowest, GPU %.2f ms", frameMs.empty() ? 0.0 : sum / frameMs.size(),
+            frameMs.empty() ? 0.0 : double(frameMs[worst]), g_logGpuFrames ? g_logGpuMs / g_logGpuFrames : 0.0);
+        frameMs.clear();
+        g_logGpuMs = 0;
+        g_logGpuFrames = 0;
+    }
     g_r.drawsThisFrame = g_r.skippedThisFrame = 0;
     g_r.frameIndex = (g_r.frameIndex + 1) % kFrames;
 }
