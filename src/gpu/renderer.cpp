@@ -1873,15 +1873,15 @@ void BeginFrameIfNeeded()
         raw.Buffer.NumElements = UINT(f.ringSize / 4);
         raw.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
         g_r.device->CreateShaderResourceView(f.ring.Get(), &raw, Cpu(g_r.srvHeap.Get(), f.descriptorBase, g_r.srvStride));
-        if (g_r.physical)
-        {
-            raw.Buffer.NumElements = UINT(g_r.physical->GetDesc().Width / 4);
-            g_r.device->CreateShaderResourceView(g_r.physical.Get(), &raw, Cpu(g_r.srvHeap.Get(), f.descriptorBase + 1, g_r.srvStride));
-        }
-        else if (ID3D12Resource* arena = VertexCacheBeginFrame())
+        if (ID3D12Resource* arena = VertexCacheBeginFrame())
         {
             raw.Buffer.NumElements = UINT(arena->GetDesc().Width / 4);
             g_r.device->CreateShaderResourceView(arena, &raw, Cpu(g_r.srvHeap.Get(), f.descriptorBase + 1, g_r.srvStride));
+        }
+        else if (g_r.physical)
+        {
+            raw.Buffer.NumElements = UINT(g_r.physical->GetDesc().Width / 4);
+            g_r.device->CreateShaderResourceView(g_r.physical.Get(), &raw, Cpu(g_r.srvHeap.Get(), f.descriptorBase + 1, g_r.srvStride));
         }
         else
             g_r.device->CreateShaderResourceView(f.ring.Get(), &raw, Cpu(g_r.srvHeap.Get(), f.descriptorBase + 1, g_r.srvStride));
@@ -2127,9 +2127,10 @@ bool GetIndexBufferLocked(uint32_t base, uint32_t count, bool is32, uint32_t end
 
 // Large vertex buffers where guest memory isn't mapped for the GPU (the Steam Deck's vkd3d, some
 // Intel drivers): copied every frame into the upload ring, every buffer, every draw's worth. They
-// are kept in an arena on the GPU instead (bound as t1, which only the mapped heap uses), checked
-// once a frame with the full hash (as index buffers: exact) and copied again only when they change.
-// FM2_NO_VERTEX_CACHE=1 copies them every frame as before (A/B).
+// are kept in an arena on the GPU instead (bound as t1, which only the mapped heap uses) and copied
+// again only when one of their pages was written (memory.cpp's write watch: no hashing).
+// FM2_NO_VERTEX_CACHE=1 copies them every frame as before; FM2_VERTEX_HASH=1 hashes every byte of
+// them each frame instead of watching (A/B).
 struct VertexArena
 {
     static constexpr uint64_t kBytes = 512ull << 20;
@@ -2141,27 +2142,32 @@ struct VertexArena
         uint64_t offset = 0, hash = 0, checkedFrame = ~0ull;
         uint32_t sizeClass = 0;
         uint64_t staged = ~0ull, stagedFrame = ~0ull; // this frame's copy in the upload ring
+        bool watched = false;   // its pages were write-watched when it was last copied
+        uint32_t changes = 0;   // checks in a row that found it changed
+        uint64_t dynamicUntil = 0; // changing every frame: copied each frame, unwatched, until then
     };
     std::unordered_map<uint64_t, Entry> entries;
     bool full = false;
     std::vector<IndexArena::Copy> pending;
-    uint64_t hashed = 0, uploaded = 0; // bytes this frame (FM2_PERF)
+    uint64_t hashed = 0, uploaded = 0; // bytes checked and copied, for the log line
 } g_vertexArena;
 
 // Decided at each frame's start (t1 is bound then), so a switch flipped mid-frame waits a frame.
+// Where guest memory is mapped, FM2_VERTEX_ARENA=1 uses the arena there too (t1 is then the
+// arena: vertex and index data aren't read in place).
 bool g_vertexCacheThisFrame = false;
 ID3D12Resource* VertexCacheBeginFrame()
 {
-    static LiveSwitch off("FM2_NO_VERTEX_CACHE");
+    static LiveSwitch off("FM2_NO_VERTEX_CACHE"), onMapped("FM2_VERTEX_ARENA");
     VertexArena& arena = g_vertexArena;
     g_vertexCacheThisFrame = false;
-    if (g_r.physical || off)
+    if (off || (g_r.physical && !onMapped))
         return nullptr;
     if (!arena.buffer)
     {
         arena.buffer = CreateBuffer(VertexArena::kBytes, D3D12_HEAP_TYPE_DEFAULT,
             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-        Log("vertex arena: %s", arena.buffer ? "512 MB on the GPU for large vertex buffers (guest memory isn't mapped)" : "couldn't be created");
+        Log("vertex arena: %s", arena.buffer ? "512 MB on the GPU for large vertex buffers" : "couldn't be created");
     }
     g_vertexCacheThisFrame = arena.buffer != nullptr;
     return arena.buffer.Get();
@@ -2238,10 +2244,23 @@ uint64_t VertexCacheLocked(uint32_t address, uint32_t bytes, bool& arenaHit)
     }
     e.checkedFrame = g_r.frame;
     const uint8_t* src = GuestPtr<uint8_t>(GpuPhysToGuest(address));
-    const uint64_t hash = FullHash(src, bytes);
-    arena.hashed += bytes;
-    if (!inserted && hash == e.hash)
+    const uint32_t physical = address & 0x1FFFFFFF;
+    // Changed? Its pages are write-watched (memory.cpp): unchanged while none was written since
+    // the last copy, no hashing. FM2_VERTEX_HASH=1 hashes every byte each frame instead (A/B).
+    static LiveSwitch hashOnly("FM2_VERTEX_HASH");
+    uint64_t hash = 0;
+    bool unchanged;
+    if (hashOnly)
     {
+        hash = FullHash(src, bytes);
+        arena.hashed += bytes;
+        unchanged = !inserted && hash == e.hash;
+    }
+    else
+        unchanged = !inserted && e.watched && WriteWatchClean(physical, bytes);
+    if (unchanged)
+    {
+        e.changes = 0;
         arenaHit = true;
         return e.offset;
     }
@@ -2251,6 +2270,16 @@ uint64_t VertexCacheLocked(uint32_t address, uint32_t bytes, bool& arenaHit)
         e.checkedFrame = ~0ull; // not staged: checked again next time
         return ~0ull;
     }
+    // Rewritten frame after frame (or sharing pages with data that is): watching it would fault
+    // on every write, so it is copied each frame for a while, then watched again.
+    if ((e.watched || hashOnly) && !inserted && ++e.changes >= 4)
+    {
+        e.dynamicUntil = g_r.frame + 120;
+        e.changes = 0;
+    }
+    e.watched = !hashOnly && g_r.frame >= e.dynamicUntil;
+    if (e.watched)
+        WriteWatchArm(physical, bytes); // before the copy: a write after it faults and is seen
     memcpy(Frame().ringCpu + offset, src, bytes);
     arena.uploaded += bytes;
     e.staged = offset;
@@ -7551,7 +7580,7 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
     const uint32_t prim = initiator & 0x3F, indexSource = (initiator >> 6) & 3, indexCount = initiator >> 16;
     const bool restartOn = (gpureg::Get(PA_SU_SC_MODE_CNTL) >> 21) & 1;
     LiveSwitch &noDirectIndex = g_sw_FM2_NO_DIRECT_INDEX;
-    const bool directIndex = g_r.physical && !noDirectIndex && (indexSource == 0 || indexSource == 2) &&
+    const bool directIndex = g_r.physical && !g_vertexCacheThisFrame && !noDirectIndex && (indexSource == 0 || indexSource == 2) &&
         (prim == 4 || prim == 13 || (prim == 6 && !restartOn));
     const uint32_t directVertices = prim == 4 ? indexCount / 3 * 3 : prim == 13 ? indexCount / 4 * 6 : (indexCount >= 3 ? (indexCount - 2) * 3 : 0);
     IndexListEntry* indexEntry = directIndex ? nullptr : CachedIndexList(initiator, dmaBase, dmaSize);
@@ -7802,7 +7831,7 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
         // rewritten before the GPU runs this frame, so they are copied.
         LiveSwitch &noDirect = g_sw_FM2_NO_DIRECT_FETCH;
         static const uint32_t directBytes = getenv("FM2_DIRECT_FETCH_KB") ? uint32_t(atoi(getenv("FM2_DIRECT_FETCH_KB"))) * 1024u : kDirectFetchBytes;
-        if (g_r.physical && !noDirect && bytes >= directBytes && !DynamicBuffer(address, bytes))
+        if (g_r.physical && !g_vertexCacheThisFrame && !noDirect && bytes >= directBytes && !DynamicBuffer(address, bytes))
         {
             // FM2_TRACE_DIRECT=1: remember the in-place buffers of depth-only draws and check at the next
             // frame's end whether the game rewrote them (the GPU reads them later than the draw is recorded).

@@ -1,5 +1,7 @@
 #include "memory.h"
 
+#include <algorithm>
+#include <atomic>
 #include <iterator>
 #include <map>
 #include <mutex>
@@ -229,4 +231,122 @@ uint32_t GuestAllocationSize(uint32_t address, uint32_t* start)
 void* PhysicalSection()
 {
     return g_physicalSection;
+}
+
+namespace
+{
+// One bit per 4 KB page of physical memory: armed (read-only in every view, not written since).
+constexpr uint32_t kPage = 4096, kPages = kPhysicalSize / kPage, kFirstTracked = 0x01000000;
+std::atomic<uint64_t> g_armed[kPages / 64];
+SRWLOCK g_watchLock = SRWLOCK_INIT; // arming and disarming (bit and page protection together)
+
+bool Armed(uint32_t page)
+{
+    return (g_armed[page / 64].load(std::memory_order_acquire) >> (page % 64)) & 1;
+}
+
+void Protect(uint32_t firstPage, uint32_t pages, DWORD protect)
+{
+    DWORD old;
+    for (uint32_t view : kPhysicalViews)
+        VirtualProtect(g_base + view + size_t(firstPage) * kPage, size_t(pages) * kPage, protect, &old);
+}
+
+// Disarms the armed pages of [first, first + count): writable again, counted as written.
+void Disarm(uint32_t first, uint32_t count)
+{
+    AcquireSRWLockExclusive(&g_watchLock);
+    for (uint32_t p = first; p < first + count;)
+    {
+        if (!Armed(p))
+        {
+            p++;
+            continue;
+        }
+        uint32_t end = p;
+        while (end < first + count && Armed(end))
+        {
+            g_armed[end / 64].fetch_and(~(1ull << (end % 64)), std::memory_order_acq_rel);
+            end++;
+        }
+        Protect(p, end - p, PAGE_READWRITE);
+        p = end;
+    }
+    ReleaseSRWLockExclusive(&g_watchLock);
+}
+
+LONG CALLBACK OnWatchedWrite(EXCEPTION_POINTERS* info)
+{
+    const EXCEPTION_RECORD* e = info->ExceptionRecord;
+    if (e->ExceptionCode != EXCEPTION_ACCESS_VIOLATION || e->NumberParameters < 2 || e->ExceptionInformation[0] != 1)
+        return EXCEPTION_CONTINUE_SEARCH;
+    const uint8_t* at = reinterpret_cast<const uint8_t*>(e->ExceptionInformation[1]);
+    if (at < g_base + kPhysicalViews[0] || at >= g_base + 0x100000000ull)
+        return EXCEPTION_CONTINUE_SEARCH;
+    const uint32_t page = uint32_t((at - g_base) & 0x1FFFFFFF) / kPage;
+    // Every view is committed read-write: a write that faults here is to a page armed now, or
+    // one another thread is disarming (its protection changes under the lock).
+    AcquireSRWLockShared(&g_watchLock);
+    const bool armed = Armed(page);
+    ReleaseSRWLockShared(&g_watchLock);
+    // The whole 64 KB block around it: a write rarely stops at one page (a damaged car body is
+    // rewritten in one go), and a fault per 4 KB page with its protection changes cost a 40 ms
+    // frame when a car crashed.
+    if (armed)
+        Disarm(page & ~15u, 16);
+    else
+    {
+        // Not ours (or disarmed meanwhile): retry only if the page is writable now.
+        MEMORY_BASIC_INFORMATION mbi{};
+        if (!VirtualQuery(at, &mbi, sizeof(mbi)) || !(mbi.Protect & (PAGE_READWRITE | PAGE_EXECUTE_READWRITE)))
+            return EXCEPTION_CONTINUE_SEARCH;
+    }
+    return EXCEPTION_CONTINUE_EXECUTION;
+}
+}
+
+void WriteWatchArm(uint32_t offset, uint32_t bytes)
+{
+    static const bool handler = [] { return AddVectoredExceptionHandler(1, OnWatchedWrite) != nullptr; }();
+    if (!handler || !bytes || offset < kFirstTracked || uint64_t(offset) + bytes > kPhysicalSize)
+        return;
+    const uint32_t first = offset / kPage, end = (offset + bytes + kPage - 1) / kPage;
+    AcquireSRWLockExclusive(&g_watchLock);
+    for (uint32_t p = first; p < end;)
+    {
+        if (Armed(p))
+        {
+            p++;
+            continue;
+        }
+        uint32_t run = p;
+        while (run < end && !Armed(run))
+        {
+            g_armed[run / 64].fetch_or(1ull << (run % 64), std::memory_order_acq_rel);
+            run++;
+        }
+        Protect(p, run - p, PAGE_READONLY);
+        p = run;
+    }
+    ReleaseSRWLockExclusive(&g_watchLock);
+}
+
+bool WriteWatchClean(uint32_t offset, uint32_t bytes)
+{
+    if (!bytes || offset < kFirstTracked || uint64_t(offset) + bytes > kPhysicalSize)
+        return false;
+    const uint32_t first = offset / kPage, end = (offset + bytes + kPage - 1) / kPage;
+    for (uint32_t p = first; p < end; p++)
+        if (!Armed(p))
+            return false;
+    return true;
+}
+
+void GuestWillWrite(uint32_t address, uint32_t bytes)
+{
+    if (!bytes || address < kPhysicalViews[0])
+        return;
+    const uint32_t offset = address & 0x1FFFFFFF;
+    const uint32_t first = offset / kPage, end = uint32_t(std::min<uint64_t>(uint64_t(offset) + bytes + kPage - 1, kPhysicalSize) / kPage);
+    Disarm(first, end - first);
 }

@@ -469,6 +469,7 @@ GUEST_EXPORT(NtReadFile)
         extern uint32_t g_binkRingBase;
         g_binkRingBase = buffer - uint32_t(offset % 0x200000);
     }
+    GuestWillWrite(buffer, length); // (the kernel's write fails on a write-watched page instead of faulting)
     const BOOL ok = ReadFile(file->host, GuestPtr(buffer), length, &read, &ov);
     file->position = offset + read;
     g_readBytes += read;
