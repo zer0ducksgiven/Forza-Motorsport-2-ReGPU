@@ -1183,16 +1183,21 @@ float4 psColor(float4 pos : SV_Position) : SV_Target
     if (clampDest) c = clamp(c, destMin, destMax);
     return swapRB ? c.bgra : c;
 }
-// The average of the scale x scale block of texels under each output pixel.
+// The average of the scale x scale area of texels under each output pixel, texels the area
+// covers partly weighted by how much. (Rounding the scale to whole texels read 2x2 blocks at
+// 1080p's 1.5: the copy came out stretched from the top-left, and bloom drew haze beside cars.)
 float4 psBox(float4 pos : SV_Position) : SV_Target
 {
-    const int k = max(int(scale + 0.5), 1);
-    const int2 base = int2(pos.xy) * k;
+    const float2 lo = floor(pos.xy) * scale, hi = lo + scale;
+    const int2 first = int2(floor(lo)), last = int2(ceil(hi)) - 1;
     float4 c = 0;
-    for (int y = 0; y < k; y++)
-        for (int x = 0; x < k; x++)
-            c += colorTex.Load(int3(base + int2(x, y), 0));
-    return c / float(k * k);
+    for (int y = first.y; y <= last.y; y++)
+        for (int x = first.x; x <= last.x; x++)
+        {
+            const float2 w = min(float2(x + 1, y + 1), hi) - max(float2(x, y), lo);
+            c += colorTex.Load(int3(x, y, 0)) * (w.x * w.y);
+        }
+    return c / (scale * scale);
 }
 )";
     ComPtr<ID3DBlob> vs, ps;
