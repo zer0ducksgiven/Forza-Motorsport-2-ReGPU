@@ -2935,8 +2935,19 @@ struct PipelineLibrary
     // the name then failed to load and blocked storing the new one, rebuilding it every launch.
     static std::wstring Name(const PipelineKey& k, const D3D12_GRAPHICS_PIPELINE_STATE_DESC& pd)
     {
-        const uint64_t code = Fnv(pd.VS.pShaderBytecode, pd.VS.BytecodeLength, 3) * 0x9E3779B97F4A7C15ull ^
+        uint64_t code = Fnv(pd.VS.pShaderBytecode, pd.VS.BytecodeLength, 3) * 0x9E3779B97F4A7C15ull ^
             (pd.PS.pShaderBytecode ? Fnv(pd.PS.pShaderBytecode, pd.PS.BytecodeLength, 4) : 0);
+        // The fixed-function state too: a library entry is only loaded with the description it was
+        // stored with. When the renderer's state for a key changed (depth bias, formats, sample count),
+        // the old entry kept the name, failed to load and blocked storing the new one: most pipelines
+        // were built again at every launch (2723 of 3031 in the benchmark).
+        code = (code ^ Fnv(&pd.BlendState, sizeof(pd.BlendState), 5)) * 0x9E3779B97F4A7C15ull;
+        code = (code ^ Fnv(&pd.RasterizerState, sizeof(pd.RasterizerState), 6)) * 0x9E3779B97F4A7C15ull;
+        code = (code ^ Fnv(&pd.DepthStencilState, sizeof(pd.DepthStencilState), 7)) * 0x9E3779B97F4A7C15ull;
+        code = (code ^ Fnv(pd.RTVFormats, sizeof(pd.RTVFormats), 8)) * 0x9E3779B97F4A7C15ull;
+        const uint32_t misc[] = { pd.SampleMask, uint32_t(pd.IBStripCutValue), uint32_t(pd.PrimitiveTopologyType), pd.NumRenderTargets, uint32_t(pd.DSVFormat),
+            pd.SampleDesc.Count, pd.SampleDesc.Quality, pd.InputLayout.NumElements };
+        code = (code ^ Fnv(misc, sizeof(misc), 9)) * 0x9E3779B97F4A7C15ull;
         wchar_t name[128];
         swprintf(name, 128, L"%016llx_%016llx_%08x_%08x_%08x_%08x_%016llx", (unsigned long long)k.vs, (unsigned long long)k.ps, k.blend, k.depth,
             k.stencilMaskMode, k.flags, (unsigned long long)code);
