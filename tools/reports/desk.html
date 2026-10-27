@@ -205,7 +205,7 @@ $("refresh").onclick = () => {
 async function loadIssues() {
   await busy("Loading reports…", async () => {
     issues = await api("/api/issues?state=all")
-    const versions = [...new Set(issues.map((i) => i.version).filter(Boolean))].sort().reverse()
+    const versions = [...new Set(issues.map((i) => i.version).filter(Boolean))].sort(newestVersion)
     $("f-version").innerHTML = `<option value="">Any version</option>` + versions.map((v) => `<option>${esc(v)}</option>`).join("")
     $("f-label").innerHTML = `<option value="">Any status</option><option value="-">No status yet</option>` + STATUSES.map((s) => `<option>${esc(s)}</option>`).join("")
     renderIssues()
@@ -428,8 +428,16 @@ function count(list, key) {
   for (const x of list) { const k = key(x) || "unknown"; m.set(k, (m.get(k) || 0) + 1) }
   return [...m].sort((a, b) => b[1] - a[1])
 }
-function bars(title, pairs, total) {
-  return `<div class="stat"><div class="k">${esc(title)}</div>${pairs.slice(0, 8).map(([k, n]) =>
+// "0.10.2" after "0.9.1": compared number by number, newest first; anything that isn't a version last.
+function newestVersion(a, b) {
+  const pa = String(a).match(/^\d+(\.\d+)*$/) ? String(a).split(".").map(Number) : null
+  const pb = String(b).match(/^\d+(\.\d+)*$/) ? String(b).split(".").map(Number) : null
+  if (!pa || !pb) return (pa ? -1 : 0) + (pb ? 1 : 0)
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) if ((pa[i] || 0) !== (pb[i] || 0)) return (pb[i] || 0) - (pa[i] || 0)
+  return 0
+}
+function bars(title, pairs, total, all) {
+  return `<div class="stat"><div class="k">${esc(title)}</div>${(all ? pairs : pairs.slice(0, 8)).map(([k, n]) =>
     `<div class="bar-row pick ${hwFilter.get(title) === k ? "on" : ""}" data-group="${esc(title)}" data-value="${esc(k)}" title="Show only these installs">
       <div class="b"><i style="width:${(100 * n / total).toFixed(0)}%"></i><span>${esc(k)}</span></div><div class="n">${n}</div></div>`).join("")}</div>`
 }
@@ -452,7 +460,9 @@ function renderHardware() {
     `<div class="stat"><div class="k">Shared logs</div><div class="v">${hw.logs} from ${list.length + none.length} installs</div>
       ${none.length ? `<div class="status" style="margin-top:6px">${none.length} never logged their hardware and aren't counted below` +
         (noUpdate ? ` (${noUpdate} stopped at "title update missing")` : "") + `.</div>` : ""}</div>` +
-    HW_GROUPS.map(([title, key]) => bars(title, count(list, key), n)).join("")
+    HW_GROUPS.map(([title, key]) => title === "Version"
+      ? bars(title, count(list, key).sort(([a], [b]) => newestVersion(a, b)), n, true) // every version, newest first
+      : bars(title, count(list, key), n)).join("")
   const shown = list.filter((x) => HW_GROUPS.every(([title, key]) => !hwFilter.has(title) || (key(x) || "unknown") === hwFilter.get(title)))
   $("hw-filters").innerHTML = hwFilter.size
     ? `<span class="status">Showing ${shown.length} of ${list.length} installs:</span>` +

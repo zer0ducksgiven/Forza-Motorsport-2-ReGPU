@@ -264,13 +264,15 @@ def delete_log(path, sha=None):
         _log_cache.pop(path, None)
 
 
-# A real log line: "[   1.2345] system: ...". Setup test lines don't count.
-REAL_LINE = re.compile(r'^\[\s*\d+\.\d+\]\s+[\w .()/-]+:')
+# Words on a line: an unreadable upload has none. The launcher's setup test lines don't count.
+WORDS = re.compile(r'[A-Za-z]{4,}')
+SETUP_TEST = re.compile(r'\btest (log|line)\b', re.I)
 
 
 def is_empty(text):
-    """Nothing to read in it: no real log line (an unreadable upload, the launcher's setup test)."""
-    return not any(REAL_LINE.match(l) and 'test' not in l.lower() for l in text.splitlines())
+    """Nothing to read in it: no line with words (an unreadable upload, the launcher's setup test).
+    A Proton log of loader messages only (ld.so, ntsync) has words, so it stays: it says why the game never ran."""
+    return not any(WORDS.search(l) and not SETUP_TEST.search(l) for l in text.splitlines())
 
 
 def log_text(path):
