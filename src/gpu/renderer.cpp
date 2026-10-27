@@ -453,7 +453,7 @@ struct Renderer
     std::unordered_map<uint64_t, CachedTexture> textures;
     std::unordered_map<uint64_t, CachedTexture> cubes;
     std::unordered_map<uint32_t, CachedTexture> mipChains; // resolved textures with their mips, by base
-    std::unordered_map<uint32_t, CachedTexture> gameSize;  // resolved textures averaged to game size, by base
+    std::unordered_map<uint64_t, CachedTexture> gameSize;  // resolved textures averaged to game size, by base, size and format
     // Bindless texture descriptors.
     struct BindlessEntry
     {
@@ -3652,7 +3652,9 @@ ID3D12Resource* SceneAtGameSize(uint32_t base, const ResolvedTexture& src)
     const float k = float(src.hostWidth) / float(std::max(src.width, 1u));
     if (k < 1.5f || !src.resource)
         return nullptr;
-    auto& c = g_r.gameSize[base];
+    // By size and format too: one base holds the 1280x720 scene and the 320x180 bloom buffer in turn,
+    // and a slot per base was recreated several times a frame (the frame-time spikes since 0.8.1).
+    auto& c = g_r.gameSize[uint64_t(base) << 32 | uint64_t(src.width & 0x3FFF) << 18 | uint64_t(src.height & 0x3FFF) << 4 | (uint32_t(src.format) & 0xF)];
     if (c.resource && c.contentHash == src.serial && c.checkedFrame == g_r.frame)
         return c.resource.Get();
     FrameResources& f = Frame();
