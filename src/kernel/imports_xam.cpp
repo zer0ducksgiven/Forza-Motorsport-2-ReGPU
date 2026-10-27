@@ -496,7 +496,38 @@ bool Key(int vk)
     return GetAsyncKeyState(vk) & 0x8000;
 }
 
+void AddKeyboardNow(PadState& s);
+
+// The keys are read at most once a millisecond: the game asks for player 1 several times a frame,
+// and each read is about twenty GetAsyncKeyState calls (about 1% of its main thread).
 void AddKeyboard(PadState& s)
+{
+    static std::mutex mutex;
+    static Clock::time_point at{};
+    static PadState keys{};
+    {
+        std::lock_guard lock(mutex);
+        if (Clock::now() - at > std::chrono::milliseconds(1))
+        {
+            keys = {};
+            AddKeyboardNow(keys);
+            at = Clock::now();
+        }
+    }
+    s.buttons |= keys.buttons;
+    if (keys.rightTrigger)
+        s.rightTrigger = keys.rightTrigger;
+    if (keys.leftTrigger)
+        s.leftTrigger = keys.leftTrigger;
+    if (keys.lx)
+        s.lx = keys.lx;
+    if (keys.rx)
+        s.rx = keys.rx;
+    if (keys.ry)
+        s.ry = keys.ry;
+}
+
+void AddKeyboardNow(PadState& s)
 {
     if (!PresenterHasFocus())
         return;
@@ -558,12 +589,35 @@ DWORD PadSlot(uint32_t user)
     return DWORD(slotOf[user < XUSER_MAX_COUNT ? user : 0]);
 }
 
+// XInputGetState for this user's slot. Only slots the once-a-second probe found connected are asked
+// (an empty slot is the slow call: the game asks for all four users several times a frame, and
+// that was 2-3% of its main thread), and a slot's state is reused for a millisecond.
+bool CachedXInputState(uint32_t user, XINPUT_STATE& x)
+{
+    const DWORD slot = PadSlot(user);
+    if (int(user) >= g_xinputPads)
+        return false;
+    struct Cached { Clock::time_point at{}; XINPUT_STATE state{}; bool ok = false; };
+    static Cached cache[XUSER_MAX_COUNT];
+    static std::mutex cacheMutex;
+    std::lock_guard lock(cacheMutex);
+    Cached& c = cache[slot];
+    const auto now = Clock::now();
+    if (now - c.at > std::chrono::milliseconds(1))
+    {
+        c.ok = XInputGetState(slot, &c.state) == ERROR_SUCCESS;
+        c.at = now;
+    }
+    x = c.state;
+    return c.ok;
+}
+
 // Returns false if nothing is connected for this user.
 bool ReadPad(uint32_t user, PadState& s)
 {
     bool connected = false;
     XINPUT_STATE x{};
-    if (user < XUSER_MAX_COUNT && XInputGetState(PadSlot(user), &x) == ERROR_SUCCESS)
+    if (user < XUSER_MAX_COUNT && CachedXInputState(user, x))
     {
         connected = true;
         s.buttons = x.Gamepad.wButtons; // same bit layout as the 360
