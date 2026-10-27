@@ -78,6 +78,23 @@ void GammaMain(uint3 id : SV_DispatchThreadID)
     dst[id.xy] = float4(GammaCurve(c.r, p), GammaCurve(c.g, p), GammaCurve(c.b, p), c.a);
 }
 
+// Ultrawide menus: the frame (drawn stretched across the whole width) squeezed back into the middle 16:9,
+// black at the sides. outSize.z is where that area starts, outSize.w its width.
+[numthreads(8, 8, 1)]
+void PillarMain(uint3 id : SV_DispatchThreadID)
+{
+    if (any(id.xy >= outSize.xy))
+        return;
+    const float x = float(id.x) - float(outSize.z);
+    if (x < 0.0 || x >= float(outSize.w))
+    {
+        dst[id.xy] = float4(0, 0, 0, 1);
+        return;
+    }
+    const float2 uv = float2((x + 0.5) / float(outSize.w), (float(id.y) + 0.5) / float(outSize.y));
+    dst[id.xy] = src.SampleLevel(linearClamp, uv, 0);
+}
+
 // Enhanced lighting (experimental): local contrast on the finished frame. rcasCon.x is the
 // strength (float bits). Each pixel is pushed away from the average of its four neighbours,
 // so shading steps, edges and highlights read more clearly.

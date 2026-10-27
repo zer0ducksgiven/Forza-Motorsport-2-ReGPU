@@ -67,7 +67,7 @@ using Microsoft::WRL::ComPtr;
 
 
 void LogAllHostThreadStacks(const char* why); // hang.cpp
-extern std::atomic<bool> g_cameraAspectWidened; // hooks/camera_aspect.cpp
+bool CameraAspectWidened(); // hooks/camera_aspect.cpp: a race is on screen (the game widened its camera)
 void DealerCarDraw(uint64_t vs, const float c[256][4], float squash[4][4], bool body); // hooks/dealer.cpp: the easter egg, per car draw
 
 namespace
@@ -103,7 +103,7 @@ struct Upscale
 {
     bool tried = false, ready = false;
     ComPtr<ID3D12RootSignature> root;
-    ComPtr<ID3D12PipelineState> easu, rcas, depthCopy, gamma, enhance;
+    ComPtr<ID3D12PipelineState> easu, rcas, depthCopy, gamma, enhance, pillar;
     ComPtr<ID3D12Resource> dlaaOut; // DLAA output (scene size), copied back into the scene image
     ComPtr<ID3D12Resource> depth; // temporal: the scene's depth as R32 (render size, top left)
     ComPtr<ID3D12Resource> temp; // EASU output (RGBA16F)
@@ -5159,6 +5159,9 @@ bool InitUpscale()
     pd.CS = { kEnhanceMain, sizeof(kEnhanceMain) };
     if (FAILED(g_r.device->CreateComputePipelineState(&pd, IID_PPV_ARGS(&g_upscale.enhance))))
         return false;
+    pd.CS = { kPillarMain, sizeof(kPillarMain) };
+    if (FAILED(g_r.device->CreateComputePipelineState(&pd, IID_PPV_ARGS(&g_upscale.pillar))))
+        return false;
     g_upscale.ready = true;
     Log("upscale: FSR 1 ready (scene at %.0f%% of %ux%u)", GetSettings().SceneScale() * 100.0f, OutputWidth(), OutputHeight());
     return true;
@@ -5172,6 +5175,7 @@ std::atomic<uint32_t> g_gammaTable[256];
 std::atomic<bool> g_gammaSet{ false };
 ComPtr<ID3D12Resource> g_gammaOut;
 ComPtr<ID3D12Resource> g_enhanceOut; // enhanced lighting output (Settings::enhance)
+ComPtr<ID3D12Resource> g_pillarOut;  // ultrawide menus squeezed to 16:9 (PillarFrontBuffer)
 
 // Returns the graded copy of `image` (in COPY_SOURCE state), or null to show it as is.
 ID3D12Resource* GradeFrontBuffer(ID3D12Resource* image)
@@ -5304,6 +5308,74 @@ ID3D12Resource* EnhanceFrontBuffer(ID3D12Resource* image)
     C().list->ResourceBarrier(2, b);
     g_drawState.Invalidate(); // the compute pipeline replaced the draw's
     return g_enhanceOut.Get();
+}
+
+// Ultrawide menus (no race on screen): the frame, drawn as at 16:9 but stretched across the width, squeezed back
+// into the middle 16:9 on black. `image` is in COPY_SOURCE and so is the result; null when not needed.
+ID3D12Resource* PillarFrontBuffer(ID3D12Resource* image)
+{
+    if (!image || OutputWide() <= 1.001f || CameraAspectWidened() || !InitUpscale())
+        return nullptr;
+    const D3D12_RESOURCE_DESC desc = image->GetDesc();
+    FrameResources& f = Frame();
+    if (f.descriptorsUsed + 2 > kDescriptorsPerFrame)
+        return nullptr;
+    if (!g_pillarOut || g_pillarOut->GetDesc().Width != desc.Width || g_pillarOut->GetDesc().Height != desc.Height)
+    {
+        D3D12_RESOURCE_DESC td = desc;
+        td.MipLevels = 1;
+        td.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        td.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+        RetireTexture(std::move(g_pillarOut));
+        g_pillarOut = CreateTexture(td, D3D12_RESOURCE_STATE_COPY_SOURCE, "pillar");
+    }
+    const UINT slots = f.descriptorBase + f.descriptorsUsed;
+    f.descriptorsUsed += 2;
+    D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
+    srv.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    srv.Texture2D.MipLevels = 1;
+    g_r.device->CreateShaderResourceView(image, &srv, Cpu(g_r.srvHeap.Get(), slots, g_r.srvStride));
+    D3D12_UNORDERED_ACCESS_VIEW_DESC uav{};
+    uav.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    uav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+    g_r.device->CreateUnorderedAccessView(g_pillarOut.Get(), nullptr, &uav, Cpu(g_r.srvHeap.Get(), slots + 1, g_r.srvStride));
+
+    D3D12_RESOURCE_BARRIER b[2]{};
+    for (auto& x : b)
+        x.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    b[0].Transition.pResource = image;
+    b[0].Transition.Subresource = 0;
+    b[0].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
+    b[0].Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    b[1].Transition.pResource = g_pillarOut.Get();
+    b[1].Transition.Subresource = 0;
+    b[1].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
+    b[1].Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    C().list->ResourceBarrier(2, b);
+
+    // The middle 16:9 of the output: where it starts and how wide it is (outSize.zw).
+    const uint32_t keep = std::min(uint32_t(desc.Width), (desc.Height * 16 / 9) & ~1u);
+    uint32_t c[24] = {};
+    c[20] = uint32_t(desc.Width);
+    c[21] = desc.Height;
+    c[22] = (uint32_t(desc.Width) - keep) / 2;
+    c[23] = keep;
+    C().list->SetComputeRootSignature(g_upscale.root.Get());
+    C().list->SetComputeRoot32BitConstants(0, 24, c, 0);
+    C().list->SetPipelineState(g_upscale.pillar.Get());
+    C().list->SetComputeRootDescriptorTable(1, Gpu(g_r.srvHeap.Get(), slots, g_r.srvStride));
+    C().list->SetComputeRootDescriptorTable(2, Gpu(g_r.srvHeap.Get(), slots + 1, g_r.srvStride));
+    C().list->Dispatch(UINT((desc.Width + 7) / 8), (desc.Height + 7) / 8, 1);
+
+    b[0].Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    b[0].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+    b[1].Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    b[1].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+    C().list->ResourceBarrier(2, b);
+    g_drawState.Invalidate(); // the compute pipeline replaced the draw's
+    return g_pillarOut.Get();
 }
 
 // Upscales the resolved image at `base` (rendered at the scene scale) to the output size in
@@ -7925,9 +7997,12 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
     // for FM2_WIDE_FOV < 100 remains; otherwise the view is narrowed here (Hor+ without the
     // game's culling knowing).
     {
-        const float wide = WidePass() ? OutputWide() : 1.0f;
-        const float extent = WidePass() ? ViewExtent() : 1.0f;
-        const bool gameWidened = g_cameraAspectWidened.load(std::memory_order_relaxed);
+        // Menus on an ultrawide output are drawn as at 16:9, stretched across the width, and squeezed back
+        // to 16:9 when shown (PillarFrontBuffer): every layer alike, transitions and loading screens too.
+        const bool wideView = WidePass() && CameraAspectWidened();
+        const float wide = wideView ? OutputWide() : 1.0f;
+        const float extent = wideView ? ViewExtent() : 1.0f;
+        const bool gameWidened = CameraAspectWidened();
         vc->vwide[0] = gameWidened ? 1.0f : 1.0f / extent;
         vc->vwide[1] = wide / extent;
         LiveSwitch &noSqueeze = g_sw_FM2_NO_HUD_SQUEEZE; // A/B: 2D stretched with the view
@@ -8258,8 +8333,8 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
     D3D12_RECT hostScissor = ToHost(scissor);
     // A scissor narrower than the screen in a wide pass clips 2D content (the track map),
     // which the vertex shader keeps in the centred 16:9 area: map it the same way. Not for
-    // screen layers (post-processing done in halves would leave a seam).
-    if (WidePass() && ScaleWide() != ScaleY() && !g_drawSamplesResolve && (scissor.left > 0 || scissor.right < LONG(kWidth)))
+    // screen layers (post-processing done in halves would leave a seam), nor menus (drawn stretched, see vwide).
+    if (WidePass() && ScaleWide() != ScaleY() && !g_drawSamplesResolve && CameraAspectWidened() && (scissor.left > 0 || scissor.right < LONG(kWidth)))
     {
         const double centre = kWidth * ScaleWide() / 2.0, s = ScaleY();
         hostScissor.left = LONG(std::lround(centre + (scissor.left - double(kWidth) / 2) * s));
@@ -9095,6 +9170,9 @@ void RendererOnSwapImpl(uint64_t frameNumber, uint32_t frontBuffer)
     if (fromResolve)
         if (ID3D12Resource* enhanced = EnhanceFrontBuffer(shown))
             shown = enhanced;
+    if (fromResolve)
+        if (ID3D12Resource* pillared = PillarFrontBuffer(shown))
+            shown = pillared;
     const bool presenting = fromResolve && PresenterRecordCopy(C().list->Real(), shown, overlay, kOverlayW, kOverlayH);
     {
         const uint64_t traceFrame = TraceFrame();
