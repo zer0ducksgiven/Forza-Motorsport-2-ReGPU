@@ -271,14 +271,21 @@ void LoadTitle(const std::filesystem::path& xexPath)
         std::filesystem::path mod;
         if (!VfsModFile("game", std::string("Media\\") + name, mod))
             continue;
+        // Searched for in the image's data sections (their addresses differ between the disc and
+        // the title update, so none is written here: the remapper can't place a range's end).
         const size_t len = strlen(name) + 1;
-        for (uint32_t a = 0x82A00000; a + len < 0x82B00000; a++)
+        for (const Section& s : image.sections)
         {
-            char* p = reinterpret_cast<char*>(g_base + a);
-            if (memcmp(p, name, len) == 0 && p[-1] != '\\')
+            if (s.name == ".text" || s.name == ".reloc" || s.size <= len)
+                continue;
+            for (uint32_t a = uint32_t(s.base) + 1; a + len <= uint32_t(s.base + s.size); a++)
             {
-                p[0] = 'x';
-                Log("loader: %s comes from a mod: its hash check is off", name);
+                char* p = reinterpret_cast<char*>(g_base + a);
+                if (memcmp(p, name, len) == 0 && p[-1] != '\\')
+                {
+                    p[0] = 'x';
+                    Log("loader: %s comes from a mod: its hash check is off", name);
+                }
             }
         }
     }
