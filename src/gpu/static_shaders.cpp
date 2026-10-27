@@ -19,6 +19,8 @@
 #include <thread>
 #include <unordered_set>
 
+#include <windows.h>
+
 #include "kernel/runtime.h"
 #include "loader.h"
 #include "zip.h"
@@ -245,6 +247,9 @@ std::vector<ScannedShader> StaticShaders()
     const unsigned n = std::max(2u, std::thread::hardware_concurrency());
     for (unsigned t = 0; t < n; t++)
         workers.emplace_back([&] {
+            // Below the game's threads, its audio among them: on the first start this takes every core for
+            // 20 s or more, and at normal priority the sound crackled the whole time (report #20).
+            SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
             for (size_t i; (i = next++) < files.size();)
             {
                 std::ifstream in(files[i], std::ios::binary | std::ios::ate);
