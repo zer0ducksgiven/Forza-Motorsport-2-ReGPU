@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "kernel/runtime.h"
+#include "kernel/vfs.h"
 #include "log.h"
 #include "zip.h"
 
@@ -217,6 +218,74 @@ std::vector<ModFile> ModFiles(const std::string& zip)
     return files;
 }
 
+// ---- DLC names and thumbnails for a mod that has the DLC cars ---------------------------------------------
+//
+// With such a mod (Forza Plus 2) the DLC packs are hidden (XamContentCreateEnumerator): the mod's database
+// lists their cars already. The cars' names and dealership thumbnails were only ever in the packs, though:
+// each pack's <n>Overrides1_pri_<p>.zip has every language's Data_Car.str (the highest priority one is the
+// newest), and its other zips media/UI/Textures/Thumbnails/*. They go into the game's string table and
+// texture zips, extracted once to Documentsm2\cache\dlc-names.
+std::vector<ModFile> DlcFiles(const std::string& zip)
+{
+    static const std::map<std::string, std::vector<ModFile>> byZip = [] {
+        std::map<std::string, std::vector<ModFile>> out;
+        if (!VfsModsCarryDlc())
+            return out;
+        std::error_code ec;
+        const fs::path cache = UserDir() / "cache" / "dlc-names";
+        std::map<std::string, std::pair<int, fs::path>> names; // language -> (priority, pack zip)
+        std::vector<fs::path> zips;
+        for (const auto& pack : fs::directory_iterator(DlcDir(), ec))
+            if (pack.is_directory(ec))
+                for (const auto& z : fs::directory_iterator(DlcPackageRoot(pack.path()) / "Media" / "DLCZips", ec))
+                    if (z.path().extension() == ".zip")
+                        zips.push_back(z.path());
+        auto extract = [&](const std::string& target, const std::string& member, const std::vector<uint8_t>& data) {
+            fs::path file = cache / target / member;
+            file.make_preferred();
+            if (fs::file_size(file, ec) != data.size())
+            {
+                fs::create_directories(file.parent_path(), ec);
+                std::ofstream(file, std::ios::binary).write(reinterpret_cast<const char*>(data.data()), std::streamsize(data.size()));
+            }
+            out[target].push_back({ member, file });
+        };
+        for (const fs::path& z : zips)
+        {
+            const std::string stem = Lower(z.stem().string());
+            const size_t pri = stem.find("_pri_");
+            std::ifstream in(z, std::ios::binary);
+            const std::vector<uint8_t> bytes{ std::istreambuf_iterator<char>(in), {} };
+            if (stem.find("overrides") != std::string::npos && pri != std::string::npos)
+            {
+                const int priority = atoi(stem.c_str() + pri + 5);
+                ForEachZipMember(bytes, "data_car.str", [&](const std::string& n, const std::vector<uint8_t>&) {
+                    const std::string lang = Lower(n.substr(0, n.find('/')));
+                    if (!names.count(lang) || names[lang].first < priority)
+                        names[lang] = { priority, z };
+                });
+            }
+            else
+                ForEachZipMember(bytes, "media/ui/textures/thumbnails/", [&](const std::string& n, const std::vector<uint8_t>& d) {
+                    extract("media/ui/textures.zip", "Thumbnails/" + n.substr(n.rfind('/') + 1), d);
+                });
+        }
+        for (const auto& [lang, best] : names)
+        {
+            std::vector<uint8_t> data;
+            if (ReadZipMember(best.second, lang + "/Data_Car.str", data))
+                extract("media/stringtables/" + lang + ".zip", "Data_Car.str", data);
+        }
+        size_t count = 0;
+        for (const auto& [_, files] : out)
+            count += files.size();
+        Log("overlay: %zu DLC names and thumbnails from the packs, for the mod", count);
+        return out;
+    }();
+    auto it = byZip.find(zip);
+    return it == byZip.end() ? std::vector<ModFile>{} : it->second;
+}
+
 // ---- zip rewriting ---------------------------------------------------------------------------------------
 
 uint32_t Crc32(const uint8_t* p, size_t n)
@@ -366,7 +435,9 @@ fs::path ZipOverlay(const std::string& zip, const fs::path& host)
     if (auto it = done.find(key); it != done.end())
         return it->second;
     fs::path result = host;
-    const std::vector<ModFile> mods = ModFiles(zip);
+    std::vector<ModFile> mods = DlcFiles(zip);
+    for (ModFile& m : ModFiles(zip)) // the mods' own files win
+        mods.push_back(std::move(m));
     const bool builtIn = zip == "media/ui.zip" || zip == "media.zip";
     if (builtIn || !mods.empty())
     {

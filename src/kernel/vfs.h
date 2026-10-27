@@ -10,5 +10,7 @@ bool VfsResolve(std::string guest, std::filesystem::path& host, bool* readOnly);
 // order (a later one wins); a folder starting with '_' or '.' is skipped. FM2_NO_MODS=1 turns them off.
 // The mod's file for a game path ("Media\DB\gamedb.slt"), if one has it.
 bool VfsModFile(const std::string& root, const std::string& rest, std::filesystem::path& host);
+// An enabled mod has the downloadable cars in its own Media (Forza Plus 2 does: Media\cars\*_DLC*).
+bool VfsModsCarryDlc();
 void VfsAddLink(const std::string& name, const std::string& target);
 void VfsRemoveLink(const std::string& name);

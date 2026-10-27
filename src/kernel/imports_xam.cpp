@@ -71,6 +71,8 @@ constexpr uint32_t kContentDataSize = 0x134;
 // A DLC package's root: the folder that holds Media. Packages extracted with other tools sometimes
 // sit one folder deeper (<pack>\<folder>\Media\...); the game then saw an empty pack (no cars or
 // tracks) and its database patches were never found.
+}
+
 std::filesystem::path DlcPackageRoot(const std::filesystem::path& package)
 {
     std::error_code ec;
@@ -88,6 +90,9 @@ std::filesystem::path DlcPackageRoot(const std::filesystem::path& package)
         return only;
     return package;
 }
+
+namespace
+{
 
 void UnpackDlcPatches(const std::filesystem::path& packageFolder)
 {
@@ -1111,8 +1116,9 @@ GUEST_EXPORT(XamContentCreateEnumerator)
             e->items.push_back(std::move(item));
         }
     }
-    // Downloadable content is shared by all profiles: <user dir>\dlc\<package>.
-    if (!wanted || wanted == 2)
+    // Downloadable content is shared by all profiles: <user dir>\dlc\<package>. Not with a mod that has the
+    // DLC cars itself: its database lists them already, and each enabled pack would add them again.
+    if ((!wanted || wanted == 2) && !VfsModsCarryDlc())
         for (const auto& package : std::filesystem::directory_iterator(DlcDir(), ec))
         {
             const std::string fileName = package.path().filename().string();

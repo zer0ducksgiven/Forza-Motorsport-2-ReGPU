@@ -186,6 +186,22 @@ bool VfsModFile(const std::string& root, const std::string& rest, fs::path& host
     return false;
 }
 
+bool VfsModsCarryDlc()
+{
+    static const bool carry = [] {
+        std::error_code ec;
+        for (const fs::path& d : ModDirs())
+            for (const auto& car : fs::directory_iterator(d / "game" / "Media" / "cars", ec))
+                if (car.path().filename().string().find("_DLC") != std::string::npos)
+                {
+                    Log("mods: %s has the DLC cars: downloadable content is hidden", d.filename().string().c_str());
+                    return true;
+                }
+        return false;
+    }();
+    return carry;
+}
+
 void VfsAddLink(const std::string& name, const std::string& target)
 {
     std::lock_guard lock(g_linkMutex);

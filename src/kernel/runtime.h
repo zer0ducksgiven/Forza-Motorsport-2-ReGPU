@@ -11,3 +11,5 @@ const std::filesystem::path& UserDir();
 const std::filesystem::path& ContentDir();
 // Downloadable content shared by every profile (\Device\Dlc; one folder per package).
 const std::filesystem::path& DlcDir();
+// A DLC package's folder that holds Media (some sit one folder deeper) (imports_xam.cpp).
+std::filesystem::path DlcPackageRoot(const std::filesystem::path& package);
