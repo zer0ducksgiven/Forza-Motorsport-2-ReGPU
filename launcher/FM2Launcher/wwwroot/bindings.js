@@ -9,6 +9,8 @@ const pending = new Map()
 const TARGETS = [
   { group: "Driving" },
   { key: "steer", name: "Steering", role: "Left stick, left and right", axisOnly: true },
+  { key: "steerleft", name: "Steer left", role: "A key or button (keyboard default A)" },
+  { key: "steerright", name: "Steer right", role: "A key or button (keyboard default D)" },
   { key: "throttle", name: "Throttle", role: "Right trigger" },
   { key: "brake", name: "Brake", role: "Left trigger" },
   { group: "Buttons" },
@@ -28,6 +30,37 @@ const TARGETS = [
   { key: "left", name: "D-pad left" },
   { key: "right", name: "D-pad right" },
 ]
+
+// Besides SDL's devices (wheels, pedals, shifters, button boxes): the keyboard and mouse ("keyboard/k<virtual key>",
+// mouse buttons included) and the controller ("pad/b<n>" buttons, "pad/a<n>" sticks, in the standard gamepad layout
+// the page's Gamepad API reports). The game reads those two itself (src/kernel/imports_xam.cpp). GitHub #15.
+const KEYBOARD = { guid: "keyboard", name: "Keyboard and mouse", kind: "keys and mouse buttons", axes: 0, buttons: 0, hats: 0, rest: [] }
+const PAD = { guid: "pad", name: "Controller", kind: "Xbox layout", axes: 0, buttons: 0, hats: 0, rest: [] }
+const PAD_BUTTONS = ["A", "B", "X", "Y", "LB", "RB", "LT", "RT", "Back", "Start", "Left stick click", "Right stick click",
+  "D-pad up", "D-pad down", "D-pad left", "D-pad right"]
+const PAD_AXES = ["Left stick X", "Left stick Y", "Right stick X", "Right stick Y"]
+const MOUSE = { 0: 1, 2: 2, 1: 4, 3: 5, 4: 6 } // event.button to its virtual key
+const isPseudo = (guid) => guid === "keyboard" || guid === "pad"
+const isKeyboard = (src) => src.startsWith("keyboard/")
+
+// The game's own keys (src/kernel/imports_xam.cpp). A row without keys bound keeps its key, shown as a chip, unless
+// another row has that key bound: a key does one thing, so binding it takes it from wherever it was.
+const KEY_DEFAULTS = { steerleft: 65, steerright: 68, throttle: 87, brake: 83, a: 13, b: 8, x: 32, y: 89, lb: 81, rb: 69,
+  back: 9, start: 27, up: 38, down: 40, left: 37, right: 39 }
+const boundKeys = () => new Set(Object.values(bindings).flat().filter(isKeyboard))
+
+// A Windows virtual key's name, for the chips.
+function keyName(vk) {
+  if ((vk >= 48 && vk <= 57) || (vk >= 65 && vk <= 90)) return String.fromCharCode(vk)
+  if (vk >= 112 && vk <= 135) return "F" + (vk - 111)
+  if (vk >= 96 && vk <= 105) return "Num " + (vk - 96)
+  const names = { 1: "Left mouse button", 2: "Right mouse button", 4: "Middle mouse button", 5: "Mouse button 4", 6: "Mouse button 5",
+    8: "Backspace", 9: "Tab", 13: "Enter", 16: "Shift", 17: "Ctrl", 18: "Alt", 20: "Caps Lock", 27: "Esc", 32: "Space",
+    33: "Page Up", 34: "Page Down", 35: "End", 36: "Home", 37: "Left arrow", 38: "Up arrow", 39: "Right arrow", 40: "Down arrow",
+    45: "Insert", 46: "Delete", 106: "Num *", 107: "Num +", 109: "Num -", 110: "Num .", 111: "Num /", 186: ";", 187: "=", 188: ",",
+    189: "-", 190: ".", 191: "/", 192: "`", 219: "[", 220: "\\", 221: "]", 222: "'" }
+  return names[vk] || "Key " + vk
+}
 
 let devices = []        // from SDL: guid, name, kind, axes, buttons, hats, rest
 let bindings = {}       // target -> ["<guid>/<source>", ...]
@@ -102,15 +135,19 @@ function hideTip() {
 // ---- devices
 
 function deviceName(guid) {
+  if (guid === "keyboard") return KEYBOARD.name
+  if (guid === "pad") return PAD.name
   const d = devices.find((x) => x.guid === guid)
   return d ? d.name : names[guid] || "Unplugged device"
 }
 
 function onDevices(list) {
   const before = devices.map((d) => d.guid).join()
-  devices = list
-  for (const d of devices) names[d.guid] = d.name
-  $("nodev").hidden = devices.length > 0
+  // Xbox (XInput) pads are the Controller entry (the game reads them itself); SDL's view of them would double up.
+  // By name: wheels such as Thrustmaster's report themselves to SDL as gamepads.
+  devices = [...list.filter((d) => !/xbox|x-box|xinput/i.test(d.name)), PAD, KEYBOARD]
+  for (const d of devices) if (!isPseudo(d.guid)) names[d.guid] = d.name
+  $("nodev").hidden = true
   if (before === devices.map((d) => d.guid).join()) return
   if (!devices.some((d) => d.guid === shown)) {
     const wheel = devices.find((d) => d.kind === "wheel") || devices[0]
@@ -134,6 +171,8 @@ function drawDevice() {
   $("axes").innerHTML = $("buttons").innerHTML = $("hats").innerHTML = ""
   if (!d) { $("dev-title").textContent = "Inputs"; $("dev-sub").textContent = ""; return }
   $("dev-title").textContent = d.name
+  if (d.guid === "keyboard") { $("dev-sub").textContent = "Keys and mouse buttons. Bind a row, then press the key or click the mouse button you want."; return }
+  if (d.guid === "pad") { $("dev-sub").textContent = "An Xbox or other controller, by its buttons and sticks. Press a button on it once if Bind doesn't see it."; return }
   $("dev-sub").textContent = `${d.axes} axes, ${d.buttons} buttons, ${d.hats} hats. Move or press anything on it to see which number it is.`
   for (let i = 0; i < d.axes; i++) {
     const row = el("div", "axis-row")
@@ -187,7 +226,9 @@ function sourceText(src) {
   const [guid, s] = src.split("/")
   const kind = s[0], rest = s.slice(1)
   let what
-  if (kind === "a") what = "Axis " + parseInt(rest)
+  if (kind === "k") what = keyName(parseInt(rest))
+  else if (guid === "pad") what = kind === "a" ? PAD_AXES[parseInt(rest)] || "Axis " + parseInt(rest) : PAD_BUTTONS[parseInt(rest)] || "Button " + rest
+  else if (kind === "a") what = "Axis " + parseInt(rest)
   else if (kind === "b") what = "Button " + rest
   else what = `Hat ${parseInt(rest)} ${{ u: "up", d: "down", l: "left", r: "right" }[s[s.length - 1]]}`
   return { guid, what, reversed: kind === "a" && s.endsWith("-") }
@@ -196,6 +237,7 @@ function sourceText(src) {
 function drawRows() {
   const root = $("rows")
   root.innerHTML = ""
+  const taken = boundKeys()
   for (const t of TARGETS) {
     if (t.group) { root.append(el("div", "group", t.group)); continue }
     const row = el("div", "bind-row" + (listen && listen.key === t.key ? " listening" : ""))
@@ -203,23 +245,33 @@ function drawRows() {
     label.append(el("div", "what", t.name))
     if (t.role) label.append(el("div", "role", t.role))
     const chips = el("div", "chips-b")
-    const list = bindings[t.key] || []
+    const all = bindings[t.key] || []
+    const list = all
     if (listen && listen.key === t.key)
-      chips.append(el("span", "listen-text", t.axisOnly ? "Turn the wheel (or move the axis)... Esc cancels" : "Press, move or push it now... Esc cancels"))
-    else if (!list.length) chips.append(el("span", "default", "game default"))
+      chips.append(el("span", "listen-text", t.axisOnly ? "Turn the wheel or move a stick... Esc cancels" :
+        "Press a key, button or pedal, or click a mouse button... Esc cancels"))
+    const defaultKey = KEY_DEFAULTS[t.key]
+    const showDefault = defaultKey && !list.some(isKeyboard) && !taken.has(`keyboard/k${defaultKey}`)
+    if (!(listen && listen.key === t.key) && showDefault) {
+      const chip = el("span", "chip-b")
+      chip.dataset.tip = "The game's key for this. Binding another key here, or this key elsewhere, replaces it."
+      chip.append(el("span", "", keyName(defaultKey)), el("span", "dev", "Keyboard default"))
+      chips.append(chip)
+    }
+    else if (!list.length && !(listen && listen.key === t.key)) chips.append(el("span", "default", "game default"))
     list.forEach((src, i) => {
       const info = sourceText(src)
-      const chip = el("span", "chip-b" + (devices.some((d) => d.guid === info.guid) ? "" : " missing"))
+      const chip = el("span", "chip-b" + (isPseudo(info.guid) || devices.some((d) => d.guid === info.guid) ? "" : " missing"))
       chip.append(el("span", "", info.what), el("span", "dev", deviceName(info.guid)))
       if (t.key === "steer") {
         const rev = el("button", "rev" + (info.reversed ? " on" : ""), "reverse")
         rev.dataset.tip = "Turns the steering the other way, if left is right."
-        rev.onclick = () => { list[i] = info.reversed ? src.slice(0, -1) : src + "-"; save() }
+        rev.onclick = () => { all[all.indexOf(src)] = info.reversed ? src.slice(0, -1) : src + "-"; save() }
         chip.append(rev)
       }
       const x = el("button", "", "×")
       x.dataset.tip = "Removes this one."
-      x.onclick = () => { list.splice(i, 1); save() }
+      x.onclick = () => { all.splice(all.indexOf(src), 1); save() }
       chip.append(x)
       chips.append(chip)
     })
@@ -241,20 +293,63 @@ function drawRows() {
 }
 
 function startListen(t, add) {
-  if (!devices.length) return toast("Plug in your wheel first.")
   const baseline = new Map([...live].map(([g, s]) => [g, JSON.parse(JSON.stringify(s))]))
-  listen = { key: t.key, axisOnly: !!t.axisOnly, add, baseline, until: Date.now() + 10000 }
+  listen = { key: t.key, axisOnly: !!t.axisOnly, add, baseline, pad: padState(), until: Date.now() + 10000 }
   drawRows()
 }
 
 function stopListen() { listen = null; drawRows() }
-document.addEventListener("keydown", (e) => { if (e.key === "Escape" && listen) stopListen() })
+document.addEventListener("keydown", (e) => {
+  if (!listen) return
+  if (e.key === "Escape") return stopListen()
+  if (!e.keyCode) return
+  e.preventDefault()
+  if (listen.axisOnly) return toast("Steering takes a wheel or a stick. For keys, bind Steer left and Steer right.")
+  bind(`keyboard/k${e.keyCode}`)
+})
+document.addEventListener("mousedown", (e) => {
+  if (!listen || listen.axisOnly || e.target.closest("button, select") || !MOUSE[e.button]) return
+  e.preventDefault()
+  bind(`keyboard/k${MOUSE[e.button]}`)
+})
+document.addEventListener("contextmenu", (e) => { if (listen) e.preventDefault() })
+
+// The first connected controller through the Gamepad API (standard layout): buttons pressed, sticks.
+function padState() {
+  let pads = []
+  try { pads = navigator.getGamepads ? [...navigator.getGamepads()] : [] } catch { } // not allowed: no controller, keys still bind
+  const p = pads.find((g) => g && g.connected)
+  return p ? { buttons: p.buttons.map((b) => b.pressed || b.value > 0.5), axes: [...p.axes] } : null
+}
+
+// The source caught for the listening row: replaces that row's bindings of this kind (Bind) or joins them (+ Add).
+function bind(src) {
+  // A key does one thing: take it off any other row first.
+  if (isKeyboard(src))
+    for (const k of Object.keys(bindings)) if (k !== listen.key) bindings[k] = bindings[k].filter((x) => x !== src)
+  const list = bindings[listen.key] = listen.add ? bindings[listen.key] || [] : []
+  if (!list.includes(src)) list.push(src)
+  listen = null
+  save()
+}
 
 function checkListen() {
   if (Date.now() > listen.until) { stopListen(); return toast("Nothing was pressed: try Bind again.") }
+  const pad = padState()
+  if (pad) {
+    const was = listen.pad || { buttons: [], axes: [] }
+    if (listen.axisOnly) {
+      const i = pad.axes.findIndex((v, n) => n % 2 === 0 && Math.abs(v - (was.axes[n] || 0)) > 0.5) // a stick's X
+      if (i >= 0) return bind(`pad/a${i}`)
+    } else {
+      const i = pad.buttons.findIndex((down, n) => down && !was.buttons[n])
+      if (i >= 0) return bind(`pad/b${i}`)
+    }
+    listen.pad = pad
+  }
   for (const [guid, s] of live) {
     const base = listen.baseline.get(guid)
-    if (!base) continue
+    if (!base || !devices.some((d) => d.guid === guid)) continue // SDL's view of a controller: the Controller entry has it
     let found = null
     // The axis that moved most, once it's past a tenth of its range: a direct drive base set to 900 degrees
     // or more moves its steering axis little for a normal turn, and some pedals don't reach their full range
@@ -269,14 +364,7 @@ function checkListen() {
         found = `h${i}${dir}`
       })
     }
-    if (found) {
-      const list = bindings[listen.key] = listen.add ? bindings[listen.key] || [] : []
-      const src = `${guid}/${found}`
-      if (!list.includes(src)) list.push(src)
-      listen = null
-      save()
-      return
-    }
+    if (found) return bind(`${guid}/${found}`)
   }
 }
 

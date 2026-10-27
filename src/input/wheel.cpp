@@ -257,6 +257,8 @@ void LoadBindings()
                 continue;
             Source src;
             src.guid = item.substr(0, slash);
+            if (src.guid == "keyboard" || src.guid == "pad") // the keyboard and the controller: kernel/imports_xam.cpp reads those
+                continue;
             src.kind = item[slash + 1];
             src.index = atoi(item.c_str() + slash + 2);
             if (src.kind == 'a')

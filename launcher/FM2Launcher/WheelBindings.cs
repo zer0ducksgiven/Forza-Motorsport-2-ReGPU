@@ -5,13 +5,14 @@ namespace FM2Launcher;
 /// <summary>
 /// Documents\fm2\wheel_bindings.ini, read by the game when its wheel thread starts (src/input/wheel.cpp):
 /// for each pad input, the device inputs that drive it as "&lt;SDL GUID&gt;/&lt;source&gt;" joined by commas.
-/// A source is an axis (a5, a0- reversed), a button (b12) or a hat direction (h0u, h0d, h0l, h0r).
+/// A source is an axis (a5, a0- reversed), a button (b12) or a hat direction (h0u, h0d, h0l, h0r); keys are
+/// "keyboard/k&lt;virtual key&gt;" (the game reads those itself, src/kernel/imports_xam.cpp), steering by key as steerleft/steerright.
 /// Pad inputs left out keep the game's defaults.
 /// </summary>
 public static class WheelBindings
 {
     public static readonly string[] Targets =
-        ["steer", "throttle", "brake", "a", "b", "x", "y", "lb", "rb", "back", "start", "ls", "rs", "up", "down", "left", "right"];
+        ["steer", "steerleft", "steerright", "throttle", "brake", "a", "b", "x", "y", "lb", "rb", "back", "start", "ls", "rs", "up", "down", "left", "right"];
 
     static string File => Path.Combine(Paths.User, "wheel_bindings.ini");
 
@@ -49,6 +50,7 @@ public static class WheelBindings
         {
             'a' => int.TryParse(s[(slash + 2)..].TrimEnd('-'), out _),
             'b' => int.TryParse(s[(slash + 2)..], out _),
+            'k' => s[..slash] == "keyboard" && int.TryParse(s[(slash + 2)..], out var vk) && vk is > 0 and < 256,
             'h' => s.Length >= slash + 4 && "udlr".Contains(s[^1]) && int.TryParse(s[(slash + 2)..^1], out _),
             _ => false,
         };
