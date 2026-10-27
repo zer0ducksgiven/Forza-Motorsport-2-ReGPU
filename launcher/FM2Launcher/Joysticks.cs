@@ -12,11 +12,14 @@ public static class Joysticks
     const string Lib = "SDL3";
     const uint InitJoystick = 0x200;
 
+    // SDL3.dll ships with the game (build\tu), not next to the launcher. Linux: the system's SDL3 (fm2.exe's
+    // SDL3.dll runs inside Wine, out of the launcher's reach).
+    static string LibraryFile => Platform.Linux ? "libSDL3.so.0" : Path.Combine(Path.GetDirectoryName(Paths.Exe)!, "SDL3.dll");
+
     static Joysticks()
     {
-        // SDL3.dll ships with the game (build\tu), not next to the launcher.
         NativeLibrary.SetDllImportResolver(typeof(Joysticks).Assembly, (name, _, _) =>
-            name == Lib && NativeLibrary.TryLoad(Path.Combine(Path.GetDirectoryName(Paths.Exe)!, "SDL3.dll"), out var h) ? h : IntPtr.Zero);
+            name == Lib && NativeLibrary.TryLoad(LibraryFile, out var h) ? h : IntPtr.Zero);
     }
 
     [StructLayout(LayoutKind.Sequential)] struct Guid16 { public ulong A, B; }
@@ -64,7 +67,7 @@ public static class Joysticks
     static bool Start()
     {
         if (_started) return true;
-        if (!File.Exists(Path.Combine(Path.GetDirectoryName(Paths.Exe)!, "SDL3.dll"))) return false;
+        if (Platform.Linux ? !NativeLibrary.TryLoad(LibraryFile, out _) : !File.Exists(LibraryFile)) return false;
         SDL_SetHint("SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS", "1");
         SDL_SetHint("SDL_JOYSTICK_HIDAPI", "0");
         SDL_SetHint("SDL_JOYSTICK_RAWINPUT", "0");

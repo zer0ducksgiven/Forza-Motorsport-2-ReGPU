@@ -4,7 +4,6 @@
 const $ = (id) => document.getElementById(id)
 let nextId = 1
 const pending = new Map()
-const host = window.chrome && window.chrome.webview
 
 // Pad inputs the game reads, in the order shown. role: what it does in the game, where that is certain.
 const TARGETS = [

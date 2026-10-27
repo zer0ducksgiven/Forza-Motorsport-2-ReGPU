@@ -9,7 +9,6 @@ const pending = new Map()
 
 // ---- host calls
 
-const host = window.chrome && window.chrome.webview
 if (host) host.addEventListener("message", (e) => {
   const m = e.data
   if (m.event === "progress") return onProgress(m.data)

@@ -7,9 +7,14 @@ namespace FM2Launcher;
 /// <summary>Where things are: the install (build\tu\fm2.exe, game\) and the user folder (Documents\fm2).</summary>
 public static class Paths
 {
-    /// <summary>The install folder: the first folder up from the launcher that holds build\tu\fm2.exe.</summary>
+    /// <summary>The install folder: the first folder up from the launcher that holds build\tu\fm2.exe (Windows) or
+    /// fm2.exe itself (the Linux package, FM2-Linux/, with the launcher in FM2-Linux/launcher).</summary>
     public static readonly string Root = FindRoot();
-    public static string Exe => Path.Combine(Root, "build", "tu", "fm2.exe");
+    public static string Exe => File.Exists(Path.Combine(Root, "fm2.exe")) ? Path.Combine(Root, "fm2.exe") : Path.Combine(Root, "build", "tu", "fm2.exe");
+    /// <summary>Linux: the Proton prefix the game runs in (as linux/release/play.sh picks it).</summary>
+    public static readonly string CompatData = Environment.GetEnvironmentVariable("FM2_COMPATDATA") is { Length: > 0 } c ? c
+        : Path.Combine(Environment.GetEnvironmentVariable("FM2_LINUX_HOME") is { Length: > 0 } h ? h
+            : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".fm2-linux"), "compatdata");
     public static string GameDir => Path.Combine(Root, "game");
     public static readonly string User = FindUser();
     public static string SettingsFile => Path.Combine(User, "settings.ini");
@@ -21,6 +26,8 @@ public static class Paths
     /// (src/user_dir.cpp): if only the old %USERPROFILE%\Documents\fm2 exists, that one.</summary>
     static string FindUser()
     {
+        // Linux: fm2.exe's Documents is the Proton prefix's.
+        if (Platform.Linux) return Path.Combine(CompatData, "pfx", "drive_c", "users", "steamuser", "Documents", "fm2");
         var current = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "fm2");
         var old = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Documents", "fm2");
         return !Directory.Exists(current) && Directory.Exists(old) ? old : current;
@@ -29,7 +36,7 @@ public static class Paths
     static string FindRoot()
     {
         for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir is not null; dir = dir.Parent)
-            if (File.Exists(Path.Combine(dir.FullName, "build", "tu", "fm2.exe")))
+            if (File.Exists(Path.Combine(dir.FullName, "build", "tu", "fm2.exe")) || File.Exists(Path.Combine(dir.FullName, "fm2.exe")))
                 return dir.FullName;
         return Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, ".."));
     }
@@ -182,22 +189,98 @@ public static class Options
     public static List<string> Resolutions()
     {
         var set = new HashSet<(int, int)>();
-        var dm = new DEVMODE { dmSize = (short)Marshal.SizeOf<DEVMODE>() };
-        for (int i = 0; EnumDisplaySettingsW(null, i, ref dm); i++)
-            if (dm.dmPelsWidth >= 1280 && dm.dmPelsHeight >= 720) set.Add((dm.dmPelsWidth, dm.dmPelsHeight));
+        if (Platform.Linux)
+            foreach (var (w, h) in LinuxModes())
+            {
+                if (w >= 1280 && h >= 720) set.Add((w, h));
+            }
+        else
+        {
+            var dm = new DEVMODE { dmSize = (short)Marshal.SizeOf<DEVMODE>() };
+            for (int i = 0; EnumDisplaySettingsW(null, i, ref dm); i++)
+                if (dm.dmPelsWidth >= 1280 && dm.dmPelsHeight >= 720) set.Add((dm.dmPelsWidth, dm.dmPelsHeight));
+        }
         if (set.Count == 0) set.Add((1280, 720));
         return set.OrderBy(m => (long)m.Item1 * m.Item2).Select(m => $"{m.Item1}x{m.Item2}").ToList();
+    }
+
+    // Linux: the connected outputs' modes from xrandr (X11 and XWayland list them alike); without it, the common
+    // 16:9 sizes. Wine offers the game the same modes.
+    static IEnumerable<(int, int)> LinuxModes()
+    {
+        var modes = new List<(int, int)>();
+        try
+        {
+            var psi = new ProcessStartInfo("xrandr", "--query") { RedirectStandardOutput = true, UseShellExecute = false };
+            using var p = Process.Start(psi)!;
+            foreach (var line in p.StandardOutput.ReadToEnd().Split('\n'))
+            {
+                var m = System.Text.RegularExpressions.Regex.Match(line, @"^\s+(\d+)x(\d+)\s");
+                if (m.Success) modes.Add((int.Parse(m.Groups[1].Value), int.Parse(m.Groups[2].Value)));
+            }
+            p.WaitForExit(2000);
+        }
+        catch { }
+        return modes.Count > 0 ? modes : [(1280, 720), (1600, 900), (1920, 1080), (2560, 1440), (3840, 2160)];
     }
 }
 
 /// <summary>Starting the game, as play.cmd does: the title update and DLC next to the install copied in first.</summary>
 public static class Game
 {
-    public static bool Running => Process.GetProcessesByName("fm2").Any(p =>
+    public static bool Running => Platform.Linux ? RunningUnderWine() : Process.GetProcessesByName("fm2").Any(p =>
     {
         try { return string.Equals(p.MainModule?.FileName, Paths.Exe, StringComparison.OrdinalIgnoreCase); }
         catch { return true; } // can't look inside: assume it is ours
     });
+
+    // Under Proton, fm2.exe is a wine process whose command line names it (as a Unix or a Z:\ path).
+    static bool RunningUnderWine()
+    {
+        try
+        {
+            foreach (var dir in Directory.EnumerateDirectories("/proc"))
+            {
+                if (!int.TryParse(Path.GetFileName(dir), out var pid) || pid == Environment.ProcessId) continue;
+                string cmdline;
+                try { cmdline = File.ReadAllText(Path.Combine(dir, "cmdline")); } catch { continue; }
+                var first = cmdline.Split('\0')[0];
+                if (first.EndsWith("fm2.exe", StringComparison.OrdinalIgnoreCase)) return true;
+            }
+        }
+        catch { }
+        return false;
+    }
+
+    /// <summary>Linux: Proton as play.sh finds it: $PROTON, else Proton Experimental, 11 or 10 in Steam's libraries.</summary>
+    public static string? Proton()
+    {
+        if (Environment.GetEnvironmentVariable("PROTON") is { Length: > 0 } set) return File.Exists(set) ? set : null;
+        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        foreach (var dir in new[] { ".local/share/Steam/steamapps/common", ".steam/steam/steamapps/common", ".var/app/com.valvesoftware.Steam/data/Steam/steamapps/common" })
+            foreach (var name in new[] { "Proton - Experimental", "Proton 11.0", "Proton 10.0" })
+            {
+                var proton = Path.Combine(home, dir, name, "proton");
+                if (File.Exists(proton)) return proton;
+            }
+        return null;
+    }
+
+    static ProcessStartInfo LinuxStart(string log)
+    {
+        var proton = Proton() ?? throw new InvalidOperationException("No Proton found: install Proton Experimental in Steam (Library, search \"Proton Experimental\"), or set PROTON to its proton script.");
+        if (!File.Exists(Path.Combine(Paths.GameDir, "default.xex"))) throw new InvalidOperationException("No game files yet: run ./setup.sh with your disc image and title update first.");
+        Directory.CreateDirectory(Paths.CompatData);
+        var psi = new ProcessStartInfo("sh") { WorkingDirectory = Paths.Root, UseShellExecute = false };
+        foreach (var a in new[] { "-c", "exec \"$0\" run \"$1\" \"$2\" > \"$3\" 2>&1", proton, Paths.Exe, Paths.GameDir, log }) psi.ArgumentList.Add(a);
+        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        psi.Environment["STEAM_COMPAT_CLIENT_INSTALL_PATH"] = Environment.GetEnvironmentVariable("STEAM_COMPAT_CLIENT_INSTALL_PATH") is { Length: > 0 } s ? s : Path.Combine(home, ".steam", "steam");
+        psi.Environment["STEAM_COMPAT_DATA_PATH"] = Paths.CompatData;
+        // Wine's own d3dcompiler_47 can't compile the renderer's shaders: the Microsoft DLL beside fm2.exe instead.
+        var overrides = Environment.GetEnvironmentVariable("WINEDLLOVERRIDES");
+        psi.Environment["WINEDLLOVERRIDES"] = "d3dcompiler_47=n" + (string.IsNullOrEmpty(overrides) ? "" : ";" + overrides);
+        return psi;
+    }
 
     public static void Launch(bool coldStart = false)
     {
@@ -206,7 +289,7 @@ public static class Game
         CopyMissing(Path.Combine(Paths.Root, "dlc"), Paths.Dlc, Paths.DlcDisabled);
         Directory.CreateDirectory(Path.Combine(Paths.Root, "out"));
         var log = Path.Combine(Paths.Root, "out", "play.log");
-        var psi = new ProcessStartInfo("cmd.exe", $"/c \"\"{Paths.Exe}\" > \"{log}\" 2>&1\"")
+        var psi = Platform.Linux ? LinuxStart(log) : new ProcessStartInfo("cmd.exe", $"/c \"\"{Paths.Exe}\" > \"{log}\" 2>&1\"")
         {
             WorkingDirectory = Paths.Root,
             UseShellExecute = false,

@@ -1,32 +1,28 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
-using Microsoft.Web.WebView2.Core;
+using Photino.NET;
 
 namespace FM2Launcher;
 
 /// <summary>
-/// The Controls tab: wwwroot/bindings.html in a frame of the main window, talking to this through that frame's
-/// own message channel. It lists the wheels, pedals, shifters and button boxes SDL sees, streams their axes,
-/// buttons and hats to the page about 30 times a second while the tab is shown, and saves wheel_bindings.ini
-/// for the game.
+/// The Controls tab: wwwroot/bindings.html in a frame of the main window, its messages tagged with the frame's name
+/// (wwwroot/host.js) and handed here by the Bridge. It lists the wheels, pedals, shifters and button boxes SDL sees,
+/// streams their axes, buttons and hats to the page about 30 times a second while the tab is shown, and saves
+/// wheel_bindings.ini for the game.
 /// </summary>
 public sealed class BindingsHost
 {
+    const string Frame = "controls";
     static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
-    readonly System.Windows.Forms.Timer _poll = new() { Interval = 33 };
-    CoreWebView2Frame? _frame;
+    readonly PhotinoWindow _window;
+    readonly Timer _poll;
     int _rescan;
 
-    public BindingsHost(CoreWebView2 web)
+    public BindingsHost(PhotinoWindow window)
     {
-        web.FrameCreated += (_, e) =>
-        {
-            if (e.Frame.Name != "controls") return;
-            _frame = e.Frame;
-            _frame.WebMessageReceived += OnMessage;
-            _frame.Destroyed += (_, _) => { _frame = null; _poll.Stop(); };
-        };
-        _poll.Tick += (_, _) => Push();
+        _window = window;
+        // SDL is read on the window's thread, as it was under WinForms' timer.
+        _poll = new Timer(_ => _window.Invoke(Push));
     }
 
     /// <summary>The tab is shown (live input streams) or hidden (it stops).</summary>
@@ -35,29 +31,23 @@ public sealed class BindingsHost
         set
         {
             _rescan = 0;
-            if (value) _poll.Start(); else _poll.Stop();
+            _poll.Change(value ? 0 : Timeout.Infinite, value ? 33 : Timeout.Infinite);
         }
     }
 
-    void Post(object o)
-    {
-        try { _frame?.PostWebMessageAsJson(JsonSerializer.Serialize(o, Json)); } catch (InvalidOperationException) { _frame = null; }
-    }
+    void Post(object o) => _window.SendWebMessage(JsonSerializer.Serialize(new { frame = Frame, msg = o }, Json));
 
     // Live input; the device list is checked again every couple of seconds (plugged in or out).
     void Push()
     {
-        if (_frame is null) return;
         if (_rescan++ % 60 == 0) Post(new { @event = "devices", data = Devices() });
         Post(new { @event = "state", data = Joysticks.Read() });
     }
 
     static object Devices() => Joysticks.List().Select(d => new { d.Guid, d.Name, d.Kind, d.Axes, d.Buttons, d.Hats, d.Rest });
 
-    void OnMessage(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
+    public void OnMessage(JsonNode? msg)
     {
-        JsonNode? msg;
-        try { msg = JsonNode.Parse(e.WebMessageAsJson); } catch { return; }
         var id = msg?["id"]?.GetValue<int>() ?? 0;
         var cmd = msg?["cmd"]?.GetValue<string>() ?? "";
         try

@@ -22,7 +22,52 @@ internal static class SystemCheck
     static readonly Guid IID_ID3D12Device3 = new("81dadc15-2bad-4392-93c5-101345c4aa98");
     const int D3D_FEATURE_LEVEL_12_0 = 0xc000;
 
-    static Result Probe()
+    static Result Probe() => OperatingSystem.IsWindows() ? ProbeWindows() : ProbeLinux();
+
+    /// <summary>Linux: vkd3d-proton gives the game what it needs, so it counts as able until the game's own self-test
+    /// (zero_copy.txt) says otherwise; the distribution, kernel and GPU for the report page.</summary>
+    static Result ProbeLinux()
+    {
+        bool zeroCopy = true;
+        try
+        {
+            var recorded = Path.Combine(Paths.User, "zero_copy.txt");
+            if (File.Exists(recorded)) zeroCopy = File.ReadAllText(recorded).Trim() == "1";
+        }
+        catch { }
+        string os = "Linux";
+        try
+        {
+            var pretty = File.ReadLines("/etc/os-release").FirstOrDefault(l => l.StartsWith("PRETTY_NAME="));
+            if (pretty is not null) os = pretty["PRETTY_NAME=".Length..].Trim('"');
+            os += $" (kernel {File.ReadAllText("/proc/sys/kernel/osrelease").Trim()})";
+        }
+        catch { }
+        string gpu = "", driver = "";
+        try
+        {
+            var psi = new System.Diagnostics.ProcessStartInfo("lspci") { RedirectStandardOutput = true, UseShellExecute = false };
+            using var p = System.Diagnostics.Process.Start(psi)!;
+            var line = p.StandardOutput.ReadToEnd().Split('\n').FirstOrDefault(l => l.Contains("VGA") || l.Contains("3D controller"));
+            if (line is not null) gpu = line[(line.IndexOf(':', line.IndexOf(' ')) + 1)..].Trim();
+        }
+        catch { }
+        foreach (var module in new[] { "nvidia", "amdgpu", "i915", "xe" })
+            try
+            {
+                var version = $"/sys/module/{module}/version";
+                if (Directory.Exists($"/sys/module/{module}"))
+                {
+                    driver = File.Exists(version) ? $"{module} {File.ReadAllText(version).Trim()}" : module;
+                    break;
+                }
+            }
+            catch { }
+        return new Result(zeroCopy, os, gpu, driver);
+    }
+
+    [System.Runtime.Versioning.SupportedOSPlatform("windows")]
+    static Result ProbeWindows()
     {
         bool zeroCopy = false;
         try

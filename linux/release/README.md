@@ -13,6 +13,8 @@ Nothing from the game is included. You need your own **European** Forza Motorspo
   "Proton Experimental", Install.
 - `python3` (for the one-time setup).
 - A Vulkan GPU driver (Mesa for AMD/Intel, the proprietary driver for NVIDIA).
+- For the launcher: WebKitGTK 4.1 and GTK 3 (`libwebkit2gtk-4.1`, on most desktops already), and
+  SDL3 (`libSDL3.so.0`) for the Controls tab's live wheel inputs.
 
 ## Install
 
@@ -20,8 +22,10 @@ Nothing from the game is included. You need your own **European** Forza Motorspo
 tar xzf FM2-Linux-<version>.tar.gz
 cd FM2-Linux
 ./setup.sh "/path/to/Forza Motorsport 2.iso" "/path/to/TU_16L61VA_..." [dlc folder]
-./play.sh
+./launcher/FM2Launcher
 ```
+
+`./play.sh` still starts the game straight away, without the launcher.
 
 `setup.sh` builds the game files into `game/` and unpacks the title update into the Proton
 prefix (`~/.fm2-linux/compatdata`). Saves, settings and the shader cache live there too, in
@@ -29,11 +33,13 @@ prefix (`~/.fm2-linux/compatdata`). Saves, settings and the shader cache live th
 
 The first start compiles every shader (a few minutes on a fast CPU). Later starts reuse the cache.
 
-## Settings
+## Launcher
 
-The small settings window before the game (resolution, aspect ratio, display mode, vsync, max FPS)
-works under Proton. The full Windows launcher (profiles, photos, DLC, updates) does not ship here.
-Settings are saved to `settings.ini` in the documents folder above.
+`launcher/FM2Launcher` is the Windows launcher built for Linux: the same pages and code (play,
+profiles and cheats, Controls and force feedback, photos, DLC, Forza Plus 2, reports). It runs natively
+and starts the game through Proton as `play.sh` does, with the same prefix (`FM2_COMPATDATA`,
+`PROTON` and `FM2_LINUX_HOME` work the same). Settings are saved to `settings.ini` in the documents
+folder above. Updating from the launcher isn't there yet: unpack the new release over this folder.
 
 ## Steam / Steam Deck
 

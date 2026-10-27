@@ -1,29 +1,31 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <!-- The FM2 launcher: a WinForms window hosting WebView2, which shows wwwroot (the UI).
-       The page talks to Bridge.cs over WebView2's message channel (no local server). -->
+  <!-- The FM2 launcher: a Photino window showing wwwroot (the UI), on WebView2 on Windows and WebKitGTK on Linux.
+       The page talks to Bridge.cs over the window's message channel (no local server). One build per platform:
+       dotnet publish -r win-x64, or -r linux-x64. -->
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <TargetFramework>net10.0-windows</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
-    <UseWindowsForms>true</UseWindowsForms>
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>FM2Launcher</AssemblyName>
     <RootNamespace>FM2Launcher</RootNamespace>
     <Product>Forza Motorsport 2 ReGPU</Product>
     <ApplicationIcon>..\..\assets\fm2.ico</ApplicationIcon>
-    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == ''">win-x64</RuntimeIdentifier>
     <SelfContained>false</SelfContained>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4191.47" />
+    <PackageReference Include="Photino.NET" Version="4.0.16" />
   </ItemGroup>
 
   <ItemGroup>
     <Content Include="wwwroot\**\*" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\..\assets\icon.png" Link="wwwroot\icon.png" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\assets\fm2.ico" Link="fm2.ico" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

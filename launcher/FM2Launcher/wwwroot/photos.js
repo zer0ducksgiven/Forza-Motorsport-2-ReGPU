@@ -4,7 +4,6 @@
 const $ = (id) => document.getElementById(id)
 let nextId = 1
 const pending = new Map()
-const host = window.chrome && window.chrome.webview
 if (host) host.addEventListener("message", (e) => {
   const m = e.data
   const p = pending.get(m.id)
@@ -123,8 +122,36 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "ArrowRight" || e.key === "ArrowDown") { stepPhoto(1); e.preventDefault() }
   if (e.key === "c" && e.ctrlKey && photoId) $("photo-copy").click()
 })
-$("photo-copy").onclick = () => guarded(async () => { await call("photos.copy", photoId); toast("Photo copied to the clipboard.", true) })
-$("photo-save").onclick = () => guarded(async () => { if (await call("photos.save", photoId)) toast("Photo saved.", true) })
+// The photo as PNG, drawn here: the same on Windows and Linux, no image library in the launcher.
+async function pngOf(id) {
+  const img = new Image()
+  img.src = photos.find((p) => p.id === id).url
+  await img.decode()
+  const c = document.createElement("canvas")
+  c.width = img.naturalWidth
+  c.height = img.naturalHeight
+  c.getContext("2d").drawImage(img, 0, 0)
+  return new Promise((resolve, reject) => c.toBlob((b) => b ? resolve(b) : reject(new Error("Couldn't convert the photo.")), "image/png"))
+}
+async function base64Of(blob) {
+  const bytes = new Uint8Array(await blob.arrayBuffer())
+  let s = ""
+  for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000))
+  return btoa(s)
+}
+$("photo-copy").onclick = () => guarded(async () => {
+  // The page's clipboard where the web view allows it; otherwise the launcher puts it there (wl-copy or xclip on Linux).
+  try { await navigator.clipboard.write([new ClipboardItem({ "image/png": pngOf(photoId) })]) }
+  catch { await call("photos.copy", await base64Of(await pngOf(photoId))) }
+  toast("Photo copied to the clipboard.", true)
+})
+$("photo-save").onclick = () => guarded(async () => {
+  const id = photoId
+  const file = await call("photos.saveAs", id)
+  if (!file) return
+  await call("photos.write", { id, file, png: file.toLowerCase().endsWith(".png") ? await base64Of(await pngOf(id)) : null })
+  toast("Photo saved.", true)
+})
 $("photo-reveal").onclick = () => guarded(() => call("photos.reveal", photoId))
 $("photos-folder").onclick = () => guarded(() => call("photos.reveal", null))
 // New photos taken while the window is open show when it's focused again.

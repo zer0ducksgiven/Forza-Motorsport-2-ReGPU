@@ -1,10 +1,9 @@
 namespace FM2Launcher;
 
 /// <summary>Photo Mode pictures: Documents\fm2\profiles\&lt;profile&gt;\content\&lt;user&gt;\SavedPhotos\photos\&lt;name&gt;
-/// (JPEGs without an extension). The page shows them through the photos.fm2 virtual host.</summary>
+/// (JPEGs without an extension). The page shows them from the launcher's host (Web.PhotoUrl).</summary>
 internal static class Photos
 {
-    public const string Host = "photos.fm2";
     public static readonly string Root = Path.Combine(Paths.User, "profiles");
 
     public record Photo(string Id, string Name, string Profile, long Bytes, DateTime Taken, string Url);
@@ -20,8 +19,7 @@ internal static class Photos
             {
                 var rel = Path.GetRelativePath(Root, f.FullName);
                 var profile = rel.Split(Path.DirectorySeparatorChar)[0];
-                var url = $"https://{Host}/" + string.Join('/', rel.Split(Path.DirectorySeparatorChar).Select(Uri.EscapeDataString)) + $"?v={f.LastWriteTimeUtc.Ticks}";
-                list.Add(new Photo(rel, f.Name, profile, f.Length, f.LastWriteTime, url));
+                list.Add(new Photo(rel, f.Name, profile, f.Length, f.LastWriteTime, Web.PhotoUrl(rel, f.LastWriteTimeUtc)));
             }
         }
         return list.OrderByDescending(p => p.Taken).ToList();
@@ -36,38 +34,27 @@ internal static class Photos
         return full;
     }
 
-    public static void Copy(string id)
+    /// <summary>Where Save as starts: Pictures (on Linux, if the desktop has none, home).</summary>
+    public static string SaveFolder
     {
-        using var image = Image.FromStream(new MemoryStream(File.ReadAllBytes(PathOf(id))));
-        Clipboard.SetImage(image);
+        get
+        {
+            var pictures = Environment.GetFolderPath(Environment.SpecialFolder.MyPictures);
+            return Directory.Exists(pictures) ? pictures : Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        }
     }
 
-    public static bool SaveAs(string id, IWin32Window owner)
+    /// <summary>Save as: the JPEG as it is, or the PNG the page drew from it.</summary>
+    public static void Write(string id, string file, byte[]? png)
     {
         var source = PathOf(id);
-        using var dialog = new SaveFileDialog
-        {
-            Title = "Save photo",
-            FileName = Path.GetFileName(source) + ".jpg",
-            Filter = "JPEG image|*.jpg|PNG image|*.png",
-            InitialDirectory = Environment.GetFolderPath(Environment.SpecialFolder.MyPictures),
-        };
-        if (dialog.ShowDialog(owner) != DialogResult.OK) return false;
-        if (dialog.FilterIndex == 2)
-        {
-            using var image = Image.FromStream(new MemoryStream(File.ReadAllBytes(source)));
-            image.Save(dialog.FileName, System.Drawing.Imaging.ImageFormat.Png);
-        }
-        else
-            File.Copy(source, dialog.FileName, true);
-        return true;
+        if (png is not null) File.WriteAllBytes(file, png);
+        else File.Copy(source, file, true);
     }
 
     public static void Reveal(string? id)
     {
-        if (id is not null)
-            System.Diagnostics.Process.Start("explorer.exe", $"/select,\"{PathOf(id)}\"");
-        else
-            System.Diagnostics.Process.Start("explorer.exe", $"\"{Directory.CreateDirectory(Root).FullName}\"");
+        if (id is not null) Platform.Reveal(PathOf(id));
+        else Platform.OpenFolder(Directory.CreateDirectory(Root).FullName);
     }
 }

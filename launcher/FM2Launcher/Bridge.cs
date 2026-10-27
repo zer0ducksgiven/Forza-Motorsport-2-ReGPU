@@ -1,24 +1,37 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
-using Microsoft.Web.WebView2.Core;
+using Photino.NET;
 
 namespace FM2Launcher;
 
 /// <summary>
-/// The page's calls: { id, cmd, args } over WebView2's message channel, answered with { id, ok, result | error }.
-/// Progress and other pushes go out as { event, ... }.
+/// The page's calls: { id, cmd, args } over the window's message channel (wwwroot/host.js), answered with
+/// { id, ok, result | error }. Progress and other pushes go out as { event, ... }. Messages tagged with a frame
+/// ({ frame, msg }) are the Controls tab's, for BindingsHost.
 /// </summary>
-public sealed class Bridge(CoreWebView2 web, Form owner)
+public sealed class Bridge
 {
     static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
+    readonly PhotinoWindow _window;
     Updater.Release? _latest;
     /// <summary>The Controls tab's bindings (main window only).</summary>
     public BindingsHost? Controls { get; init; }
 
-    public async void OnMessage(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
+    public Bridge(PhotinoWindow window)
+    {
+        _window = window;
+        window.RegisterWebMessageReceivedHandler((_, text) => OnMessage(text));
+    }
+
+    async void OnMessage(string text)
     {
         JsonNode? msg;
-        try { msg = JsonNode.Parse(e.WebMessageAsJson); } catch { return; }
+        try { msg = JsonNode.Parse(text); } catch { return; }
+        if (msg?["frame"] is not null)
+        {
+            Controls?.OnMessage(msg["msg"]);
+            return;
+        }
         var id = msg?["id"]?.GetValue<int>() ?? 0;
         var cmd = msg?["cmd"]?.GetValue<string>() ?? "";
         var args = msg?["args"];
@@ -33,13 +46,12 @@ public sealed class Bridge(CoreWebView2 web, Form owner)
         }
     }
 
-    void Post(object o) => web.PostWebMessageAsJson(JsonSerializer.Serialize(o, Json));
-    // Progress can come from a worker thread (Forza Plus 2's copy); WebView2 only takes calls on the UI thread.
-    void Push(string name, object data)
-    {
-        if (owner.InvokeRequired) owner.BeginInvoke(() => Post(new { @event = name, data }));
-        else Post(new { @event = name, data });
-    }
+    // Photino takes messages from any thread (progress comes from Forza Plus 2's copy on a worker).
+    void Post(object o) => _window.SendWebMessage(JsonSerializer.Serialize(o, Json));
+    void Push(string name, object data) => Post(new { @event = name, data });
+
+    static readonly (string, string[])[] AnyFile = [("Xbox 360 content packages", ["*.*"])];
+    static readonly (string, string[])[] ZipFilter = [("Profile zip", ["*.zip"])];
 
     async Task<object?> Run(string cmd, JsonNode? a)
     {
@@ -66,25 +78,16 @@ public sealed class Bridge(CoreWebView2 web, Form owner)
                 return State();
             case "dlc.add":
                 {
-                    using var dialog = new OpenFileDialog
-                    {
-                        Title = "Choose DLC packages",
-                        Filter = "Xbox 360 content packages|*.*",
-                        Multiselect = true,
-                    };
-                    if (dialog.ShowDialog(owner) != DialogResult.OK) return new { added = 0, errors = Array.Empty<string>(), state = State() };
-                    var (added, errors) = Dlc.Add(dialog.FileNames, false);
+                    var files = await _window.ShowOpenFileAsync("Choose DLC packages", null, true, AnyFile);
+                    if (files is not { Length: > 0 }) return new { added = 0, errors = Array.Empty<string>(), state = State() };
+                    var (added, errors) = Dlc.Add(files, false);
                     return new { added, errors, state = State() };
                 }
             case "pfp.install":
                 {
-                    using var dialog = new FolderBrowserDialog
-                    {
-                        Description = "Choose the unzipped Forza Plus 2 folder (the one with \"Main Game Changes\" in it)",
-                        UseDescriptionForTitle = true,
-                    };
-                    if (dialog.ShowDialog(owner) != DialogResult.OK) return null;
-                    var folder = dialog.SelectedPath;
+                    var picked = await _window.ShowOpenFolderAsync("Choose the unzipped Forza Plus 2 folder (the one with \"Main Game Changes\" in it)", null, false);
+                    if (picked is not { Length: > 0 }) return null;
+                    var folder = picked[0];
                     await Task.Run(() => ForzaPlus2.Install(folder, (p, text) => Push("progress", new { p, text })));
                     return State();
                 }
@@ -101,10 +104,10 @@ public sealed class Bridge(CoreWebView2 web, Form owner)
                 if (Controls is not null) Controls.Active = a!.GetValue<bool>();
                 return null;
             case "photos.open":
-                PhotosForm.ShowWindow();
+                PhotosWindow.Show(_window);
                 return null;
             case "discord":
-                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("https://discord.gg/pVEpmSk2G3") { UseShellExecute = true });
+                Platform.OpenUrl("https://discord.gg/pVEpmSk2G3");
                 return null;
             case "open":
                 {
@@ -118,7 +121,7 @@ public sealed class Bridge(CoreWebView2 web, Form owner)
                         "log" => Path.Combine(Paths.Root, "out"),
                         _ => throw new ArgumentException("Unknown folder."),
                     };
-                    System.Diagnostics.Process.Start("explorer.exe", $"\"{path}\"");
+                    Platform.OpenFolder(path);
                     return null;
                 }
             case "profiles.list": return ProfilesState();
@@ -151,17 +154,17 @@ public sealed class Bridge(CoreWebView2 web, Form owner)
                 }
             case "profiles.import":
                 {
-                    using var dialog = new OpenFileDialog { Title = "Import a profile", Filter = "Profile zip|*.zip" };
-                    if (dialog.ShowDialog(owner) != DialogResult.OK) return null;
-                    var name = Profiles.Restore(dialog.FileName, a?["asName"]?.GetValue<string>());
+                    var files = await _window.ShowOpenFileAsync("Import a profile", null, false, ZipFilter);
+                    if (files is not { Length: > 0 }) return null;
+                    var name = Profiles.Restore(files[0], a?["asName"]?.GetValue<string>());
                     return new { name, state = ProfilesState() };
                 }
             case "profiles.export":
                 {
                     var name = Str(a, "name");
-                    using var dialog = new SaveFileDialog { Title = "Export profile", FileName = Profiles.FolderName(name) + ".zip", Filter = "Profile zip|*.zip" };
-                    if (dialog.ShowDialog(owner) != DialogResult.OK) return false;
-                    Profiles.Export(name, dialog.FileName);
+                    var file = await _window.ShowSaveFileAsync("Export profile", Profiles.FolderName(name) + ".zip", ZipFilter);
+                    if (string.IsNullOrEmpty(file)) return false;
+                    Profiles.Export(name, file);
                     return true;
                 }
             case "profiles.mergePhotos":
@@ -173,13 +176,25 @@ public sealed class Bridge(CoreWebView2 web, Form owner)
                     return ProfilesState();
                 }
             case "profiles.openBackups":
-                System.Diagnostics.Process.Start("explorer.exe", $"\"{Directory.CreateDirectory(Profiles.Backups).FullName}\"");
+                Platform.OpenFolder(Directory.CreateDirectory(Profiles.Backups).FullName);
                 return null;
             case "photos.list": return Photos.List();
             case "photos.copy":
-                Photos.Copy(a!.GetValue<string>());
+                Platform.CopyPng(Convert.FromBase64String(a!.GetValue<string>()));
                 return null;
-            case "photos.save": return Photos.SaveAs(a!.GetValue<string>(), owner);
+            case "photos.saveAs":
+                {
+                    var id = a!.GetValue<string>();
+                    var file = await _window.ShowSaveFileAsync("Save photo", Path.Combine(Photos.SaveFolder, Path.GetFileName(Photos.PathOf(id)) + ".jpg"),
+                        [("JPEG image", ["*.jpg"]), ("PNG image", ["*.png"])]);
+                    return string.IsNullOrEmpty(file) ? null : file;
+                }
+            case "photos.write":
+                {
+                    var png = a?["png"]?.GetValue<string>();
+                    Photos.Write(Str(a, "id"), Str(a, "file"), png is null ? null : Convert.FromBase64String(png));
+                    return null;
+                }
             case "photos.reveal":
                 Photos.Reveal(a?.GetValue<string>());
                 return null;
@@ -187,7 +202,7 @@ public sealed class Bridge(CoreWebView2 web, Form owner)
                 {
                     var url = a?.GetValue<string>() ?? "";
                     if (!url.StartsWith("https://github.com/", StringComparison.OrdinalIgnoreCase)) throw new ArgumentException("Only GitHub links open from here.");
-                    System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(url) { UseShellExecute = true });
+                    Platform.OpenUrl(url);
                     return null;
                 }
             case "report.state":
@@ -223,13 +238,15 @@ public sealed class Bridge(CoreWebView2 web, Form owner)
                 return UpdateInfo();
             case "update.apply":
                 {
+                    // The patch zip is laid out for the Windows install (build/tu, a Windows launcher).
+                    if (Platform.Linux) throw new InvalidOperationException("On Linux, download FM2-Linux from the release page and unpack it over this folder.");
                     _latest ??= await Updater.LatestAsync();
                     var applied = await Updater.DownloadAndApplyAsync(_latest, (p, text) => Push("progress", new { p, text }));
                     return new { applied.Files, applied.LauncherChanged, update = UpdateInfo(), state = State() };
                 }
             case "restart":
                 System.Diagnostics.Process.Start(Environment.ProcessPath!);
-                owner.BeginInvoke(() => owner.Close());
+                _window.Invoke(_window.Close);
                 return null;
             default:
                 throw new ArgumentException($"Unknown command {cmd}.");
