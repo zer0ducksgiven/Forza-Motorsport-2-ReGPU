@@ -60,6 +60,8 @@ std::atomic<bool> g_inputUsed{ false };
 
 std::string g_shotPath;
 uint64_t g_shotsDone = 0;
+std::string g_burstDir; // burst: the frames left of g_burstTotal
+int g_burstTotal = 0, g_burstLeft = 0;
 
 const struct { const char* name; uint16_t bit; } kButtons[] = {
     { "UP", 0x0001 }, { "DOWN", 0x0002 }, { "LEFT", 0x0004 }, { "RIGHT", 0x0008 }, { "START", 0x0010 }, { "BACK", 0x0020 },
@@ -242,6 +244,27 @@ std::string Handle(const std::string& line)
             return Error("no frame came (the game may be loading or paused)");
         }
         return Ok("\"path\":\"" + Escape(path) + "\",\"frame\":" + std::to_string(g_frame));
+    }
+    // burst N [dir]: the next N frames, one after another, as dir/burst_00.png ... (default out)
+    if (cmd == "burst")
+    {
+        int n = 0;
+        in >> n;
+        std::string dir;
+        std::getline(in, dir);
+        dir.erase(0, dir.find_first_not_of(' '));
+        if (dir.empty())
+            dir = "out";
+        n = std::clamp(n, 1, 120);
+        std::unique_lock lock(g_mutex);
+        const uint64_t before = g_shotsDone;
+        g_burstDir = dir, g_burstTotal = n, g_burstLeft = n;
+        if (!g_swapped.wait_for(lock, std::chrono::seconds(60), [&] { return g_shotsDone - before >= uint64_t(n); }))
+        {
+            g_burstLeft = 0;
+            return Error("the frames stopped coming");
+        }
+        return Ok("\"frames\":" + std::to_string(n) + ",\"last\":" + std::to_string(g_frame));
     }
     if (cmd == "capture")
     {
@@ -565,6 +588,13 @@ void DebugOnSwap(uint64_t frame)
 bool DebugShotPending(std::string& path)
 {
     std::lock_guard lock(g_mutex);
+    if (g_burstLeft > 0)
+    {
+        char name[32];
+        snprintf(name, sizeof(name), "/burst_%02d.png", g_burstTotal - g_burstLeft);
+        path = g_burstDir + name;
+        return true;
+    }
     if (g_shotPath.empty())
         return false;
     path = g_shotPath;
@@ -577,6 +607,8 @@ void DebugShotDone(const std::string& path)
         std::lock_guard lock(g_mutex);
         if (g_shotPath == path)
             g_shotPath.clear();
+        else if (g_burstLeft > 0)
+            g_burstLeft--;
         g_shotsDone++;
     }
     g_swapped.notify_all();

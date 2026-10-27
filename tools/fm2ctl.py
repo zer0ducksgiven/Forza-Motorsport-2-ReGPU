@@ -13,6 +13,7 @@ Commands (sent as typed):
   trigger L|R v [ms]                 v in 0..1
   wait 30 | wait 2.5s                frames, or seconds
   shot [path]                        the next frame as a PNG (default out/live.png)
+  burst N [dir]                      the next N frames back to back, as dir/burst_00.png ... (default out)
   capture                            what F12 does (trace the next frame into out/capture)
   log [n]                            the last n lines of the log
   peek ADDR [bytes] | poke ADDR HEX  guest memory (hex addresses, big-endian bytes)

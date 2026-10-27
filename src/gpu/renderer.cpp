@@ -317,6 +317,7 @@ struct CachedTexture
     uint64_t contentHash = 0;
     uint64_t checkedFrame = ~0ull; // content already validated in this frame
     uint32_t unchanged = 0;        // checks in a row that found the same content
+    uint32_t changes = 0;          // times the content changed after the first upload
     uint32_t width = 0, height = 0;
     DXGI_FORMAT format = DXGI_FORMAT_R8G8B8A8_UNORM; // cubes: matches their faces
     bool native = false; // block-compressed on the GPU: the shader applies the fetch swizzle
@@ -3974,7 +3975,11 @@ ID3D12Resource* GetTextureLocked(const TextureFetch& fetch, DXGI_FORMAT& format,
     // ~0.1 s late). FM2_TEXTURE_CHECK_EVERY4=1 keeps every 4th (A/B).
     LiveSwitch &every4 = g_sw_FM2_TEXTURE_CHECK_EVERY4;
     const uint64_t checkMask = !every4 && cached.unchanged >= 300 ? 15 : 3;
-    if (cached.resource && !checkAlways && !forceDecode && cached.unchanged >= 30 && ((g_r.frame + (textureKey >> 32)) & checkMask) != 0)
+    // A video's textures sit unchanged while it's paused (a menu tile not highlighted), long enough to be staggered,
+    // and each on its own frames: when it played again its brightness and colour planes came from different frames
+    // for a frame or two (report #15: the Enzo video over Free Run). Textures that keep changing aren't staggered.
+    if (cached.resource && !checkAlways && !forceDecode && cached.unchanged >= 30 && cached.changes < 8 &&
+        ((g_r.frame + (textureKey >> 32)) & checkMask) != 0)
     {
         if (((g_r.frame + 1 + (textureKey >> 32)) & checkMask) == 0) // due next frame: hashed ahead
         {
@@ -4008,6 +4013,8 @@ ID3D12Resource* GetTextureLocked(const TextureFetch& fetch, DXGI_FORMAT& format,
     const auto uploadStart = g_perfTiming ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     const bool wasNew = !cached.resource;
     cached.unchanged = 0;
+    if (!wasNew)
+        cached.changes++;
     struct UploadLog
     {
         std::chrono::steady_clock::time_point start;
