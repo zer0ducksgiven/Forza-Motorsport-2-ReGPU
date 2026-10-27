@@ -58,7 +58,7 @@ public static class Joysticks
         public short[] Rest { get; init; } = [];
     }
 
-    public sealed record State(string Guid, short[] Axes, bool[] Buttons, byte[] Hats);
+    public sealed record State(string Guid, short[] Axes, bool[] Buttons, int[] Hats); // int[]: a byte[] goes to JSON as a base64 string
 
     static readonly object Gate = new();
     static bool _started;
@@ -146,7 +146,7 @@ public static class Joysticks
                 for (int i = 0; i < d.Axes; i++) axes[i] = SDL_GetJoystickAxis(d.Handle, i);
                 var buttons = new bool[d.Buttons];
                 for (int i = 0; i < d.Buttons; i++) buttons[i] = SDL_GetJoystickButton(d.Handle, i);
-                var hats = new byte[d.Hats];
+                var hats = new int[d.Hats];
                 for (int i = 0; i < d.Hats; i++) hats[i] = SDL_GetJoystickHat(d.Handle, i);
                 states.Add(new State(d.Guid, axes, buttons, hats));
             }
