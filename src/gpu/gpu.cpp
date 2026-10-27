@@ -23,6 +23,11 @@
 #include "gpu/renderer.h"
 #include "precise_sleep.h"
 
+// The guest address the title's render thread sleeps on (hooks/perf_probe.cpp: its wait for a
+// fence the command processor writes), 0 when none: WriteBackNow wakes it.
+std::atomic<uint32_t> g_titleWaitAddress{ 0 };
+#pragma comment(lib, "Synchronization.lib")
+
 namespace
 {
 // GPU registers are memory-mapped at 0x7FC80000 in guest space.
@@ -498,7 +503,10 @@ uint32_t GpuSwap(uint32_t value, uint32_t endian)
 
 void WriteBackNow(uint32_t address, uint32_t value)
 {
-    *GuestPtr<uint32_t>(PhysToGuest(address & ~3u)) = GpuSwap(value, address);
+    const uint32_t guest = PhysToGuest(address & ~3u);
+    *GuestPtr<uint32_t>(guest) = GpuSwap(value, address);
+    if (g_titleWaitAddress.load(std::memory_order_relaxed) == guest)
+        WakeByAddressAll(GuestPtr<uint32_t>(guest));
 }
 
 // Memory writes from the command stream (fences): after the draws before them.
@@ -1470,3 +1478,4 @@ GUEST_EXPORT(VdSwap)
     }
     Return(ctx, 0);
 }
+

@@ -9,6 +9,9 @@
 #include <string>
 #include <vector>
 
+#include <windows.h>
+#include <immintrin.h>
+
 #include "kernel/imports.h"
 #include "kernel/objects.h"
 #include "live_switch.h"
@@ -16,6 +19,7 @@
 #include "memory.h"
 
 PPC_FUNC_IMPL(__imp__sub_82369340);
+extern std::atomic<uint32_t> g_titleWaitAddress;
 
 PPC_FUNC(sub_82369340)
 {
@@ -29,6 +33,32 @@ PPC_FUNC(sub_82369340)
         if (seen.size() < 8 && seen.insert(pointer).second)
             Log("probe: wait loop polls %08X (now %08X, waiting for change from %08X), lr %08llX", pointer,
                 __builtin_bswap32(*GuestPtr<uint32_t>(pointer)), target, ctx.lr);
+    }
+    // The loop polls a fence the command processor writes (the frame it waits for to free ring
+    // space). Spinning there was about 40% of the render thread, a core taken from the game and the
+    // command processor on 4-core CPUs: it sleeps on the address instead, woken by gpu.cpp's
+    // WriteBackNow (1 ms at most per wait, then it checks again). FM2_SPIN_RING_WAIT=1: spin (A/B).
+    static LiveSwitch spin("FM2_SPIN_RING_WAIT");
+    if (!spin)
+    {
+        const uint32_t device = __builtin_bswap32(*GuestPtr<uint32_t>(ctx.r3.u32));
+        const uint32_t pointer = __builtin_bswap32(*GuestPtr<uint32_t>(device + 10768));
+        if (pointer >= 0x80000000u) // a physical view (the CP writes there)
+        {
+            const uint32_t target = *GuestPtr<uint32_t>(ctx.r3.u32 + 8); // (both big-endian)
+            volatile uint32_t* p = GuestPtr<uint32_t>(pointer);
+            // A short spin first: most waits end within microseconds, sooner than a wake.
+            for (int i = 0; i < 1000 && *p == target; i++)
+                _mm_pause();
+            if (*p == target)
+            {
+                g_titleWaitAddress = pointer;
+                uint32_t seen = target;
+                for (int i = 0; i < 50 && *p == target; i++)
+                    WaitOnAddress(const_cast<uint32_t*>(p), &seen, sizeof(seen), 1);
+                g_titleWaitAddress = 0;
+            }
+        }
     }
     __imp__sub_82369340(ctx, base);
 }
