@@ -18,8 +18,10 @@
 #include <algorithm>
 #include <filesystem>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <set>
 #include <thread>
@@ -37,6 +39,8 @@ extern "C"
 #include "kernel/imports.h"
 #include "live_switch.h"
 #include "log.h"
+#include "audio/seamless_loops.h"
+#include "audio/xma_trims.h"
 
 bool DealerMutesMusic(); // hooks/dealer.cpp: the easter egg is playing
 
@@ -62,6 +66,46 @@ void SetField(uint32_t ctx, int dword, int lo, int bits, uint32_t value)
 }
 
 std::mutex g_mutex;
+
+uint64_t StreamHash(const uint8_t* p, size_t n)
+{
+    uint64_t h = 0xCBF29CE484222325ull;
+    for (size_t i = 0; i < n; i++)
+        h = (h ^ p[i]) * 0x100000001B3ull;
+    return h;
+}
+
+// Seamless loops for the engine sounds whose own loop joins audibly (the rev hitch on the Supra,
+// Evo and RX-7, and many more): audio/seamless_loops.h, made offline from the sound banks
+// (tools/xmadecode.cpp, tools/mkloops.py), by a hash of each stream's first packet.
+const SeamlessLoop* FindSeamlessLoop(uint64_t hash)
+{
+    const auto end = std::end(kSeamlessLoops);
+    const auto it = std::lower_bound(std::begin(kSeamlessLoops), end, hash, [](const SeamlessLoop& l, uint64_t h) { return l.hash < h; });
+    return it != end && it->hash == hash ? it : nullptr;
+}
+
+// A sound's first pass as decoded, by first packet hash: what its loop-start blend fades in from.
+std::mutex g_firstPassMutex;
+std::map<uint64_t, std::shared_ptr<const std::vector<int16_t>>> g_firstPasses;
+
+double RaisedCosine(size_t i, uint32_t n)
+{
+    return 0.5 - 0.5 * std::cos(3.14159265358979 * double(i + 1) / double(n + 1));
+}
+
+// The gain that keeps a blend of a and b, alike by r (correlation), at their level: they mix to
+// sqrt(a^2 + b^2 + 2rab), so the middle of an uncorrected blend dips (heard as a gap).
+double BlendGain(double w, float r)
+{
+    const double c = std::clamp(double(r), 0.0, 1.0);
+    return 1.0 / std::sqrt((1.0 - w) * (1.0 - w) + w * w + 2.0 * c * w * (1.0 - w));
+}
+
+int16_t Blend(double a, double b, double w, float r)
+{
+    return int16_t(std::clamp(std::round((a * (1.0 - w) + b * w) * BlendGain(w, r)), -32768.0, 32767.0));
+}
 
 // Music packets, by a hash of their first 64 bytes: the title reads its music files (Media/Audio/Music/*.xma)
 // into a file buffer and copies packets on to the decoder's input, so a packet is recognised by
@@ -92,6 +136,16 @@ struct Decoder
     std::vector<int16_t> pcm; // decoded, interleaved, not yet in the output ring
     size_t pcmRead = 0;
     bool flush = true; // start of a stream or a jump: reset before the next packet
+    // The stream being decoded (from a reset to its drain), output as the hardware does (see Drain).
+    uint32_t streamFrames = 0, trimStart = 0, trimEnd = 0, skipStart = 0;
+    size_t streamOut = 0; // its samples so far
+    uint8_t firstPacket[kPacketBytes] = {};
+    uint64_t firstHash = 0;
+    bool exact = false; // an engine sound: decoded as the hardware does
+    std::vector<int16_t> head; // its first 512 output frames (the loop crossfade, see Drain)
+    const SeamlessLoop* loop = nullptr; // its seamless loop, if it has one
+    std::vector<int16_t> history; // with one: its samples as decoded
+    std::shared_ptr<const std::vector<int16_t>> firstPass; // and its first pass (the loop-start blend)
     bool starved = false;
     size_t packetsDecoded = 0, framesWritten = 0, framesDecoded = 0;
     // An input buffer whose packets are all decoded stays valid for the title until their audio
@@ -134,27 +188,70 @@ struct Decoder
         return true;
     }
 
-    // The end of a stream: the codec holds back about a packet of audio until more input
-    // comes. Appends it (and silence up to a whole output block) and resets the codec.
+    // Appends what the codec has decoded, less the first skipStart samples of the stream.
+    void Receive()
+    {
+        while (avcodec_receive_frame(av, frame) == 0)
+        {
+            const int n = frame->nb_samples, ch = std::min<int>(frame->ch_layout.nb_channels, int(channels));
+            const int skip = std::min<int>(n, int(skipStart));
+            skipStart -= uint32_t(skip);
+            const size_t base = pcm.size();
+            pcm.resize(base + size_t(n - skip) * channels);
+            for (int c = 0; c < int(channels); c++)
+            {
+                const float* in = reinterpret_cast<const float*>(frame->extended_data[std::min(c, ch - 1)]);
+                for (int i = skip; i < n; i++)
+                    pcm[base + size_t(i - skip) * channels + c] = int16_t(std::clamp(in[i], -1.0f, 1.0f) * 32767.0f);
+            }
+            av_frame_unref(frame);
+        }
+    }
+
+    // The stream's seamless loop over pcm[from..], sample index at (interleaved) of the stream on.
+    // FMOD plays a stream x of L samples as the loop x[S:L], S = trim_start - 128 (it skips the
+    // restart's pre-roll). Either its last n samples (pad early, before the silence some streams
+    // end with) blend into x[from-n-pad:from-pad] and the pad is filled with x[from-pad:from],
+    // where what follows x[from] is like what follows x[S]; or, from the second pass on, its first
+    // n2 after S fade in from x[from2:], where what precedes x[from2] is like the loop's end.
+    void PatchLoop(size_t at, size_t from)
+    {
+        if (!loop)
+            return;
+        const size_t ch = channels, S = size_t(trimStart > 128 ? trimStart - 128 : 0) * ch;
+        const size_t tail = size_t(loop->length - loop->n - loop->pad) * ch, src = size_t(loop->from - loop->n - loop->pad) * ch;
+        for (size_t i = from; i < pcm.size(); i++, at++)
+        {
+            if (at == history.size())
+                history.push_back(pcm[i]);
+            if (firstPass && at >= S && at < S + size_t(loop->n2) * ch && size_t(loop->from2) * ch + (at - S) < firstPass->size())
+                pcm[i] = Blend((*firstPass)[size_t(loop->from2) * ch + (at - S)], history[at], RaisedCosine((at - S) / ch, loop->n2), loop->r2);
+            else if (loop->n && at >= tail && at < size_t(loop->length) * ch && src + (at - tail) < history.size())
+            {
+                const size_t j = (at - tail) / ch;
+                pcm[i] = Blend(history[at], history[src + (at - tail)], j >= loop->n ? 1.0 : RaisedCosine(j, loop->n), loop->r);
+            }
+        }
+    }
+
+    // The end of a stream. The hardware plays every frame of it, trim_start dropped at the start and
+    // trim_end ignored (measured over XBDM on a console: 451 stream ends): frames * 512 - trim_start
+    // samples. FFmpeg's end of stream takes trim_start + trim_end - 192 off the end instead, and holds
+    // back about a packet until more input comes: the stream's first packet (its loop's natural
+    // continuation) is fed again until the stream reaches its length, and it is cut there. Then
+    // silence up to a whole output block; the codec is opened again at the next stream.
     void Drain(size_t block)
     {
         if (!av)
             return;
         const size_t pcmBefore = pcm.size();
-        avcodec_send_packet(av, nullptr);
-        while (avcodec_receive_frame(av, frame) == 0)
+        if (!exact)
         {
-            const int n = frame->nb_samples, ch = std::min<int>(frame->ch_layout.nb_channels, int(channels));
-            const size_t base = pcm.size();
-            pcm.resize(base + size_t(n) * channels);
-            for (int c = 0; c < int(channels); c++)
-            {
-                const float* in = reinterpret_cast<const float*>(frame->extended_data[std::min(c, ch - 1)]);
-                for (int i = 0; i < n; i++)
-                    pcm[base + size_t(i) * channels + c] = int16_t(std::clamp(in[i], -1.0f, 1.0f) * 32767.0f);
-            }
-            av_frame_unref(frame);
+            avcodec_send_packet(av, nullptr);
+            Receive();
         }
+        else
+            DrainExact(pcmBefore);
         framesDecoded += (pcm.size() - pcmBefore) / channels;
         if (const size_t rest = (pcm.size() - pcmRead) % block)
             pcm.resize(pcm.size() + (block - rest), 0);
@@ -164,15 +261,96 @@ struct Decoder
         holdsTail = false;
     }
 
+    void DrainExact(size_t pcmBefore)
+    {
+        const size_t want = size_t(streamFrames) * 512 - std::min<size_t>(size_t(streamFrames) * 512, trimStart);
+        for (int k = 0; k < 8; k++)
+        {
+            // Twice at least: once was not always enough to push out what FFmpeg holds back.
+            if (streamOut + (pcm.size() - pcmBefore) / channels >= want && k >= 2)
+                break;
+            if (av_new_packet(packet, kPacketBytes) >= 0)
+            {
+                memcpy(packet->data, firstPacket, kPacketBytes);
+                avcodec_send_packet(av, packet);
+                av_packet_unref(packet);
+            }
+            Receive();
+        }
+        streamOut += (pcm.size() - pcmBefore) / channels;
+        if (streamOut > want)
+        {
+            const size_t cut = std::min(streamOut - want, (pcm.size() - pcmRead) / channels);
+            pcm.resize(pcm.size() - cut * channels);
+            streamOut -= cut;
+        }
+        if (pcm.size() > pcmBefore)
+            PatchLoop((streamOut - (pcm.size() - pcmBefore) / channels) * channels, pcmBefore);
+        if (loop && loop->n2 && !firstPass && history.size() >= size_t(loop->length) * channels)
+        {
+            std::lock_guard lock(g_firstPassMutex);
+            g_firstPasses.emplace(firstHash, std::make_shared<const std::vector<int16_t>>(history.begin(), history.begin() + ptrdiff_t(size_t(loop->length) * channels)));
+        }
+        // Engine sounds without a seamless loop: the last 384 samples crossfade into the 384 FMOD skips
+        // after a restart, so a looped one at least joins without a step.
+        if (!loop)
+        {
+            const size_t skip = trimStart > 128 ? trimStart - 128 : 0;
+            const size_t n = std::min<size_t>({ 384, skip, (pcm.size() - pcmRead) / channels });
+            if (n >= 8 && head.size() >= skip * channels)
+            {
+                const size_t end = pcm.size() / channels;
+                for (uint32_t c = 0; c < channels; c++)
+                    for (size_t i = 0; i < n; i++)
+                    {
+                        int16_t& t = pcm[(end - n + i) * channels + c];
+                        t = Blend(t, head[(skip - n + i) * channels + c], RaisedCosine(i, uint32_t(n)), 1.0f); // continuous audio: no gain
+                    }
+            }
+        }
+    }
+
     // Decodes one 2 KB packet and appends its samples.
     void Decode(const uint8_t* data)
     {
         const bool wasFlush = flush;
         if (flush)
         {
-            avcodec_flush_buffers(av);
             flush = false;
+            // An engine sound (listed in audio/seamless_loops.h by its first packet) is decoded as the
+            // hardware does, see Drain: the codec is opened again (FFmpeg's XMA decoder has no flush
+            // callback: avcodec_flush_buffers left its overlap, its 4096-sample FIFO and its end of
+            // stream in place), and of the trim_start the hardware drops at the start, FFmpeg drops
+            // all but 128. Other sounds (menu sounds, music, a jump into a stream) as before: cut and
+            // crossfaded like engine loops, menu sounds clipped.
+            firstHash = StreamHash(data, kPacketBytes);
+            const SeamlessLoop* listed = FindSeamlessLoop(firstHash);
+            exact = listed != nullptr;
+            loop = listed && (listed->n || listed->n2) ? listed : nullptr;
+            streamFrames = trimStart = trimEnd = skipStart = 0;
+            streamOut = 0;
+            head.clear();
+            history.clear();
+            firstPass = nullptr;
+            if (!exact)
+                avcodec_flush_buffers(av);
+            else
+            {
+                if (!Open(channels, rate))
+                    return;
+                memcpy(firstPacket, data, kPacketBytes);
+                PacketTrims(data, channels, trimStart, trimEnd);
+                skipStart = std::min<uint32_t>(128, trimStart);
+                if (loop && loop->n2)
+                {
+                    std::lock_guard lock(g_firstPassMutex);
+                    if (const auto it = g_firstPasses.find(firstHash); it != g_firstPasses.end())
+                        firstPass = it->second;
+                }
+            }
         }
+        if (exact)
+            PacketTrims(data, channels, trimStart, trimEnd, &streamFrames); // later packets can carry the end trim
         const size_t pcmBefore = pcm.size();
         packetsDecoded++;
         if (av_new_packet(packet, kPacketBytes) < 0)
@@ -185,19 +363,12 @@ struct Decoder
             flush = true;
             return;
         }
-        while (avcodec_receive_frame(av, frame) == 0)
-        {
-            const int n = frame->nb_samples, ch = std::min<int>(frame->ch_layout.nb_channels, int(channels));
-            const size_t base = pcm.size();
-            pcm.resize(base + size_t(n) * channels);
-            for (int c = 0; c < int(channels); c++)
-            {
-                const float* in = reinterpret_cast<const float*>(frame->extended_data[std::min(c, ch - 1)]);
-                for (int i = 0; i < n; i++)
-                    pcm[base + size_t(i) * channels + c] = int16_t(std::clamp(in[i], -1.0f, 1.0f) * 32767.0f);
-            }
-            av_frame_unref(frame);
-        }
+        Receive();
+        PatchLoop(streamOut * channels, pcmBefore);
+        if (exact && head.size() < size_t(512) * channels && pcm.size() > pcmBefore)
+            head.insert(head.end(), pcm.begin() + ptrdiff_t(pcmBefore),
+                pcm.begin() + ptrdiff_t(std::min(pcm.size(), pcmBefore + size_t(512) * channels - head.size())));
+        streamOut += (pcm.size() - pcmBefore) / channels;
         framesDecoded += (pcm.size() - pcmBefore) / channels;
         holdsTail = true;
         if (g_traceXma)

@@ -137,3 +137,8 @@ add_custom_command(TARGET fm2 POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_dif
 add_executable(xenos_dis tools/xenos_dis.cpp src/gpu/ucode.cpp src/gpu/hlsl.cpp src/live_switch.cpp src/log.cpp)
 target_include_directories(xenos_dis PRIVATE src)
 target_link_libraries(xenos_dis PRIVATE d3dcompiler)
+
+# FMOD sound banks decoded as the game's XMA decoder does, for tools/mkloops.py (audio/seamless_loops.h).
+add_executable(xmadecode tools/xmadecode.cpp)
+target_include_directories(xmadecode PRIVATE "${FM2_FFMPEG}/include")
+target_link_libraries(xmadecode PRIVATE "${FM2_FFMPEG}/lib/avcodec.lib" "${FM2_FFMPEG}/lib/avutil.lib")
