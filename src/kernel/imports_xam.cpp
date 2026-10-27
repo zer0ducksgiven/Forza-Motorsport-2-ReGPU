@@ -682,8 +682,8 @@ bool CachedXInputState(uint32_t user, XINPUT_STATE& x)
     return c.ok;
 }
 
-// Returns false if nothing is connected for this user.
-bool ReadPad(uint32_t user, PadState& s)
+// One controller: the connected XInput pads in slot order, then SDL's. False if there is none at this index.
+bool ReadDevice(uint32_t user, PadState& s)
 {
     bool connected = false;
     XINPUT_STATE x{};
@@ -718,6 +718,29 @@ bool ReadPad(uint32_t user, PadState& s)
             if (s.buttons || s.leftTrigger > 64 || s.rightTrigger > 64 || std::abs(s.lx) > 16000 || std::abs(s.ly) > 16000)
                 PresenterControllerUsed();
         }
+    return connected;
+}
+
+// Returns false if nothing is connected for this user.
+bool ReadPad(uint32_t user, PadState& s)
+{
+    // Every controller is player 1, the only one signed in (GitHub #14): the game plays as whichever pad
+    // pressed a button, and one that came second (after a virtual pad from Steam Input or DS4Windows, or a
+    // DualSense after any XInput pad) said "No Gamer Profiles signed in" and kept career locked.
+    // FM2 has no split screen, so nothing needs a second player.
+    bool connected = false;
+    if (user == 0)
+        for (uint32_t i = 0; i < XUSER_MAX_COUNT; i++)
+            if (PadState d; ReadDevice(i, d))
+            {
+                connected = true;
+                s.buttons |= d.buttons;
+                s.leftTrigger = std::max(s.leftTrigger, d.leftTrigger);
+                s.rightTrigger = std::max(s.rightTrigger, d.rightTrigger);
+                for (auto [to, from] : { std::pair{ &s.lx, d.lx }, { &s.ly, d.ly }, { &s.rx, d.rx }, { &s.ry, d.ry } })
+                    if (std::abs(from) > std::abs(*to))
+                        *to = from;
+            }
     if (user == 0)
     {
         connected = true;
@@ -1042,15 +1065,20 @@ GUEST_EXPORT(XamInputSetState)
         Return(ctx, X_ERROR_DEVICE_NOT_CONNECTED);
         return;
     }
-    if (ctx.r5.u32 && user < XUSER_MAX_COUNT)
+    if (ctx.r5.u32 && user == 0)
     {
+        // Player 1 is every controller (ReadPad): all of them rumble.
         XINPUT_VIBRATION v{};
         v.wLeftMotorSpeed = __builtin_bswap16(*GuestPtr<uint16_t>(ctx.r5.u32));
         v.wRightMotorSpeed = __builtin_bswap16(*GuestPtr<uint16_t>(ctx.r5.u32 + 2));
-        if (int(user) < g_xinputPads)
-            XInputSetState(PadSlot(user), &v);
-        else
-            GamepadRumble(user - uint32_t(g_xinputPads), v.wLeftMotorSpeed, v.wRightMotorSpeed);
+        for (uint32_t i = 0; i < XUSER_MAX_COUNT; i++)
+            if (PadState d; ReadDevice(i, d))
+            {
+                if (int(i) < g_xinputPads)
+                    XInputSetState(PadSlot(i), &v);
+                else
+                    GamepadRumble(i - uint32_t(g_xinputPads), v.wLeftMotorSpeed, v.wRightMotorSpeed);
+            }
     }
     Return(ctx, X_ERROR_SUCCESS);
 }
