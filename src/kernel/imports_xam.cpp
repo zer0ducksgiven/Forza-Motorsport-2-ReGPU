@@ -1251,7 +1251,15 @@ GUEST_EXPORT(XamEnumerate)
         }
     }
     StoreIfNonNull(ctx.r7.u32, count);
-    FinishUi(ctx, ctx.r8.u32, count ? X_ERROR_SUCCESS : X_ERROR_NO_MORE_FILES);
+    // Asynchronously the count is the overlapped's InternalHigh: the replay theatre read it as 0 and said there
+    // were no saved replays.
+    if (const uint32_t overlapped = ctx.r8.u32)
+    {
+        CompleteOverlapped(overlapped, count ? X_ERROR_SUCCESS : X_ERROR_NO_MORE_FILES, 0, count);
+        Return(ctx, X_ERROR_IO_PENDING);
+        return;
+    }
+    Return(ctx, count ? X_ERROR_SUCCESS : X_ERROR_NO_MORE_FILES);
 }
 
 // Tasks ----------------------------------------------------------------------------
