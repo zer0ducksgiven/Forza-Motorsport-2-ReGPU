@@ -60,10 +60,10 @@ public sealed class GameSettings
     // FSR 1 on the whole frame: render scale (percent per axis) and RCAS sharpening (0 off, 100 max).
     public int RenderScale { get; set; } = 100;
     public int Sharpening { get; set; }
-    public bool Enhance { get; set; }
+    public bool Enhance { get; set; } // enhanced lighting: off and out of the launcher until the enhancements update
     public bool SkipIntro { get; set; }
     public bool XboxPrompts { get; set; }
-    public bool HideShaderOverlay { get; set; }
+    public bool HideShaderOverlay { get; set; } = true;
     public bool LowPerformance { get; set; }
     public bool VertexArena { get; set; } = true; // debug: large vertex buffers kept in video memory
     public int WheelStrength { get; set; } = 50;
@@ -72,12 +72,16 @@ public sealed class GameSettings
     public int WheelRotation { get; set; }
     public int Language { get; set; } = 1;
 
-    static readonly string[] Known = ["profile", "resolution", "aspect", "fullscreen", "vsync", "max_fps", "msaa", "smaa", "anisotropy", "upscaler", "render_scale", "sharpness", "enhance", "skip_intro", "xbox_prompts", "hide_shader_overlay", "low_performance", "vertex_arena", "wheel_strength", "wheel_spring", "wheel_reverse", "wheel_rotation", "language"];
+    static readonly string[] Known = ["profile", "resolution", "aspect", "fullscreen", "vsync", "max_fps", "msaa", "smaa", "anisotropy", "upscaler", "render_scale", "sharpness", "enhance", "skip_intro", "xbox_prompts", "hide_shader_overlay", "low_performance", "vertex_arena", "wheel_strength", "wheel_spring", "wheel_reverse", "wheel_rotation", "language", "settings_rev"];
 
     public static GameSettings Load()
     {
         var s = new GameSettings();
-        foreach (var (k, v) in Read())
+        var read = Read().ToList();
+        // settings_rev 1 (0.9.0): the shader compile pop-up became hidden by default, so files saved
+        // before it get it hidden once; the player can turn it back on.
+        var old = read.Count > 0 && !read.Any(kv => kv.Key == "settings_rev");
+        foreach (var (k, v) in read)
             switch (k)
             {
                 case "profile": s.Profile = v; break;
@@ -94,7 +98,6 @@ public sealed class GameSettings
                     s.Sharpening = double.TryParse(v, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var sh)
                         ? (int)Math.Round(sh * 100) : 0;
                     break;
-                case "enhance": s.Enhance = v == "1"; break;
                 case "skip_intro": s.SkipIntro = v == "1"; break;
                 case "xbox_prompts": s.XboxPrompts = v == "1"; break;
                 case "hide_shader_overlay": s.HideShaderOverlay = v == "1"; break;
@@ -106,6 +109,8 @@ public sealed class GameSettings
                 case "wheel_rotation": s.WheelRotation = int.TryParse(v, out var wr) ? wr : 0; break;
                 case "language": s.Language = int.TryParse(v, out var l) && l > 0 ? l : 1; break;
             }
+        if (old)
+            s.HideShaderOverlay = true;
         return s;
     }
 
@@ -116,7 +121,7 @@ public sealed class GameSettings
         var sb = new StringBuilder("# Forza Motorsport 2 (fm2) settings; the launcher edits this file.\n");
         sb.Append($"profile={(profile.Length > 0 ? profile : "Player")}\n");
         sb.Append($"resolution={Resolution}\naspect={Aspect}\nfullscreen={B(Fullscreen)}\nvsync={B(Vsync)}\n");
-        sb.Append($"max_fps={Math.Clamp(MaxFps, 30, 360)}\nmsaa={Msaa}\nsmaa={Math.Clamp(Smaa, 0, 4)}\nanisotropy={Anisotropy}\nenhance={B(Enhance)}\nskip_intro={B(SkipIntro)}\nxbox_prompts={B(XboxPrompts)}\nhide_shader_overlay={B(HideShaderOverlay)}\nlow_performance={B(LowPerformance)}\nvertex_arena={B(VertexArena)}\nlanguage={Language}\n");
+        sb.Append($"max_fps={Math.Clamp(MaxFps, 30, 360)}\nmsaa={Msaa}\nsmaa={Math.Clamp(Smaa, 0, 4)}\nanisotropy={Anisotropy}\nenhance={B(Enhance)}\nskip_intro={B(SkipIntro)}\nxbox_prompts={B(XboxPrompts)}\nhide_shader_overlay={B(HideShaderOverlay)}\nlow_performance={B(LowPerformance)}\nvertex_arena={B(VertexArena)}\nlanguage={Language}\nsettings_rev=1\n");
         sb.Append($"wheel_strength={Math.Clamp(WheelStrength, 0, 100)}\nwheel_spring={Math.Clamp(WheelSpring, 0, 100)}\nwheel_reverse={B(WheelReverse)}\nwheel_rotation={Math.Clamp(WheelRotation, 0, 3600)}\n");
         var scale = Math.Clamp(RenderScale, 50, 100);
         var sharp = Math.Clamp(Sharpening, 0, 100);

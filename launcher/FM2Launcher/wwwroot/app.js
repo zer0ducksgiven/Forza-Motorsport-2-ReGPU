@@ -3,6 +3,7 @@
 
 const $ = (id) => document.getElementById(id)
 let state = null
+let customFps = false // "Custom…" picked in the Max FPS list
 let update = null
 let nextId = 1
 const pending = new Map()
@@ -127,7 +128,7 @@ $("tabs").onclick = (e) => {
   const b = e.target.closest("button")
   if (!b) return
   for (const t of $("tabs").children) t.classList.toggle("on", t === b)
-  for (const p of ["play", "profiles", "controls", "graphics", "settings", "report", "updates"]) $("page-" + p).hidden = p !== b.dataset.tab
+  for (const p of ["play", "profiles", "controls", "graphics", "settings", "report", "updates", "about"]) $("page-" + p).hidden = p !== b.dataset.tab
   // The Controls tab streams live input only while it's shown.
   if (host) call("controls.active", b.dataset.tab === "controls").catch(() => {})
   // Leaving Controls: it may have changed the force feedback settings, which this page saves with the rest.
@@ -137,6 +138,26 @@ $("tabs").onclick = (e) => {
   else if (b.dataset.tab === "report") loadReport()
   else if (b.dataset.tab !== "controls" && ((b.dataset.tab !== "play" && b.dataset.tab !== "graphics") || left === "controls")) refresh()
 }
+
+// The title opens the About page (no tab of its own).
+$("brand").onclick = () => {
+  for (const t of $("tabs").children) t.classList.remove("on")
+  for (const p of ["play", "profiles", "controls", "graphics", "settings", "report", "updates"]) $("page-" + p).hidden = true
+  $("page-about").hidden = false
+  if (host) call("controls.active", false).catch(() => {})
+  $("tabs").dataset.shown = "about"
+}
+$("brand").onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") $("brand").onclick() }
+
+// The selected profile's actions, in a pop-up opened from under the list.
+$("prof-manage").onclick = () => { $("prof-modal").hidden = false }
+$("prof-modal-close").onclick = () => { $("prof-modal").hidden = true }
+$("prof-modal").onclick = (e) => { if (e.target === $("prof-modal")) $("prof-modal").hidden = true }
+
+// The DLC packs' switches, in a pop-up.
+$("dlc-manage").onclick = () => { $("dlc-modal").hidden = false }
+$("dlc-modal-close").onclick = () => { $("dlc-modal").hidden = true }
+$("dlc-modal").onclick = (e) => { if (e.target === $("dlc-modal")) $("dlc-modal").hidden = true }
 
 // ---- drawing
 
@@ -167,7 +188,10 @@ function render() {
   // play and graphics pages
   fill($("resolution"), o.resolutions.map((r) => ({ value: r, name: r.replace("x", " × ") })), set.resolution)
   fill($("aspect"), o.aspects, set.aspect)
-  fill($("maxFps"), o.fps.map((f) => ({ value: f, name: f + " fps" })), set.maxFps)
+  const custom = customFps || !o.fps.includes(set.maxFps)
+  fill($("maxFps"), [...o.fps.map((f) => ({ value: f, name: f + " fps" })), { value: "custom", name: "Custom…" }], custom ? "custom" : set.maxFps)
+  $("customFpsField").hidden = !custom
+  if (document.activeElement !== $("customFps")) $("customFps").value = set.maxFps
   fill($("msaa"), o.msaa, set.msaa)
   fill($("smaa"), o.smaa, set.smaa)
   fill($("anisotropy"), o.anisotropy, set.anisotropy)
@@ -177,7 +201,7 @@ function render() {
   $("lang-note").textContent = o.missingLanguages.length
     ? `Your disc also has ${o.missingLanguages.join(", ")} text. Those can't be picked yet.` : ""
   for (const b of $("display").children) b.classList.toggle("on", (b.dataset.full === "1") === set.fullscreen)
-  for (const k of ["vsync", "enhance", "skipIntro", "xboxPrompts", "hideShaderOverlay", "lowPerformance", "vertexArena"]) $(k).classList.toggle("on", !!set[k])
+  for (const k of ["vsync", "skipIntro", "xboxPrompts", "hideShaderOverlay", "lowPerformance", "vertexArena"]) $(k).classList.toggle("on", !!set[k])
 
   const lang = o.languages.find((l) => l.id === set.language)
   const aspect = o.aspects.find((a) => a.value === set.aspect)
@@ -216,6 +240,9 @@ function render() {
   $("shaders-delete").disabled = !s.shaders.exists || s.checks.running
   $("shaders-rebuild").disabled = s.checks.running || !s.checks.exe
 
+  $("dlc-summary").textContent = s.dlc.length
+    ? `${s.dlc.filter((d) => d.enabled).length} of ${s.dlc.length} car and track packs on.`
+    : "No car or track packs installed."
   const dl = $("dlc")
   dl.replaceChildren()
   if (!s.dlc.length) dl.append(el("div", "empty", "No DLC installed. Add DLC to bring in the car and track packs."))
@@ -334,7 +361,15 @@ function change(patch) {
 }
 $("resolution").onchange = (e) => change({ resolution: e.target.value })
 $("aspect").onchange = (e) => change({ aspect: e.target.value })
-$("maxFps").onchange = (e) => change({ maxFps: +e.target.value })
+$("maxFps").onchange = (e) => {
+  customFps = e.target.value === "custom"
+  if (customFps) { render(); $("customFps").focus() } else change({ maxFps: +e.target.value })
+}
+$("customFps").onchange = (e) => {
+  const f = Math.min(360, Math.max(30, Math.round(+e.target.value) || 60))
+  e.target.value = f
+  change({ maxFps: f })
+}
 $("msaa").onchange = (e) => change({ msaa: +e.target.value })
 $("smaa").onchange = (e) => change({ smaa: +e.target.value })
 $("anisotropy").onchange = (e) => change({ anisotropy: +e.target.value })
@@ -342,7 +377,7 @@ $("renderScale").onchange = (e) => change({ renderScale: +e.target.value })
 $("sharpening").onchange = (e) => change({ sharpening: +e.target.value })
 $("language").onchange = (e) => change({ language: +e.target.value })
 $("display").onclick = (e) => { const b = e.target.closest("button"); if (b) change({ fullscreen: b.dataset.full === "1" }) }
-for (const k of ["vsync", "enhance", "skipIntro", "xboxPrompts", "hideShaderOverlay", "lowPerformance", "vertexArena"]) $(k).onclick = () => change({ [k]: !state.settings[k] })
+for (const k of ["vsync", "skipIntro", "xboxPrompts", "hideShaderOverlay", "lowPerformance", "vertexArena"]) $(k).onclick = () => change({ [k]: !state.settings[k] })
 
 // ---- actions
 
@@ -468,7 +503,11 @@ function renderProfiles() {
     if (p.active) title.append(el("span", "badge-on", "Playing"))
     main.append(title, el("div", "meta", `${p.photos} photo${p.photos === 1 ? "" : "s"} · ${size(p.bytes)} · ${p.lastPlayed ? new Date(p.lastPlayed).toLocaleDateString() : "never played"}`))
     it.append(main)
-    it.onclick = () => { profileSel = p.name; renderProfiles() }
+    it.onclick = () => {
+      profileSel = p.name
+      renderProfiles()
+      if (!p.active) profileCall("profiles.use", { name: p.name }, `Playing as ${p.name}.`).then(refresh)
+    }
     list.append(it)
   }
 
@@ -480,9 +519,8 @@ function renderProfiles() {
   info.replaceChildren()
   if (p) for (const [k, v] of [["Last played", when(p.lastPlayed)], ["Photos", String(p.photos)], ["Size", size(p.bytes)], ["XUID", p.xuid]])
     info.append(el("div", "k", k), el("div", "v", v))
-  for (const id of ["prof-use", "prof-backup", "prof-duplicate", "prof-rename", "prof-export", "prof-merge", "prof-delete"]) $(id).disabled = !p
+  for (const id of ["prof-backup", "prof-duplicate", "prof-rename", "prof-export", "prof-merge", "prof-delete"]) $(id).disabled = !p
   for (const id of ["prof-duplicate", "prof-rename", "prof-merge", "prof-delete", "prof-import"]) if (running) $(id).disabled = true
-  $("prof-use").disabled = !p || p.active
   $("prof-merge").disabled = !p || running || ps.length < 2
   $("prof-status").textContent = running ? "The game is running: close it to change profiles." : ""
 
@@ -527,9 +565,8 @@ async function profileCall(cmd, args, done) {
 }
 $("prof-new").onclick = async () => {
   const name = await askBox("New profile", "A name of up to 15 characters.", "Create", { input: "" })
-  if (name) { await profileCall("profiles.create", { name }, `${name} created. Pick "Play as this profile" to start it.`); profileSel = name; renderProfiles() }
+  if (name) { await profileCall("profiles.create", { name }, `${name} created. Pick it in the list to play it.`); profileSel = name; renderProfiles() }
 }
-$("prof-use").onclick = () => profileCall("profiles.use", { name: profileSel }, `Playing as ${profileSel} from now on.`).then(refresh)
 $("prof-backup").onclick = () => profileCall("profiles.backup", { name: profileSel }, `${profileSel} backed up.`)
 $("prof-duplicate").onclick = async () => {
   const newName = await askBox(`Duplicate ${profileSel}`, "The copy's name. It gets the whole career, garage, liveries and photos.", "Duplicate", { input: profileSel.slice(0, 12) + " 2" })
@@ -554,6 +591,7 @@ $("prof-merge").onclick = async () => {
 $("prof-delete").onclick = async () => {
   if (!await confirmBox(`Delete ${profileSel}?`, "Its career, garage, liveries and photos are deleted. A backup is made first, so you can restore it from the Backups list.", "Delete")) return
   await profileCall("profiles.delete", { name: profileSel }, "Deleted (a backup was kept).")
+  $("prof-modal").hidden = true
   refresh()
 }
 $("prof-backups-open").onclick = () => guarded(() => call("profiles.openBackups"))

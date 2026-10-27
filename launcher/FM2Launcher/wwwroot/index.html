@@ -7,10 +7,10 @@
 </head>
 <body>
   <header class="top">
-    <div class="brand">
+    <div class="brand" id="brand" role="button" tabindex="0" data-tip="About FM2:ReGPU">
       <img src="icon.png" alt="" class="mark">
       <div>
-        <div class="logo">FORZA MOTORSPORT 2 <span>ReGPU</span></div>
+        <div class="logo">FM2:<span>ReGPU</span></div>
         <div class="tag" id="version">Native PC port</div>
       </div>
     </div>
@@ -23,7 +23,7 @@
       <button data-tab="report">Report</button>
       <button data-tab="updates">Updates <span class="dot-badge" id="update-badge" hidden></span></button>
     </nav>
-    <button class="ghost small" id="discord" data-tip="Join the FM2 ReGPU Discord server.">Discord</button>
+    <button class="ghost small discord" id="discord" data-tip="Join the FM2 ReGPU Discord server.">Discord</button>
     <div class="chips" id="chips"></div>
   </header>
 
@@ -38,10 +38,6 @@
       <div class="toggle-row" data-tip="With a PlayStation controller (DualSense or DualShock 4) or a modern Xbox controller (Xbox One or Series X|S) the game shows that controller's button icons. Turn this on to keep the original Xbox 360 ones.">
         <div><div class="toggle-title">Enable original Xbox 360 button icons</div><div class="toggle-sub">Even with a PlayStation or modern Xbox controller</div></div>
         <button class="switch" id="xboxPrompts" role="switch"></button>
-      </div>
-      <div class="toggle-row" data-tip="The box in the top left that shows shaders being compiled. Turning it off doesn't stop the compiling, only hides it.">
-        <div><div class="toggle-title">Hide shader compile pop-up</div><div class="toggle-sub">The box in the top left of the screen</div></div>
-        <button class="switch" id="hideShaderOverlay" role="switch"></button>
       </div>
       <label class="field" data-tip="The language of the game's menus and text, from the string tables on your disc.">
         <span>Language</span>
@@ -58,6 +54,33 @@
         <button class="launch" id="launch" data-tip="Saves these settings and starts the game.">Play</button>
         <div class="status" id="status"></div>
       </div>
+    </section>
+  </main>
+
+  <!-- ABOUT -->
+  <main class="page grid2" id="page-about" hidden>
+    <section class="panel notes">
+      <div class="panel-head"><h2>About FM2:ReGPU</h2></div>
+      <p>A native PC port of <b>Forza Motorsport 2</b> (Xbox 360). Nothing is emulated: the game's PowerPC code is statically recompiled to x64, it runs on our own implementation of the Xbox 360 kernel, and a native Direct3D 12 renderer replaces the console's GPU.</p>
+      <p>No game data is included: it plays from your own copy of the disc.</p>
+      <p>For support, or to get involved, join the Discord server.</p>
+    </section>
+    <section class="panel notes">
+      <div class="panel-head"><h2>Credits</h2></div>
+      <h3>Development</h3>
+      <ul>
+        <li><b>ZeroDucksGiven</b>: creator and lead developer</li>
+        <li><b>Aiden-Piercee</b>: contributor</li>
+        <li><b>tankyx</b>: contributor</li>
+      </ul>
+      <h3>Thanks to</h3>
+      <ul>
+        <li><b>Xenia</b>: its research into the Xbox 360 GPU (BSD licence)</li>
+        <li><b>XenonRecomp</b> (hedge-dev): the recompiler the game code is built with</li>
+        <li><b>Kenney</b>: PlayStation button icons (Input Prompts, CC0)</li>
+        <li><b>Zacksly</b>: Xbox One / Series icons and controller pictures (CC BY 3.0)</li>
+        <li>Everyone who tests builds and sends in bug reports</li>
+      </ul>
     </section>
   </main>
 
@@ -104,17 +127,18 @@
         <span>Sharpening</span>
         <select id="sharpening"></select>
       </label>
-      <div class="toggle-row" data-tip="An extra local-contrast pass on the final picture. Experimental: it can look too strong on some tracks.">
-        <div><div class="toggle-title">Enhanced lighting <span class="badge">beta</span></div><div class="toggle-sub">Extra contrast on the final frame</div></div>
-        <button class="switch" id="enhance" role="switch"></button>
-      </div>
     </section>
 
+    <div class="stack">
     <section class="panel">
       <div class="panel-head"><h2>Performance</h2></div>
       <label class="field" data-tip="The frame-rate cap. The game's physics run at this rate too, so very high caps need a fast CPU. With VSync on, the display's refresh rate also limits it.">
         <span>Max FPS</span>
         <select id="maxFps"></select>
+      </label>
+      <label class="field" id="customFpsField" data-tip="Any cap from 30 to 360 fps." hidden>
+        <span>Custom FPS cap</span>
+        <input id="customFps" type="number" min="30" max="360" step="1">
       </label>
       <div class="toggle-row" data-tip="Waits for the display's refresh: no tearing, slightly more input lag.">
         <div><div class="toggle-title">VSync</div><div class="toggle-sub">Sync frames to the display</div></div>
@@ -128,44 +152,33 @@
 
     <section class="panel">
       <div class="panel-head"><h2>Debug</h2></div>
-      <div class="toggle-row" data-tip="Keeps the game's large vertex buffers (cars, track) in your graphics card's own memory and copies them again only when the game changes them. Faster, most of all at high resolutions and on handhelds and integrated graphics. Leave it on; turn it off only if car bodies or track pieces look broken, and say so in a bug report.">
+      <div class="toggle-row" data-tip="Keeps the game's large vertex buffers (cars, track) in your graphics card's own memory and copies them again only when the game changes them. Faster, most of all at high resolutions and on handhelds and integrated graphics. If you don't know what this does, leave it ON, unless one of the devs tells you to turn it off.">
         <div><div class="toggle-title">Vertex arena</div><div class="toggle-sub">Vertex data in video memory</div></div>
         <button class="switch" id="vertexArena" role="switch"></button>
       </div>
+      <div class="toggle-row" data-tip="The box in the top left that shows shaders being compiled. Turning it off doesn't stop the compiling, only hides it.">
+        <div><div class="toggle-title">Hide shader compile pop-up</div><div class="toggle-sub">The box in the top left of the screen</div></div>
+        <button class="switch" id="hideShaderOverlay" role="switch"></button>
+      </div>
     </section>
+    </div>
   </main>
 
   <!-- PROFILES -->
-  <main class="page grid3" id="page-profiles" hidden>
+  <main class="page grid2" id="page-profiles" hidden>
     <section class="panel">
       <div class="panel-head">
         <h2>Profiles</h2>
         <button class="primary small" id="prof-new" data-tip="Makes an empty profile. The game starts a new save in it the first time you play it.">New</button>
       </div>
-      <p class="hint">Each profile keeps its own career, garage, liveries and photos.</p>
+      <p class="hint">Each profile keeps its own career, garage, liveries and photos. Pick one to play it.</p>
       <div class="list" id="prof-list"></div>
       <div class="buttons-row">
+        <button class="ghost small" id="prof-manage" data-tip="Play as, back up, duplicate, rename, export or delete the selected profile.">Manage…</button>
         <button class="ghost small" id="prof-import" data-tip="Adds a profile from a zip made with Export or Back up (yours or someone else's).">Import…</button>
         <button class="ghost small" data-open="user" data-tip="Opens Documents\fm2. Profiles are in its profiles folder.">Open folder</button>
+        <button class="ghost small photos" id="photos-open" data-tip="Opens the Photos window: every profile's Photo Mode pictures, to view, copy or save.">Photos</button>
       </div>
-      <div class="buttons-col">
-        <button class="ghost" id="photos-open" data-tip="Opens the Photos window: every profile's Photo Mode pictures, to view, copy or save.">Photos</button>
-      </div>
-    </section>
-
-    <section class="panel">
-      <div class="panel-head"><h2 id="prof-title">Profile</h2><span class="badge-on" id="prof-active" hidden>Playing</span></div>
-      <div class="kv" id="prof-info"></div>
-      <div class="buttons-col">
-        <button class="primary" id="prof-use" data-tip="Plays this profile from now on.">Play as this profile</button>
-        <button class="ghost" id="prof-backup" data-tip="Saves a zip of this profile in Documents\fm2\backups. Restore it below whenever you like.">Back up now</button>
-        <button class="ghost" id="prof-duplicate" data-tip="A full copy under a new name: career, garage, liveries and photos. Handy before trying cheats.">Duplicate…</button>
-        <button class="ghost" id="prof-rename" data-tip="Renames the profile and its folder. Its saves keep working.">Rename…</button>
-        <button class="ghost" id="prof-export" data-tip="Saves a zip of this profile wherever you like, to move it to another PC or share it.">Export…</button>
-        <button class="ghost" id="prof-merge" data-tip="Copies the saved photos of another profile into this one. Careers and garages can't be merged: each is one encrypted save.">Merge photos from…</button>
-        <button class="ghost danger" id="prof-delete" data-tip="Deletes the profile. It's backed up first, so you can restore it from the list below.">Delete</button>
-      </div>
-      <div class="status" id="prof-status"></div>
     </section>
 
     <section class="panel">
@@ -203,38 +216,39 @@
   </main>
 
   <!-- SETTINGS -->
-  <main class="page grid3" id="page-settings" hidden>
+  <main class="page grid2" id="page-settings" hidden>
     <div class="stack">
       <section class="panel">
         <div class="panel-head"><h2>Shader cache</h2></div>
         <p class="hint">Every shader in the game is compiled on the first start and kept here, so races don't stutter later.</p>
-        <div class="stats" id="shader-stats"></div>
-        <div class="buttons-col">
-          <button class="ghost" id="shaders-rebuild" data-tip="Deletes the cache and starts the game, which compiles everything again behind the loading screen (a few minutes, then up to a minute of black screen while pipelines build). Use it if graphics look broken after an update.">Rebuild now</button>
-          <button class="ghost danger" id="shaders-delete" data-tip="Deletes the compiled shaders and pipelines. The next start rebuilds them. Nothing else is touched: saves and settings stay.">Delete cache</button>
-          <button class="ghost" data-open="shaders" data-tip="Opens Documents\fm2, where the cache lives.">Open folder</button>
+        <div class="stats" id="shader-stats" hidden></div>
+        <div class="buttons-row">
+          <button class="ghost small" id="shaders-rebuild" data-tip="Deletes the cache and starts the game, which compiles everything again behind the loading screen (a few minutes, then up to a minute of black screen while pipelines build). Use it if graphics look broken after an update.">Rebuild now</button>
+          <button class="ghost small danger" id="shaders-delete" data-tip="Deletes the compiled shaders and pipelines. The next start rebuilds them. Nothing else is touched: saves and settings stay.">Delete cache</button>
+          <button class="ghost small" data-open="shaders" data-tip="Opens Documents\fm2, where the cache lives.">Open folder</button>
         </div>
       </section>
 
       <section class="panel">
         <div class="panel-head"><h2>Folders</h2></div>
         <div class="kv" id="folders"></div>
-        <div class="buttons-col">
-          <button class="ghost" data-open="user" data-tip="Saves, settings, caches, DLC and the title update.">Open user folder</button>
-          <button class="ghost" data-open="install" data-tip="The installed game and this launcher.">Open install folder</button>
-          <button class="ghost" data-open="log" data-tip="out\play.log: send it with bug reports.">Open logs</button>
+        <div class="buttons-row">
+          <button class="ghost small" data-open="user" data-tip="Saves, settings, caches, DLC and the title update.">Open user folder</button>
+          <button class="ghost small" data-open="install" data-tip="The installed game and this launcher.">Open install folder</button>
+          <button class="ghost small" data-open="log" data-tip="out\play.log: send it with bug reports.">Open logs</button>
         </div>
       </section>
     </div>
 
+    <div class="stack">
     <section class="panel">
       <div class="panel-head">
         <h2>DLC packs</h2>
         <button class="primary small" id="dlc-add" data-tip="Installs DLC packages (the files as downloaded from Xbox Live) into the game's DLC folder. They appear in the game next time it starts.">Add DLC</button>
       </div>
-      <p class="hint">Cars and tracks packs. Switch one off to keep it out of the game without deleting it.</p>
-      <div class="list" id="dlc"></div>
+      <p class="hint" id="dlc-summary"></p>
       <div class="buttons-row">
+        <button class="ghost small" id="dlc-manage" data-tip="Every installed pack, each with a switch to keep it out of the game without deleting it.">Manage packs…</button>
         <button class="ghost small" data-open="dlc" data-tip="Opens Documents\fm2\dlc.">Open DLC folder</button>
       </div>
     </section>
@@ -244,11 +258,12 @@
         <h2>Forza Plus 2 <span class="badge">mod</span></h2>
         <button class="primary small" id="pfp-install" data-tip="Copies Project Forza Plus 2 into Documents\fm2\mods from its unzipped folder (the one with &quot;Main Game Changes&quot; in it). Your game files stay as they are.">Install</button>
       </div>
-      <p class="hint">Project Forza Plus 2: reworked cars, forced induction, PI classes and career modes. Use a separate profile for it: its saves don't mix with the original game's.</p>
+      <p class="hint">Project Forza Plus 2: reworked cars, forced induction, PI classes and career modes. Use a separate profile for it: its saves don't mix with the original game's.</p><p class="hint note">Bugs in the mod that also happen on a real console are the mod's own: please report those to its authors, not to us.</p>
       <div class="progress" id="pfp-progress"><div class="bar"></div></div>
       <p class="hint" id="pfp-status"></p>
       <div class="list" id="pfp"></div>
     </section>
+    </div>
 
   </main>
 
@@ -304,6 +319,32 @@
       <div class="notes" id="notes"><div class="empty">Checking GitHub…</div></div>
     </section>
   </main>
+
+  <div class="modal" id="prof-modal" hidden>
+    <div class="dialog prof-dialog">
+      <div class="panel-head"><h2 id="prof-title">Profile</h2><span class="badge-on" id="prof-active" hidden>Playing</span>
+        <button class="ghost small close" id="prof-modal-close" aria-label="Close">✕</button></div>
+      <div class="kv" id="prof-info"></div>
+      <div class="buttons-col">
+        <button class="ghost" id="prof-backup" data-tip="Saves a zip of this profile in Documents\fm2\backups. Restore it below whenever you like.">Back up now</button>
+        <button class="ghost" id="prof-duplicate" data-tip="A full copy under a new name: career, garage, liveries and photos. Handy before trying cheats.">Duplicate…</button>
+        <button class="ghost" id="prof-rename" data-tip="Renames the profile and its folder. Its saves keep working.">Rename…</button>
+        <button class="ghost" id="prof-export" data-tip="Saves a zip of this profile wherever you like, to move it to another PC or share it.">Export…</button>
+        <button class="ghost" id="prof-merge" data-tip="Copies the saved photos of another profile into this one. Careers and garages can't be merged: each is one encrypted save.">Merge photos from…</button>
+        <button class="ghost danger" id="prof-delete" data-tip="Deletes the profile. It's backed up first, so you can restore it from the list below.">Delete</button>
+      </div>
+      <div class="status" id="prof-status"></div>
+    </div>
+  </div>
+
+  <div class="modal" id="dlc-modal" hidden>
+    <div class="dialog dlc-dialog">
+      <div class="panel-head"><h2>DLC packs</h2>
+        <button class="ghost small close" id="dlc-modal-close" aria-label="Close">✕</button></div>
+      <p class="hint">Switch a pack off to keep it out of the game without deleting it.</p>
+      <div class="list" id="dlc"></div>
+    </div>
+  </div>
 
   <div class="modal" id="confirm" hidden>
     <div class="dialog">

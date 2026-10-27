@@ -67,7 +67,7 @@ void Load()
         else if (key == "max_fps")
             g_settings.maxFps = uint32_t(atoi(value.c_str()));
         else if (key == "enhance")
-            g_settings.enhance = value == "1";
+            ; // enhanced lighting: off (FM2_ENHANCE=1 only) until the enhancements update
         else if (key == "language")
             g_settings.language = uint32_t(atoi(value.c_str()));
         else if (key == "skip_intro")
@@ -237,6 +237,7 @@ void SaveSettings()
     out << "wheel_reverse=" << (s.wheelReverse ? 1 : 0) << "\n";
     out << "wheel_rotation=" << s.wheelRotation << "\n";
     out << "language=" << s.language << "\n";
+    out << "settings_rev=1\n"; // see the launcher's GameSettings.Load
     out << "msaa=" << s.msaa << "\n";
     out << "smaa=" << s.smaa << "\n";
     out << "anisotropy=" << s.anisotropy << "\n";
