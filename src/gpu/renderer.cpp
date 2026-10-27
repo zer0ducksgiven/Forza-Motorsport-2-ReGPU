@@ -847,6 +847,29 @@ uint64_t Fnv(const void* data, size_t bytes, uint64_t h = 0xCBF29CE484222325ull)
     return h;
 }
 
+// Every byte of the data, four independent 64-bit lanes at a time (the dword-by-dword chain below
+// waits on each multiply: hashing every index buffer of every frame was ~6% of the command processor).
+uint64_t FullHash(const uint8_t* data, size_t bytes)
+{
+    uint64_t a = 0xCBF29CE484222325ull ^ bytes, b = 0x9E3779B97F4A7C15ull, c = 0xC2B2AE3D27D4EB4Full, d = 0x165667B19E3779F9ull;
+    size_t i = 0;
+    for (; i + 32 <= bytes; i += 32)
+    {
+        uint64_t v[4];
+        memcpy(v, data + i, 32);
+        a = (a ^ v[0]) * 0xFF51AFD7ED558CCDull;
+        b = (b ^ v[1]) * 0xC4CEB9FE1A85EC53ull;
+        c = (c ^ v[2]) * 0xFF51AFD7ED558CCDull;
+        d = (d ^ v[3]) * 0xC4CEB9FE1A85EC53ull;
+        a ^= a >> 29; b ^= b >> 31; c ^= c >> 29; d ^= d >> 31;
+    }
+    for (; i < bytes; i++)
+        a = (a ^ data[i]) * 0x100000001B3ull;
+    uint64_t h = a ^ (b * 0x9E3779B97F4A7C15ull) ^ (c * 0xC2B2AE3D27D4EB4Full) ^ (d * 0x165667B19E3779F9ull);
+    h = (h ^ (h >> 33)) * 0xFF51AFD7ED558CCDull;
+    return h ^ (h >> 33);
+}
+
 // Sampled hash for large texture sources: every 64th dword plus the ends.
 // (Word-wise: it runs for every small buffer of every draw.)
 uint64_t ContentHash(const uint8_t* data, size_t bytes, size_t stride = 256)
@@ -2041,7 +2064,7 @@ bool GetIndexBufferLocked(uint32_t base, uint32_t count, bool is32, uint32_t end
     // Every index, not every 256 bytes: a track section streamed in at the same address and size
     // can differ only between the sampled words, and its chunk of road then drew the old indices
     // (black wedges on Sebring Club after a lap or two, report #4).
-    const uint64_t hash = ContentHash(src, bytes, 4);
+    const uint64_t hash = FullHash(src, bytes);
     if (!inserted && hash == e.hash)
         return true;
     // Swap into the upload ring (as the vertex shader would read them), then copy.
