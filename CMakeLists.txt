@@ -87,6 +87,21 @@ add_custom_command(OUTPUT "${FM2_GENERATED}/fsr1_cs.h"
     DEPENDS "${CMAKE_SOURCE_DIR}/src/gpu/fsr1.hlsl" "${CMAKE_SOURCE_DIR}/tools/embed_hlsl.py"
     COMMENT "Compiling FSR 1 shaders")
 list(APPEND FM2_SOURCES "${FM2_GENERATED}/fsr1_cs.h")
+# SMAA 1x (Jimenez et al., MIT; thirdparty/smaa, kept in the repository): its three passes once per preset.
+set(FM2_SMAA_ENTRIES "")
+foreach(preset Low Medium High Ultra)
+    string(TOUPPER ${preset} define)
+    foreach(pass Edges Weights Blend)
+        list(APPEND FM2_SMAA_ENTRIES "Smaa${pass}${preset}:Smaa${pass}:SMAA_PRESET_${define}")
+    endforeach()
+endforeach()
+string(REPLACE ";" "," FM2_SMAA_ENTRIES "${FM2_SMAA_ENTRIES}")
+add_custom_command(OUTPUT "${FM2_GENERATED}/smaa_cs.h"
+    COMMAND py -3 -I "${CMAKE_SOURCE_DIR}/tools/embed_hlsl.py" "${CMAKE_SOURCE_DIR}/src/gpu/smaa_passes.hlsl" "${FM2_GENERATED}/smaa_cs.h"
+            "${FM2_SMAA_ENTRIES}" "${CMAKE_SOURCE_DIR}/thirdparty/smaa"
+    DEPENDS "${CMAKE_SOURCE_DIR}/src/gpu/smaa_passes.hlsl" "${CMAKE_SOURCE_DIR}/thirdparty/smaa/SMAA.hlsl" "${CMAKE_SOURCE_DIR}/tools/embed_hlsl.py"
+    COMMENT "Compiling SMAA shaders")
+list(APPEND FM2_SOURCES "${FM2_GENERATED}/smaa_cs.h")
 set(FM2_DLSS "${CMAKE_SOURCE_DIR}/thirdparty/dlss")
 if(NOT EXISTS "${FM2_DLSS}/include/nvsdk_ngx.h")
     message(FATAL_ERROR "thirdparty/dlss is missing: clone NVIDIA/DLSS v310.9.16 there (see README)")
@@ -95,7 +110,7 @@ add_executable(fm2 ${FM2_SOURCES} "${CMAKE_SOURCE_DIR}/src/fm2.rc")
 if(FM2_TITLE_UPDATE)
     target_compile_definitions(fm2 PRIVATE FM2_TITLE_UPDATE=1)
 endif()
-target_include_directories(fm2 PRIVATE src "${FM2_GENERATED}" "${FM2_DLSS}/include")
+target_include_directories(fm2 PRIVATE src "${FM2_GENERATED}" "${FM2_DLSS}/include" "${CMAKE_SOURCE_DIR}/thirdparty/smaa/Textures")
 target_link_libraries(fm2 PRIVATE "${FM2_DLSS}/lib/Windows_x86_64/x64/nvsdk_ngx_s.lib" "${FM2_FFX}/signedbin/amd_fidelityfx_loader_dx12.lib")
 target_include_directories(fm2 PRIVATE "${FM2_FFX}/api/include" "${FM2_FFX}/upscalers/include")
 add_custom_command(TARGET fm2 POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different

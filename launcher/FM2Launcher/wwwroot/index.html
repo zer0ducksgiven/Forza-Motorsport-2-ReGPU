@@ -18,6 +18,7 @@
       <button data-tab="play" class="on">Play</button>
       <button data-tab="profiles">Profiles</button>
       <button data-tab="controls">Controls</button>
+      <button data-tab="graphics">Graphics</button>
       <button data-tab="settings">Settings</button>
       <button data-tab="report">Report</button>
       <button data-tab="updates">Updates <span class="dot-badge" id="update-badge" hidden></span></button>
@@ -27,7 +28,41 @@
   </header>
 
   <!-- PLAY -->
-  <main class="page grid3" id="page-play">
+  <main class="page grid2" id="page-play">
+    <section class="panel">
+      <div class="panel-head"><h2>Game</h2></div>
+      <div class="toggle-row" data-tip="Skips the legal screen and the Turn 10, Microsoft, Dolby and Forza videos (about 100 seconds) and goes straight to the title screen.">
+        <div><div class="toggle-title">Skip intro videos</div><div class="toggle-sub">Straight to "Press START"</div></div>
+        <button class="switch" id="skipIntro" role="switch"></button>
+      </div>
+      <div class="toggle-row" data-tip="With a PlayStation controller (DualSense or DualShock 4) or a modern Xbox controller (Xbox One or Series X|S) the game shows that controller's button icons. Turn this on to keep the original Xbox 360 ones.">
+        <div><div class="toggle-title">Enable original Xbox 360 button icons</div><div class="toggle-sub">Even with a PlayStation or modern Xbox controller</div></div>
+        <button class="switch" id="xboxPrompts" role="switch"></button>
+      </div>
+      <div class="toggle-row" data-tip="The box in the top left that shows shaders being compiled. Turning it off doesn't stop the compiling, only hides it.">
+        <div><div class="toggle-title">Hide shader compile pop-up</div><div class="toggle-sub">The box in the top left of the screen</div></div>
+        <button class="switch" id="hideShaderOverlay" role="switch"></button>
+      </div>
+      <label class="field" data-tip="The language of the game's menus and text, from the string tables on your disc.">
+        <span>Language</span>
+        <select id="language"></select>
+      </label>
+      <div class="hint" id="lang-note"></div>
+    </section>
+
+    <section class="panel launch-panel">
+      <div class="panel-head"><h2>Ready</h2></div>
+      <div class="summary" id="summary"></div>
+      <div class="checklist" id="checklist"></div>
+      <div class="launch-box">
+        <button class="launch" id="launch" data-tip="Saves these settings and starts the game.">Play</button>
+        <div class="status" id="status"></div>
+      </div>
+    </section>
+  </main>
+
+  <!-- GRAPHICS -->
+  <main class="page grid3" id="page-graphics" hidden>
     <section class="panel">
       <div class="panel-head"><h2>Display</h2></div>
       <label class="field" data-tip="The size the game renders at. Your display's own modes from 1280x720 up.">
@@ -48,18 +83,14 @@
     </section>
 
     <section class="panel">
-      <div class="panel-head"><h2>Graphics &amp; game</h2></div>
-      <label class="field" data-tip="The frame-rate cap. The game's physics run at this rate too, so very high caps need a fast CPU. With VSync on, the display's refresh rate also limits it.">
-        <span>Max FPS</span>
-        <select id="maxFps"></select>
-      </label>
-      <div class="toggle-row" data-tip="Waits for the display's refresh: no tearing, slightly more input lag.">
-        <div><div class="toggle-title">VSync</div><div class="toggle-sub">Sync frames to the display</div></div>
-        <button class="switch" id="vsync" role="switch"></button>
-      </div>
-      <label class="field" data-tip="Smooths jagged edges. Each step costs GPU time: 4x is a good balance on most cards.">
-        <span>Anti-aliasing</span>
+      <div class="panel-head"><h2>Anti-aliasing &amp; image</h2></div>
+      <label class="field" data-tip="Multisample anti-aliasing: smooths the edges of objects as they are drawn. Each step costs GPU time: 4x is a good balance on most cards. Doesn't smooth fences, trees or crowds (see SMAA).">
+        <span>MSAA</span>
         <select id="msaa"></select>
+      </label>
+      <label class="field" data-tip="SMAA 1x: smooths every edge in the finished picture, including fences, trees and crowds that MSAA misses. Works with any MSAA level. Higher presets find more edges for a little more GPU time; it can soften fine textures slightly.">
+        <span>SMAA</span>
+        <select id="smaa"></select>
       </label>
       <label class="field" data-tip="Keeps road and ground textures sharp when seen at a low angle, ahead of the car. Costs a little GPU time; 16x is the default.">
         <span>Anisotropic filtering</span>
@@ -77,36 +108,21 @@
         <div><div class="toggle-title">Enhanced lighting <span class="badge">beta</span></div><div class="toggle-sub">Extra contrast on the final frame</div></div>
         <button class="switch" id="enhance" role="switch"></button>
       </div>
-      <div class="toggle-row" data-tip="Skips the legal screen and the Turn 10, Microsoft, Dolby and Forza videos (about 100 seconds) and goes straight to the title screen.">
-        <div><div class="toggle-title">Skip intro videos</div><div class="toggle-sub">Straight to "Press START"</div></div>
-        <button class="switch" id="skipIntro" role="switch"></button>
-      </div>
-      <div class="toggle-row" data-tip="With a PlayStation controller (DualSense or DualShock 4) or a modern Xbox controller (Xbox One or Series X|S) the game shows that controller's button icons. Turn this on to keep the original Xbox 360 ones.">
-        <div><div class="toggle-title">Enable original Xbox 360 button icons</div><div class="toggle-sub">Even with a PlayStation or modern Xbox controller</div></div>
-        <button class="switch" id="xboxPrompts" role="switch"></button>
-      </div>
-      <div class="toggle-row" data-tip="The box in the top left that shows shaders being compiled. Turning it off doesn't stop the compiling, only hides it.">
-        <div><div class="toggle-title">Hide shader compile pop-up</div><div class="toggle-sub">The box in the top left of the screen</div></div>
-        <button class="switch" id="hideShaderOverlay" role="switch"></button>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head"><h2>Performance</h2></div>
+      <label class="field" data-tip="The frame-rate cap. The game's physics run at this rate too, so very high caps need a fast CPU. With VSync on, the display's refresh rate also limits it.">
+        <span>Max FPS</span>
+        <select id="maxFps"></select>
+      </label>
+      <div class="toggle-row" data-tip="Waits for the display's refresh: no tearing, slightly more input lag.">
+        <div><div class="toggle-title">VSync</div><div class="toggle-sub">Sync frames to the display</div></div>
+        <button class="switch" id="vsync" role="switch"></button>
       </div>
       <div class="toggle-row" data-tip="For older CPUs (for example AMD FX or early Intel Core). Turns off renderer optimisations that speed up modern PCs but slow down old ones. Leave it off on a recent PC.">
         <div><div class="toggle-title">Low performance mode</div><div class="toggle-sub">For older CPUs</div></div>
         <button class="switch" id="lowPerformance" role="switch"></button>
-      </div>
-      <label class="field" data-tip="The language of the game's menus and text, from the string tables on your disc.">
-        <span>Language</span>
-        <select id="language"></select>
-      </label>
-      <div class="hint" id="lang-note"></div>
-    </section>
-
-    <section class="panel launch-panel">
-      <div class="panel-head"><h2>Ready</h2></div>
-      <div class="summary" id="summary"></div>
-      <div class="checklist" id="checklist"></div>
-      <div class="launch-box">
-        <button class="launch" id="launch" data-tip="Saves these settings and starts the game.">Play</button>
-        <div class="status" id="status"></div>
       </div>
     </section>
   </main>

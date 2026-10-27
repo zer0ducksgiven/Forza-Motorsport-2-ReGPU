@@ -29,6 +29,9 @@ struct Settings
     uint32_t wheelRotation = 0;
     uint32_t language = 1;               // the console language the game sees (XGetLanguage: 1 English, 3 German, ...)
     uint32_t msaa = 1;                   // anti-aliasing samples per pixel: 1 (off), 2, 4 or 8
+    // SMAA 1x on the whole frame as it is shown (after MSAA, before FSR 1): 0 off, 1 low, 2 medium,
+    // 3 high, 4 ultra (the SMAA presets).
+    uint32_t smaa = 0;
     uint32_t anisotropy = 16;            // anisotropic filtering of surface textures: 0 (off: trilinear), 2, 4, 8 or 16
     // Upscaling. FSR 1 (the launcher's): the whole frame, HUD included, renders at render_scale
     // and is upscaled (EASU) and sharpened (RCAS) as it is shown; at 100% it is only sharpened.

@@ -88,6 +88,8 @@ void Load()
             g_settings.wheelRotation = uint32_t(atoi(value.c_str()));
         else if (key == "msaa")
             g_settings.msaa = uint32_t(atoi(value.c_str()));
+        else if (key == "smaa")
+            g_settings.smaa = uint32_t(atoi(value.c_str()));
         else if (key == "anisotropy")
             g_settings.anisotropy = uint32_t(atoi(value.c_str()));
         else if (key == "upscaler")
@@ -155,6 +157,9 @@ void Load()
     // the first scene resolve.
     if (g_settings.upscaler == Settings::Upscaler::Dlss || g_settings.upscaler == Settings::Upscaler::Fsr3)
         g_settings.msaa = 1;
+    if (const char* v = getenv("FM2_SMAA"))
+        g_settings.smaa = uint32_t(atoi(v));
+    g_settings.smaa = std::min<uint32_t>(g_settings.smaa, 4);
     if (const char* v = getenv("FM2_ANISOTROPY"))
         g_settings.anisotropy = uint32_t(atoi(v));
     {
@@ -230,6 +235,7 @@ void SaveSettings()
     out << "wheel_rotation=" << s.wheelRotation << "\n";
     out << "language=" << s.language << "\n";
     out << "msaa=" << s.msaa << "\n";
+    out << "smaa=" << s.smaa << "\n";
     out << "anisotropy=" << s.anisotropy << "\n";
     out << "upscaler=" << UpscalerName(s.upscaler) << "\n";
     out << "upscale_quality=" << s.quality << "\n";

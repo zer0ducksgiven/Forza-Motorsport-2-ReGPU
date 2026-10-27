@@ -127,7 +127,7 @@ $("tabs").onclick = (e) => {
   const b = e.target.closest("button")
   if (!b) return
   for (const t of $("tabs").children) t.classList.toggle("on", t === b)
-  for (const p of ["play", "profiles", "controls", "settings", "report", "updates"]) $("page-" + p).hidden = p !== b.dataset.tab
+  for (const p of ["play", "profiles", "controls", "graphics", "settings", "report", "updates"]) $("page-" + p).hidden = p !== b.dataset.tab
   // The Controls tab streams live input only while it's shown.
   if (host) call("controls.active", b.dataset.tab === "controls").catch(() => {})
   // Leaving Controls: it may have changed the force feedback settings, which this page saves with the rest.
@@ -135,7 +135,7 @@ $("tabs").onclick = (e) => {
   $("tabs").dataset.shown = b.dataset.tab
   if (b.dataset.tab === "profiles") loadProfiles()
   else if (b.dataset.tab === "report") loadReport()
-  else if (b.dataset.tab !== "controls" && (b.dataset.tab !== "play" || left === "controls")) refresh()
+  else if (b.dataset.tab !== "controls" && ((b.dataset.tab !== "play" && b.dataset.tab !== "graphics") || left === "controls")) refresh()
 }
 
 // ---- drawing
@@ -164,11 +164,12 @@ function render() {
   const zeroCopyTip = "Fast memory sharing between the game and your GPU (Direct3D 12 zero-copy). The game found it could not use it, so it copies data every frame: lower performance and hitches. Updating Windows and your GPU driver usually fixes it (Windows 11 23H2 or newer with a 2024 or newer driver works best)."
   if (s.system && !s.system.zeroCopy) chip("warn", "Reduced performance", zeroCopyTip)
 
-  // play page
+  // play and graphics pages
   fill($("resolution"), o.resolutions.map((r) => ({ value: r, name: r.replace("x", " × ") })), set.resolution)
   fill($("aspect"), o.aspects, set.aspect)
   fill($("maxFps"), o.fps.map((f) => ({ value: f, name: f + " fps" })), set.maxFps)
   fill($("msaa"), o.msaa, set.msaa)
+  fill($("smaa"), o.smaa, set.smaa)
   fill($("anisotropy"), o.anisotropy, set.anisotropy)
   fill($("renderScale"), o.renderScale, set.renderScale)
   fill($("sharpening"), o.sharpening, set.sharpening)
@@ -185,7 +186,9 @@ function render() {
   line("Profile", set.profile || "Player")
   line("Display", `${set.resolution.replace("x", " × ")}, ${set.fullscreen ? "fullscreen" : "windowed"}${aspect && set.aspect !== "auto" ? ", " + aspect.name : ""}`)
   line("Frame rate", `${set.maxFps} fps cap, VSync ${set.vsync ? "on" : "off"}`)
-  line("Anti-aliasing", (o.msaa.find((m) => m.value === set.msaa) || { name: "Off" }).name)
+  const msaaName = (o.msaa.find((m) => m.value === set.msaa) || { name: "Off" }).name
+  const smaaName = set.smaa ? "SMAA " + (o.smaa.find((m) => m.value === set.smaa) || { name: "" }).name : ""
+  line("Anti-aliasing", set.msaa > 1 && set.smaa ? `${msaaName} + ${smaaName}` : set.smaa ? smaaName : msaaName)
   line("Language", lang ? lang.name : "English")
   line("Intro", set.skipIntro ? "skipped" : "plays")
   if (s.wheel && s.wheel.found) line("Wheel", `${s.wheel.name}, force feedback ${set.wheelStrength}%`)
@@ -333,6 +336,7 @@ $("resolution").onchange = (e) => change({ resolution: e.target.value })
 $("aspect").onchange = (e) => change({ aspect: e.target.value })
 $("maxFps").onchange = (e) => change({ maxFps: +e.target.value })
 $("msaa").onchange = (e) => change({ msaa: +e.target.value })
+$("smaa").onchange = (e) => change({ smaa: +e.target.value })
 $("anisotropy").onchange = (e) => change({ anisotropy: +e.target.value })
 $("renderScale").onchange = (e) => change({ renderScale: +e.target.value })
 $("sharpening").onchange = (e) => change({ sharpening: +e.target.value })

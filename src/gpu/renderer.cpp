@@ -40,6 +40,9 @@
 #include "gpu/fsr3.h"
 #include "gpu/recorded_list.h"
 #include "fsr1_cs.h"
+#include "smaa_cs.h"
+#include "AreaTex.h"
+#include "SearchTex.h"
 #include <DirectXPackedVector.h>
 #include "live_switch.h"
 #include "input/wheel.h"
@@ -5363,6 +5366,253 @@ ID3D12Resource* Fsr1Present(const ResolvedTexture& image)
     return g_upscale.presentOut.Get();
 }
 
+// ---- SMAA 1x -------------------------------------------------------------------------------
+// The launcher's SMAA setting: SMAA 1x on the whole frame as the title resolved it (after MSAA,
+// before FSR 1), HUD included like FSR 1. Three compute passes: luma edges, blending weights
+// (SMAA's area and search lookup textures), neighbourhood blending into a texture of its own,
+// shown instead (the title reads its image back in later frames).
+struct Smaa
+{
+    bool tried = false, ready = false, uploaded = false;
+    ComPtr<ID3D12RootSignature> root;
+    ComPtr<ID3D12PipelineState> edges[4], weights[4], blend[4]; // per preset: low, medium, high, ultra
+    ComPtr<ID3D12Resource> area, search, areaUpload, searchUpload;
+    ComPtr<ID3D12Resource> edgesTex, weightsTex, out; // at the image's size
+    uint32_t width = 0, height = 0;
+} g_smaa;
+
+bool InitSmaa()
+{
+    if (g_smaa.tried)
+        return g_smaa.ready;
+    g_smaa.tried = true;
+    D3D12_DESCRIPTOR_RANGE srv{}, uav{};
+    srv.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    srv.NumDescriptors = 3;
+    uav.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
+    uav.NumDescriptors = 1;
+    D3D12_ROOT_PARAMETER params[3]{};
+    params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    params[0].Constants.Num32BitValues = 4;
+    params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    params[1].DescriptorTable.NumDescriptorRanges = 1;
+    params[1].DescriptorTable.pDescriptorRanges = &srv;
+    params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    params[2].DescriptorTable.NumDescriptorRanges = 1;
+    params[2].DescriptorTable.pDescriptorRanges = &uav;
+    // SMAA's samplers: linear and point, clamped.
+    D3D12_STATIC_SAMPLER_DESC samplers[2]{};
+    for (UINT i = 0; i < 2; i++)
+    {
+        samplers[i].Filter = i == 0 ? D3D12_FILTER_MIN_MAG_LINEAR_MIP_POINT : D3D12_FILTER_MIN_MAG_MIP_POINT;
+        samplers[i].AddressU = samplers[i].AddressV = samplers[i].AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+        samplers[i].MaxLOD = D3D12_FLOAT32_MAX;
+        samplers[i].ShaderRegister = i;
+        samplers[i].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    }
+    D3D12_ROOT_SIGNATURE_DESC rs{};
+    rs.NumParameters = 3;
+    rs.pParameters = params;
+    rs.NumStaticSamplers = 2;
+    rs.pStaticSamplers = samplers;
+    ComPtr<ID3DBlob> blob, error;
+    if (FAILED(D3D12SerializeRootSignature(&rs, D3D_ROOT_SIGNATURE_VERSION_1, &blob, &error)) ||
+        FAILED(g_r.device->CreateRootSignature(0, blob->GetBufferPointer(), blob->GetBufferSize(), IID_PPV_ARGS(&g_smaa.root))))
+    {
+        Log("smaa: root signature failed: %s", error ? static_cast<const char*>(error->GetBufferPointer()) : "?");
+        return false;
+    }
+    struct Bytes { const unsigned char* data; size_t size; };
+    const Bytes shaders[4][3] = {
+        { { kSmaaEdgesLow, sizeof(kSmaaEdgesLow) }, { kSmaaWeightsLow, sizeof(kSmaaWeightsLow) }, { kSmaaBlendLow, sizeof(kSmaaBlendLow) } },
+        { { kSmaaEdgesMedium, sizeof(kSmaaEdgesMedium) }, { kSmaaWeightsMedium, sizeof(kSmaaWeightsMedium) }, { kSmaaBlendMedium, sizeof(kSmaaBlendMedium) } },
+        { { kSmaaEdgesHigh, sizeof(kSmaaEdgesHigh) }, { kSmaaWeightsHigh, sizeof(kSmaaWeightsHigh) }, { kSmaaBlendHigh, sizeof(kSmaaBlendHigh) } },
+        { { kSmaaEdgesUltra, sizeof(kSmaaEdgesUltra) }, { kSmaaWeightsUltra, sizeof(kSmaaWeightsUltra) }, { kSmaaBlendUltra, sizeof(kSmaaBlendUltra) } },
+    };
+    D3D12_COMPUTE_PIPELINE_STATE_DESC pd{};
+    pd.pRootSignature = g_smaa.root.Get();
+    for (int p = 0; p < 4; p++)
+    {
+        ComPtr<ID3D12PipelineState>* out[3] = { std::addressof(g_smaa.edges[p]), std::addressof(g_smaa.weights[p]), std::addressof(g_smaa.blend[p]) };
+        for (int s = 0; s < 3; s++)
+        {
+            pd.CS = { shaders[p][s].data, shaders[p][s].size };
+            if (FAILED(g_r.device->CreateComputePipelineState(&pd, IID_PPV_ARGS(out[s]->ReleaseAndGetAddressOf()))))
+            {
+                Log("smaa: pipeline %d/%d failed", p, s);
+                return false;
+            }
+        }
+    }
+    // The lookup textures (AreaTex.h: RG8 160x560, SearchTex.h: R8 64x16), uploaded on first use.
+    auto lookup = [](uint32_t w, uint32_t h, DXGI_FORMAT format, uint32_t pitch, const unsigned char* bytes, ComPtr<ID3D12Resource>& tex,
+                      ComPtr<ID3D12Resource>& upload) {
+        D3D12_HEAP_PROPERTIES hp{};
+        hp.Type = D3D12_HEAP_TYPE_DEFAULT;
+        D3D12_RESOURCE_DESC td{};
+        td.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        td.Width = w;
+        td.Height = h;
+        td.DepthOrArraySize = 1;
+        td.MipLevels = 1;
+        td.SampleDesc.Count = 1;
+        td.Format = format;
+        if (FAILED(g_r.device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &td, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&tex))))
+            return false;
+        const UINT aligned = (pitch + 255) & ~255u;
+        D3D12_HEAP_PROPERTIES up{};
+        up.Type = D3D12_HEAP_TYPE_UPLOAD;
+        D3D12_RESOURCE_DESC bd{};
+        bd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+        bd.Width = UINT64(aligned) * h;
+        bd.Height = bd.DepthOrArraySize = bd.MipLevels = 1;
+        bd.SampleDesc.Count = 1;
+        bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+        if (FAILED(g_r.device->CreateCommittedResource(&up, D3D12_HEAP_FLAG_NONE, &bd, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&upload))))
+            return false;
+        uint8_t* cpu = nullptr;
+        if (FAILED(upload->Map(0, nullptr, reinterpret_cast<void**>(&cpu))))
+            return false;
+        for (uint32_t y = 0; y < h; y++)
+            memcpy(cpu + size_t(y) * aligned, bytes + size_t(y) * pitch, pitch);
+        upload->Unmap(0, nullptr);
+        return true;
+    };
+    if (!lookup(AREATEX_WIDTH, AREATEX_HEIGHT, DXGI_FORMAT_R8G8_UNORM, AREATEX_PITCH, areaTexBytes, g_smaa.area, g_smaa.areaUpload) ||
+        !lookup(SEARCHTEX_WIDTH, SEARCHTEX_HEIGHT, DXGI_FORMAT_R8_UNORM, SEARCHTEX_PITCH, searchTexBytes, g_smaa.search, g_smaa.searchUpload))
+    {
+        Log("smaa: lookup textures failed");
+        return false;
+    }
+    g_smaa.ready = true;
+    Log("smaa: ready (preset %u)", GetSettings().smaa);
+    return true;
+}
+
+// Returns SMAA's output for `image` (same size, in the shader-read state), or null to show the
+// image as it is (SMAA off, or something failed).
+ID3D12Resource* SmaaPresent(const ResolvedTexture& image)
+{
+    static LiveSwitch noSmaa("FM2_NO_SMAA"); // A/B
+    const uint32_t preset = GetSettings().smaa;
+    if (!preset || noSmaa || !image.resource || image.format != DXGI_FORMAT_R8G8B8A8_UNORM || !InitSmaa())
+        return nullptr;
+    const uint32_t w = image.hostWidth, h = image.hostHeight;
+    const D3D12_RESOURCE_STATES read = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    auto barrier = [](ID3D12Resource* r, D3D12_RESOURCE_STATES from, D3D12_RESOURCE_STATES to) {
+        D3D12_RESOURCE_BARRIER b{};
+        b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        b.Transition.pResource = r;
+        b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        b.Transition.StateBefore = from;
+        b.Transition.StateAfter = to;
+        C().list->ResourceBarrier(1, &b);
+    };
+    if (!g_smaa.uploaded)
+    {
+        auto copy = [&](ID3D12Resource* tex, ID3D12Resource* upload, DXGI_FORMAT format, UINT width, UINT height, UINT pitch) {
+            D3D12_TEXTURE_COPY_LOCATION dst{}, src{};
+            dst.pResource = tex;
+            dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+            src.pResource = upload;
+            src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+            src.PlacedFootprint.Footprint = { format, width, height, 1, (pitch + 255) & ~255u };
+            C().list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+            barrier(tex, D3D12_RESOURCE_STATE_COPY_DEST, read);
+        };
+        copy(g_smaa.area.Get(), g_smaa.areaUpload.Get(), DXGI_FORMAT_R8G8_UNORM, AREATEX_WIDTH, AREATEX_HEIGHT, AREATEX_PITCH);
+        copy(g_smaa.search.Get(), g_smaa.searchUpload.Get(), DXGI_FORMAT_R8_UNORM, SEARCHTEX_WIDTH, SEARCHTEX_HEIGHT, SEARCHTEX_PITCH);
+        // The upload buffers stay alive until the frame that used them has finished.
+        Frame().garbage.push_back(std::move(g_smaa.areaUpload));
+        Frame().garbage.push_back(std::move(g_smaa.searchUpload));
+        g_smaa.uploaded = true;
+    }
+    if (!g_smaa.out || g_smaa.width != w || g_smaa.height != h)
+    {
+        for (ComPtr<ID3D12Resource>* r : { std::addressof(g_smaa.edgesTex), std::addressof(g_smaa.weightsTex), std::addressof(g_smaa.out) })
+            if (*r)
+                Frame().garbage.push_back(std::move(*r));
+        D3D12_HEAP_PROPERTIES hp{};
+        hp.Type = D3D12_HEAP_TYPE_DEFAULT;
+        D3D12_RESOURCE_DESC td{};
+        td.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        td.Width = w;
+        td.Height = h;
+        td.DepthOrArraySize = 1;
+        td.MipLevels = 1;
+        td.SampleDesc.Count = 1;
+        td.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+        const struct { ComPtr<ID3D12Resource>* r; DXGI_FORMAT f; } targets[] = {
+            { std::addressof(g_smaa.edgesTex), DXGI_FORMAT_R8G8_UNORM }, { std::addressof(g_smaa.weightsTex), DXGI_FORMAT_R8G8B8A8_UNORM },
+            { std::addressof(g_smaa.out), DXGI_FORMAT_R8G8B8A8_UNORM } };
+        for (const auto& t : targets)
+        {
+            td.Format = t.f;
+            if (FAILED(g_r.device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &td, read, nullptr, IID_PPV_ARGS(t.r->ReleaseAndGetAddressOf()))))
+                return nullptr;
+        }
+        g_smaa.width = w;
+        g_smaa.height = h;
+    }
+    FrameResources& f = Frame();
+    // Three passes of (3 SRVs + 1 UAV).
+    if (f.descriptorsUsed + 12 > kDescriptorsPerFrame)
+        return nullptr;
+    const UINT slots = f.descriptorBase + f.descriptorsUsed;
+    f.descriptorsUsed += 12;
+    auto srvOf = [&](ID3D12Resource* r, DXGI_FORMAT fmt, UINT slot) {
+        D3D12_SHADER_RESOURCE_VIEW_DESC v{};
+        v.Format = fmt;
+        v.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        v.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        v.Texture2D.MipLevels = 1;
+        g_r.device->CreateShaderResourceView(r, &v, Cpu(g_r.srvHeap.Get(), slot, g_r.srvStride));
+    };
+    auto uavOf = [&](ID3D12Resource* r, DXGI_FORMAT fmt, UINT slot) {
+        D3D12_UNORDERED_ACCESS_VIEW_DESC v{};
+        v.Format = fmt;
+        v.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+        g_r.device->CreateUnorderedAccessView(r, nullptr, &v, Cpu(g_r.srvHeap.Get(), slot, g_r.srvStride));
+    };
+    ID3D12Resource* color = image.resource.Get();
+    // Edges: image -> edges. Weights: edges, area, search -> weights. Blend: image, weights -> out.
+    // Unused SRV slots repeat a valid view (every descriptor of a bound table must be valid).
+    srvOf(color, DXGI_FORMAT_R8G8B8A8_UNORM, slots + 0);
+    srvOf(color, DXGI_FORMAT_R8G8B8A8_UNORM, slots + 1);
+    srvOf(color, DXGI_FORMAT_R8G8B8A8_UNORM, slots + 2);
+    uavOf(g_smaa.edgesTex.Get(), DXGI_FORMAT_R8G8_UNORM, slots + 3);
+    srvOf(g_smaa.edgesTex.Get(), DXGI_FORMAT_R8G8_UNORM, slots + 4);
+    srvOf(g_smaa.area.Get(), DXGI_FORMAT_R8G8_UNORM, slots + 5);
+    srvOf(g_smaa.search.Get(), DXGI_FORMAT_R8_UNORM, slots + 6);
+    uavOf(g_smaa.weightsTex.Get(), DXGI_FORMAT_R8G8B8A8_UNORM, slots + 7);
+    srvOf(color, DXGI_FORMAT_R8G8B8A8_UNORM, slots + 8);
+    srvOf(g_smaa.weightsTex.Get(), DXGI_FORMAT_R8G8B8A8_UNORM, slots + 9);
+    srvOf(color, DXGI_FORMAT_R8G8B8A8_UNORM, slots + 10);
+    uavOf(g_smaa.out.Get(), DXGI_FORMAT_R8G8B8A8_UNORM, slots + 11);
+
+    const float c[4] = { 1.0f / float(w), 1.0f / float(h), float(w), float(h) };
+    const int p = int(std::min<uint32_t>(preset, 4)) - 1;
+    const UINT gx = (w + 7) / 8, gy = (h + 7) / 8;
+    C().list->SetComputeRootSignature(g_smaa.root.Get());
+    C().list->SetComputeRoot32BitConstants(0, 4, c, 0);
+    struct Pass { ID3D12PipelineState* pso; ID3D12Resource* target; UINT base; } passes[] = {
+        { g_smaa.edges[p].Get(), g_smaa.edgesTex.Get(), slots + 0 },
+        { g_smaa.weights[p].Get(), g_smaa.weightsTex.Get(), slots + 4 },
+        { g_smaa.blend[p].Get(), g_smaa.out.Get(), slots + 8 },
+    };
+    for (const Pass& pass : passes)
+    {
+        barrier(pass.target, read, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        C().list->SetPipelineState(pass.pso);
+        C().list->SetComputeRootDescriptorTable(1, Gpu(g_r.srvHeap.Get(), pass.base, g_r.srvStride));
+        C().list->SetComputeRootDescriptorTable(2, Gpu(g_r.srvHeap.Get(), pass.base + 3, g_r.srvStride));
+        C().list->Dispatch(gx, gy, 1);
+        barrier(pass.target, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, read);
+    }
+    g_drawState.Invalidate(); // the compute pipeline replaced the draw's
+    return g_smaa.out.Get();
+}
+
 // The scene is complete (its full-screen image resolved): upscale it, and render the rest of
 // the frame (post-processing, HUD) at full size.
 void UpscaleScene(uint32_t base)
@@ -8601,8 +8851,15 @@ void RendererOnSwapImpl(uint64_t frameNumber, uint32_t frontBuffer)
     if (fromResolve)
     {
         image = it->second.resource.Get();
+        // SMAA at the size the frame was rendered, then FSR 1 from SMAA's output.
+        ResolvedTexture shownImage = it->second;
+        if (ID3D12Resource* smaa = SmaaPresent(it->second))
+        {
+            image = smaa;
+            shownImage.resource = smaa;
+        }
         if (fsr1)
-            if (ID3D12Resource* fsr = Fsr1Present(it->second))
+            if (ID3D12Resource* fsr = Fsr1Present(shownImage))
                 image = fsr;
         graded = GradeFrontBuffer(image);
         D3D12_RESOURCE_BARRIER b{};

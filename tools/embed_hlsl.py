@@ -2,6 +2,8 @@
 # the given directories (flattened first, so fxc needs no include paths), and writes their
 # bytecode into a C++ header as byte arrays.
 # usage: embed_hlsl.py <input.hlsl> <output.h> <entry>[,<entry>...] <include dir>...
+# An entry can be <name>:<function>:<define>: that function compiled with the define, written as
+# k<name> (one function built several ways, like SMAA's presets).
 # Needs fxc on PATH (the Windows SDK; tools/vcenv.cmd sets it up).
 import os
 import re
@@ -45,11 +47,15 @@ with tempfile.TemporaryDirectory() as tmp:
         f.write(flatten(src))
     blobs = {}
     for entry in entries:
-        cso = os.path.join(tmp, entry + '.cso')
-        r = subprocess.run(['fxc', '/nologo', '/O3', '/T', 'cs_5_1', '/E', entry, '/Fo', cso, flat], capture_output=True, text=True)
+        name, function, define = entry.split(':') if ':' in entry else (entry, entry, None)
+        cso = os.path.join(tmp, name + '.cso')
+        args = ['fxc', '/nologo', '/O3', '/T', 'cs_5_1', '/E', function, '/Fo', cso]
+        if define:
+            args += ['/D', define]
+        r = subprocess.run(args + [flat], capture_output=True, text=True)
         if r.returncode != 0:
-            sys.exit('embed_hlsl: fxc failed for %s:\n%s%s' % (entry, r.stdout, r.stderr))
-        blobs[entry] = open(cso, 'rb').read()
+            sys.exit('embed_hlsl: fxc failed for %s:\n%s%s' % (name, r.stdout, r.stderr))
+        blobs[name] = open(cso, 'rb').read()
 
 os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
 with open(out, 'w', encoding='utf-8', newline='\n') as f:
