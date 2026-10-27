@@ -2125,12 +2125,13 @@ bool GetIndexBufferLocked(uint32_t base, uint32_t count, bool is32, uint32_t end
     return true;
 }
 
-// Large vertex buffers where guest memory isn't mapped for the GPU (the Steam Deck's vkd3d, some
-// Intel drivers): copied every frame into the upload ring, every buffer, every draw's worth. They
-// are kept in an arena on the GPU instead (bound as t1, which only the mapped heap uses) and copied
-// again only when one of their pages was written (memory.cpp's write watch: no hashing).
-// FM2_NO_VERTEX_CACHE=1 copies them every frame as before; FM2_VERTEX_HASH=1 hashes every byte of
-// them each frame instead of watching (A/B).
+// Large vertex buffers, kept in an arena in video memory (bound as t1 in place of the mapped heap)
+// and copied again only when one of their pages was written (memory.cpp's write watch: no
+// hashing). Where guest memory isn't mapped for the GPU (the Steam Deck's vkd3d, some Intel
+// drivers) they would otherwise be copied every frame; where it is, the GPU would read them from
+// system memory over PCIe in every draw (1.5 ms a frame on a 4070 at 1440p).
+// The launcher's "Vertex arena" debug setting (vertex_arena=0) or FM2_NO_VERTEX_CACHE=1 turns it
+// off; FM2_VERTEX_HASH=1 hashes every byte of them each frame instead of watching (A/B).
 struct VertexArena
 {
     static constexpr uint64_t kBytes = 512ull << 20;
@@ -2153,15 +2154,14 @@ struct VertexArena
 } g_vertexArena;
 
 // Decided at each frame's start (t1 is bound then), so a switch flipped mid-frame waits a frame.
-// Where guest memory is mapped, FM2_VERTEX_ARENA=1 uses the arena there too (t1 is then the
-// arena: vertex and index data aren't read in place).
+// With the arena on, vertex and index data aren't read in place even where guest memory is mapped.
 bool g_vertexCacheThisFrame = false;
 ID3D12Resource* VertexCacheBeginFrame()
 {
-    static LiveSwitch off("FM2_NO_VERTEX_CACHE"), onMapped("FM2_VERTEX_ARENA");
+    static LiveSwitch off("FM2_NO_VERTEX_CACHE");
     VertexArena& arena = g_vertexArena;
     g_vertexCacheThisFrame = false;
-    if (off || (g_r.physical && !onMapped))
+    if (off || !GetSettings().vertexArena)
         return nullptr;
     if (!arena.buffer)
     {

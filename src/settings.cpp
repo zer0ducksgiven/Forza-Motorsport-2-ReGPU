@@ -78,6 +78,8 @@ void Load()
             g_settings.hideShaderOverlay = value == "1";
         else if (key == "low_performance")
             g_settings.lowPerformance = value == "1";
+        else if (key == "vertex_arena")
+            g_settings.vertexArena = value != "0";
         else if (key == "wheel_strength")
             g_settings.wheelStrength = uint32_t(atoi(value.c_str()));
         else if (key == "wheel_spring")
@@ -229,6 +231,7 @@ void SaveSettings()
     out << "xbox_prompts=" << (s.xboxPrompts ? 1 : 0) << "\n";
     out << "hide_shader_overlay=" << (s.hideShaderOverlay ? 1 : 0) << "\n";
     out << "low_performance=" << (s.lowPerformance ? 1 : 0) << "\n";
+    out << "vertex_arena=" << (s.vertexArena ? 1 : 0) << "\n";
     out << "wheel_strength=" << s.wheelStrength << "\n";
     out << "wheel_spring=" << s.wheelSpring << "\n";
     out << "wheel_reverse=" << (s.wheelReverse ? 1 : 0) << "\n";

@@ -20,6 +20,10 @@ struct Settings
     // Low performance mode: for old CPUs, turns off renderer changes that help fast PCs but cost
     // slow ones (staged draw constants: an FX-8350 lost time copying them).
     bool lowPerformance = false;
+    // Large vertex buffers kept in video memory, copied again only when the game writes them
+    // (renderer.cpp's vertex arena). A debug setting: off reads them in place again (or copies
+    // them every frame where guest memory isn't mapped for the GPU).
+    bool vertexArena = true;
     // Racing wheels (input/wheel.cpp): force feedback strength and the centring spring and damper
     // on top of it (percent), the steering force reversed, and the rotation the wheel is set to in
     // its own software (degrees; the game steers as the 360 wheel's 270 from it; 0 uses the
