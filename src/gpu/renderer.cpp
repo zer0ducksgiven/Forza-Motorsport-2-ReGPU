@@ -7580,8 +7580,31 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
     const uint32_t prim = initiator & 0x3F, indexSource = (initiator >> 6) & 3, indexCount = initiator >> 16;
     const bool restartOn = (gpureg::Get(PA_SU_SC_MODE_CNTL) >> 21) & 1;
     LiveSwitch &noDirectIndex = g_sw_FM2_NO_DIRECT_INDEX;
-    const bool directIndex = g_r.physical && !g_vertexCacheThisFrame && !noDirectIndex && (indexSource == 0 || indexSource == 2) &&
+    // With the vertex arena bound as t1 (not guest memory), indices can't be read in place: only
+    // real indexed draws (the index arena) and auto-generated indices go to the GPU; the rest is
+    // expanded here. (Expanding every indexed draw cost a 35 ms frame when a big mesh came into view.)
+    LiveSwitch &noIndexed = g_sw_FM2_NO_INDEXED;
+    const bool gpuIndex = (g_r.physical || g_vertexCacheThisFrame) && !noDirectIndex && (indexSource == 0 || indexSource == 2) &&
         (prim == 4 || prim == 13 || (prim == 6 && !restartOn));
+    D3D12_INDEX_BUFFER_VIEW indexView{};
+    uint32_t indexedCount = 0;
+    bool indexedTried = false;
+    bool directIndex = gpuIndex && g_r.physical && !g_vertexCacheThisFrame;
+    if (gpuIndex && g_vertexCacheThisFrame)
+    {
+        if (indexSource == 2)
+            directIndex = true;
+        else if (!noIndexed && (prim == 4 || prim == 6))
+        {
+            const bool is32 = (initiator >> 11) & 1;
+            const uint32_t count = std::min(indexCount, dmaSize & 0xFFFFFF);
+            indexedCount = prim == 4 ? count / 3 * 3 : count;
+            if (indexedCount < 3 || !GetIndexBuffer(dmaBase & 0x1FFFFFFF & ~(is32 ? 3u : 1u), count, is32, dmaSize >> 30, indexView))
+                indexedCount = 0;
+            indexedTried = true;
+            directIndex = indexedCount != 0;
+        }
+    }
     const uint32_t directVertices = prim == 4 ? indexCount / 3 * 3 : prim == 13 ? indexCount / 4 * 6 : (indexCount >= 3 ? (indexCount - 2) * 3 : 0);
     IndexListEntry* indexEntry = directIndex ? nullptr : CachedIndexList(initiator, dmaBase, dmaSize);
     static const std::vector<uint32_t> noList;
@@ -7991,10 +8014,7 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
         vc->vte[0] |= 1u << 16;
     vc->vte[1] = vc->vte[2] = vc->vte[3] = 0;
     // Triangle lists and restart-free strips from an index buffer: a real indexed draw.
-    LiveSwitch &noIndexed = g_sw_FM2_NO_INDEXED;
-    D3D12_INDEX_BUFFER_VIEW indexView{};
-    uint32_t indexedCount = 0;
-    if (directIndex && !noIndexed && indexSource == 0 && (prim == 4 || prim == 6))
+    if (!indexedTried && directIndex && !noIndexed && indexSource == 0 && (prim == 4 || prim == 6))
     {
         const bool is32 = (initiator >> 11) & 1;
         const uint32_t available = dmaSize & 0xFFFFFF;
