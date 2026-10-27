@@ -8682,12 +8682,19 @@ void RendererOnSwap(uint64_t frameNumber, uint32_t frontBuffer)
             void SpikeDump(double ms);
             SpikeDump(dt + 2.0);
         }
+        const WriteWatchStats watch = WriteWatchTakeStats();
+        static uint64_t uploadedBefore = 0;
+        const uint64_t uploadedNow = g_vertexArena.uploaded;
+        const double frameUploadMB = double(uploadedNow >= uploadedBefore ? uploadedNow - uploadedBefore : uploadedNow) / 1048576.0;
+        uploadedBefore = uploadedNow;
         if (perf && dt > slowMs)
             Log("perf: slow frame %llu: %.1f ms | draw %.1f ms (worst draw %.1f; shaders %.1f indices %.1f pipeline %.1f constants %.1f "
-                "textures %.1f submit %.1f), waited %.1f ms on %u builds, %u pipelines started, %u resources created",
+                "textures %.1f submit %.1f), waited %.1f ms on %u builds, %u pipelines started, %u resources created | write watch: "
+                "%u faults, %u protects %.1f ms, lock wait %.1f ms, arena upload %.2f MB",
                 (unsigned long long)frameNumber, dt, frameDrawMs, g_frameEvents.worstDrawMs, g_frameEvents.section[0], g_frameEvents.section[1],
                 g_frameEvents.section[2], g_frameEvents.section[3], g_frameEvents.section[4], g_frameEvents.section[5], g_frameEvents.waitMs,
-                g_frameEvents.waits, g_frameEvents.pipelines, g_frameEvents.created);
+                g_frameEvents.waits, g_frameEvents.pipelines, g_frameEvents.created, watch.faults, watch.protects, watch.protectMs,
+                watch.lockWaitMs, frameUploadMB);
         g_frameEvents = {};
     }
     const double window = std::chrono::duration<double>(now - g_perf.windowStart).count();

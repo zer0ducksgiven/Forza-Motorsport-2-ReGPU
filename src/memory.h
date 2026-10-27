@@ -102,3 +102,11 @@ bool WriteWatchClean(uint32_t offset, uint32_t bytes);
 // Before a write the kernel makes for us (ReadFile into guest memory: it fails on a read-only
 // page instead of faulting): the range's armed pages become writable and count as written.
 void GuestWillWrite(uint32_t address, uint32_t bytes);
+// Write-watch work since the last call (FM2_PERF slow-frame lines): faults handled, VirtualProtect
+// calls and time in them, time waiting for the watch lock.
+struct WriteWatchStats
+{
+    uint32_t faults, protects;
+    double protectMs, lockWaitMs;
+};
+WriteWatchStats WriteWatchTakeStats();

@@ -239,6 +239,24 @@ namespace
 constexpr uint32_t kPage = 4096, kPages = kPhysicalSize / kPage, kFirstTracked = 0x01000000;
 std::atomic<uint64_t> g_armed[kPages / 64];
 SRWLOCK g_watchLock = SRWLOCK_INIT; // arming and disarming (bit and page protection together)
+std::atomic<uint32_t> g_watchFaults{ 0 }, g_watchProtects{ 0 };
+std::atomic<uint64_t> g_watchProtectTicks{ 0 }, g_watchWaitTicks{ 0 };
+
+uint64_t Ticks()
+{
+    LARGE_INTEGER t;
+    QueryPerformanceCounter(&t);
+    return uint64_t(t.QuadPart);
+}
+
+void LockExclusive()
+{
+    if (TryAcquireSRWLockExclusive(&g_watchLock))
+        return;
+    const uint64_t start = Ticks();
+    AcquireSRWLockExclusive(&g_watchLock);
+    g_watchWaitTicks += Ticks() - start;
+}
 
 bool Armed(uint32_t page)
 {
@@ -247,15 +265,18 @@ bool Armed(uint32_t page)
 
 void Protect(uint32_t firstPage, uint32_t pages, DWORD protect)
 {
+    const uint64_t start = Ticks();
     DWORD old;
     for (uint32_t view : kPhysicalViews)
         VirtualProtect(g_base + view + size_t(firstPage) * kPage, size_t(pages) * kPage, protect, &old);
+    g_watchProtectTicks += Ticks() - start;
+    g_watchProtects++;
 }
 
 // Disarms the armed pages of [first, first + count): writable again, counted as written.
 void Disarm(uint32_t first, uint32_t count)
 {
-    AcquireSRWLockExclusive(&g_watchLock);
+    LockExclusive();
     for (uint32_t p = first; p < first + count;)
     {
         if (!Armed(p))
@@ -292,6 +313,7 @@ LONG CALLBACK OnWatchedWrite(EXCEPTION_POINTERS* info)
     // The whole 64 KB block around it: a write rarely stops at one page (a damaged car body is
     // rewritten in one go), and a fault per 4 KB page with its protection changes cost a 40 ms
     // frame when a car crashed.
+    g_watchFaults++;
     if (armed)
         Disarm(page & ~15u, 16);
     else
@@ -311,7 +333,7 @@ void WriteWatchArm(uint32_t offset, uint32_t bytes)
     if (!handler || !bytes || offset < kFirstTracked || uint64_t(offset) + bytes > kPhysicalSize)
         return;
     const uint32_t first = offset / kPage, end = (offset + bytes + kPage - 1) / kPage;
-    AcquireSRWLockExclusive(&g_watchLock);
+    LockExclusive();
     for (uint32_t p = first; p < end;)
     {
         if (Armed(p))
@@ -349,4 +371,15 @@ void GuestWillWrite(uint32_t address, uint32_t bytes)
     const uint32_t offset = address & 0x1FFFFFFF;
     const uint32_t first = offset / kPage, end = uint32_t(std::min<uint64_t>(uint64_t(offset) + bytes + kPage - 1, kPhysicalSize) / kPage);
     Disarm(first, end - first);
+}
+
+WriteWatchStats WriteWatchTakeStats()
+{
+    static const double msPerTick = [] {
+        LARGE_INTEGER f;
+        QueryPerformanceFrequency(&f);
+        return 1000.0 / double(f.QuadPart);
+    }();
+    return { g_watchFaults.exchange(0), g_watchProtects.exchange(0), double(g_watchProtectTicks.exchange(0)) * msPerTick,
+        double(g_watchWaitTicks.exchange(0)) * msPerTick };
 }
