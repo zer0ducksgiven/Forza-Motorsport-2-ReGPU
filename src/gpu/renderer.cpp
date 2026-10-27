@@ -637,6 +637,7 @@ uint32_t g_gpuFrames = 0;
 // players' logs tell a GPU-bound PC (iGPUs, APUs) from a CPU-bound one.
 double g_logGpuMs = 0;
 uint32_t g_logGpuFrames = 0;
+ID3D12Resource* VertexCacheBeginFrame(); // the vertex arena for t1 this frame, or none (see VertexArena)
 uint32_t g_waitBlend = 0;
 std::map<std::string, uint64_t> g_created; // FM2_PERF: committed resources created, by kind
 // FM2_PERF: what happened during the current frame, for the slow-frame log.
@@ -1877,6 +1878,11 @@ void BeginFrameIfNeeded()
             raw.Buffer.NumElements = UINT(g_r.physical->GetDesc().Width / 4);
             g_r.device->CreateShaderResourceView(g_r.physical.Get(), &raw, Cpu(g_r.srvHeap.Get(), f.descriptorBase + 1, g_r.srvStride));
         }
+        else if (ID3D12Resource* arena = VertexCacheBeginFrame())
+        {
+            raw.Buffer.NumElements = UINT(arena->GetDesc().Width / 4);
+            g_r.device->CreateShaderResourceView(arena, &raw, Cpu(g_r.srvHeap.Get(), f.descriptorBase + 1, g_r.srvStride));
+        }
         else
             g_r.device->CreateShaderResourceView(f.ring.Get(), &raw, Cpu(g_r.srvHeap.Get(), f.descriptorBase + 1, g_r.srvStride));
     }
@@ -2117,6 +2123,147 @@ bool GetIndexBufferLocked(uint32_t base, uint32_t count, bool is32, uint32_t end
     arena.pending.push_back({ Frame().ring.Get(), offset, e.offset, bytes });
     e.hash = hash;
     return true;
+}
+
+// Large vertex buffers where guest memory isn't mapped for the GPU (the Steam Deck's vkd3d, some
+// Intel drivers): copied every frame into the upload ring, every buffer, every draw's worth. They
+// are kept in an arena on the GPU instead (bound as t1, which only the mapped heap uses), checked
+// once a frame with the full hash (as index buffers: exact) and copied again only when they change.
+// FM2_NO_VERTEX_CACHE=1 copies them every frame as before (A/B).
+struct VertexArena
+{
+    static constexpr uint64_t kBytes = 512ull << 20;
+    ComPtr<ID3D12Resource> buffer;
+    uint64_t used = 0;
+    std::unordered_map<uint32_t, std::vector<uint64_t>> free; // offsets by size class (log2)
+    struct Entry
+    {
+        uint64_t offset = 0, hash = 0, checkedFrame = ~0ull;
+        uint32_t sizeClass = 0;
+        uint64_t staged = ~0ull, stagedFrame = ~0ull; // this frame's copy in the upload ring
+    };
+    std::unordered_map<uint64_t, Entry> entries;
+    bool full = false;
+    std::vector<IndexArena::Copy> pending;
+    uint64_t hashed = 0, uploaded = 0; // bytes this frame (FM2_PERF)
+} g_vertexArena;
+
+// Decided at each frame's start (t1 is bound then), so a switch flipped mid-frame waits a frame.
+bool g_vertexCacheThisFrame = false;
+ID3D12Resource* VertexCacheBeginFrame()
+{
+    static LiveSwitch off("FM2_NO_VERTEX_CACHE");
+    VertexArena& arena = g_vertexArena;
+    g_vertexCacheThisFrame = false;
+    if (g_r.physical || off)
+        return nullptr;
+    if (!arena.buffer)
+    {
+        arena.buffer = CreateBuffer(VertexArena::kBytes, D3D12_HEAP_TYPE_DEFAULT,
+            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        Log("vertex arena: %s", arena.buffer ? "512 MB on the GPU for large vertex buffers (guest memory isn't mapped)" : "couldn't be created");
+    }
+    g_vertexCacheThisFrame = arena.buffer != nullptr;
+    return arena.buffer.Get();
+}
+
+void FlushVertexCopies()
+{
+    VertexArena& arena = g_vertexArena;
+    if (arena.pending.empty())
+        return;
+    D3D12_RESOURCE_BARRIER b{};
+    b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    b.Transition.pResource = arena.buffer.Get();
+    b.Transition.StateBefore = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    b.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+    C().list->ResourceBarrier(1, &b);
+    for (const auto& c : arena.pending)
+        C().list->CopyBufferRegion(arena.buffer.Get(), c.to, c.ring, c.from, c.bytes);
+    std::swap(b.Transition.StateBefore, b.Transition.StateAfter);
+    C().list->ResourceBarrier(1, &b);
+    arena.pending.clear();
+}
+
+// Where a large vertex buffer is this frame: its offset in the arena (arena true, read through
+// t1) or in the upload ring (arena false: new or changed, copied into the arena at the frame's
+// end). ~0 when neither has room (the caller copies it as before).
+uint64_t VertexCacheLocked(uint32_t address, uint32_t bytes, bool& arenaHit)
+{
+    VertexArena& arena = g_vertexArena;
+    arenaHit = false;
+    if (bytes > (64u << 20))
+        return ~0ull;
+    if (arena.full && arena.entries.size())
+    {
+        Log("vertex arena: full, starting over (%zu buffers)", arena.entries.size());
+        arena.entries.clear();
+        arena.free.clear();
+        arena.used = 0;
+        arena.full = false;
+    }
+    const uint64_t key = uint64_t(address) << 32 ^ bytes;
+    auto [it, inserted] = arena.entries.try_emplace(key);
+    VertexArena::Entry& e = it->second;
+    if (inserted)
+    {
+        uint32_t sizeClass = 12; // 4 KB
+        while ((1ull << sizeClass) < bytes)
+            sizeClass++;
+        auto& list = arena.free[sizeClass];
+        if (!list.empty())
+        {
+            e.offset = list.back();
+            list.pop_back();
+        }
+        else if (arena.used + (1ull << sizeClass) <= VertexArena::kBytes)
+        {
+            e.offset = arena.used;
+            arena.used += 1ull << sizeClass;
+        }
+        else
+        {
+            arena.entries.erase(it);
+            arena.full = true;
+            return ~0ull;
+        }
+        e.sizeClass = sizeClass;
+    }
+    if (e.checkedFrame == g_r.frame)
+    {
+        if (e.stagedFrame == g_r.frame)
+            return e.staged;
+        arenaHit = true;
+        return e.offset;
+    }
+    e.checkedFrame = g_r.frame;
+    const uint8_t* src = GuestPtr<uint8_t>(GpuPhysToGuest(address));
+    const uint64_t hash = FullHash(src, bytes);
+    arena.hashed += bytes;
+    if (!inserted && hash == e.hash)
+    {
+        arenaHit = true;
+        return e.offset;
+    }
+    const UINT64 offset = RingAlloc((bytes + 15) & ~15u, 16);
+    if (offset == ~0ull)
+    {
+        e.checkedFrame = ~0ull; // not staged: checked again next time
+        return ~0ull;
+    }
+    memcpy(Frame().ringCpu + offset, src, bytes);
+    arena.uploaded += bytes;
+    e.staged = offset;
+    e.stagedFrame = g_r.frame;
+    arena.pending.push_back({ Frame().ring.Get(), offset, e.offset, bytes });
+    e.hash = hash;
+    return offset;
+}
+
+uint64_t VertexCache(uint32_t address, uint32_t bytes, bool& arenaHit)
+{
+    std::lock_guard textureLock(g_textureMutex);
+    return VertexCacheLocked(address, bytes, arenaHit);
 }
 
 // Compile activity, for the on-screen overlay and FM2_PERF.
@@ -7678,6 +7825,19 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
             vc->vf[k][3] = 0;
             continue;
         }
+        // Not mapped: large buffers from the GPU's vertex arena (see VertexArena), read through t1.
+        if (g_vertexCacheThisFrame && !noDirect && bytes >= directBytes)
+        {
+            bool arenaHit = false;
+            if (const uint64_t at = VertexCache(address, bytes, arenaHit); at != ~0ull)
+            {
+                vc->vf[k][0] = uint32_t(at);
+                vc->vf[k][1] = d1 & 3;
+                vc->vf[k][2] = arenaHit ? 1 : 0;
+                vc->vf[k][3] = 0;
+                continue;
+            }
+        }
         // FM2_TRACE_MIDSIZE=1: log copied buffers of 16-64 KB that change within a frame (they must stay copied)
         LiveSwitch &traceMid = g_sw_FM2_TRACE_MIDSIZE;
         static const uint32_t traceMinBytes = traceMid ? uint32_t(atoi(getenv("FM2_TRACE_MIDSIZE"))) * 1024u : 0;
@@ -9026,6 +9186,7 @@ void RendererOnSwapImpl(uint64_t frameNumber, uint32_t frontBuffer)
     }
 
     FlushIndexCopies(); // this frame's index uploads into the arena, after its draws
+    FlushVertexCopies();
     if (g_gpuPasses && g_passQueries && !g_passMarks[UINT(&Frame() - g_r.frames)].empty())
     {
         const UINT frameIndex = UINT(&Frame() - g_r.frames);
@@ -9191,6 +9352,11 @@ void RendererOnSwapImpl(uint64_t frameNumber, uint32_t frontBuffer)
         std::nth_element(frameMs.begin(), frameMs.begin() + worst, frameMs.end(), std::greater<float>());
         Log("renderer: frames %.2f ms average, %.2f ms 1%% slowest, GPU %.2f ms", frameMs.empty() ? 0.0 : sum / frameMs.size(),
             frameMs.empty() ? 0.0 : double(frameMs[worst]), g_logGpuFrames ? g_logGpuMs / g_logGpuFrames : 0.0);
+        if (g_vertexArena.buffer && !frameMs.empty())
+            Log("vertex arena: %.1f MB hashed, %.2f MB uploaded a frame, %llu MB of %llu used", double(g_vertexArena.hashed) / frameMs.size() / 1048576.0,
+                double(g_vertexArena.uploaded) / frameMs.size() / 1048576.0, (unsigned long long)(g_vertexArena.used >> 20),
+                (unsigned long long)(VertexArena::kBytes >> 20));
+        g_vertexArena.hashed = g_vertexArena.uploaded = 0;
         frameMs.clear();
         g_logGpuMs = 0;
         g_logGpuFrames = 0;
