@@ -123,13 +123,12 @@ public static class Updater
             bool ours = target.StartsWith(self, StringComparison.OrdinalIgnoreCase);
             if (File.Exists(target))
             {
-                if (ours)
-                {
-                    var old = target + ".old";
-                    if (File.Exists(old)) File.Delete(old);
-                    File.Move(target, old); // the running launcher's files: rename, then write the new one
-                    launcher = true;
-                }
+                // Renamed, then the new one written: the running launcher's files, and any other file in use
+                // (the launcher loads build\tu\SDL3.dll for controllers; overwriting it failed the 0.9.0 update).
+                var old = target + ".old";
+                if (File.Exists(old)) File.Delete(old);
+                File.Move(target, old);
+                if (ours) launcher = true;
             }
             var temp = target + ".new";
             e.ExtractToFile(temp, true);
@@ -140,14 +139,19 @@ public static class Updater
         return new Applied(files, launcher);
     }
 
-    /// <summary>Leftovers of a launcher update (renamed while it ran).</summary>
+    /// <summary>Leftovers of an update (files renamed while in use): the launcher's, build\tu's and the install's own.</summary>
     public static void CleanUp()
     {
-        try
-        {
-            foreach (var f in Directory.EnumerateFiles(AppContext.BaseDirectory, "*.old", SearchOption.AllDirectories))
-                try { File.Delete(f); } catch { }
-        }
-        catch { }
+        foreach (var (dir, depth) in new[] { (AppContext.BaseDirectory, SearchOption.AllDirectories),
+                                             (Path.Combine(Paths.Root, "build", "tu"), SearchOption.AllDirectories),
+                                             (Paths.Root, SearchOption.TopDirectoryOnly) })
+            try
+            {
+                foreach (var f in Directory.EnumerateFiles(dir, "*.old", depth))
+                    try { File.Delete(f); } catch { }
+                foreach (var f in Directory.EnumerateFiles(dir, "*.new", depth))
+                    try { File.Delete(f); } catch { } // a write that failed (the 0.9.0 update's SDL3.dll.new)
+            }
+            catch { }
     }
 }

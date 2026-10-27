@@ -2,7 +2,7 @@
 
   make_patch.py <version> [launcher dir]
 
-Contents (paths relative to the install): build/tu/fm2.exe, d3dcompiler_47.dll and SDL3.dll (racing wheels), the launcher (launcher/..., from the given folder or
+Contents (paths relative to the install): build/tu/fm2.exe, d3dcompiler_47.dll (not SDL3.dll, see below), the launcher (launcher/..., from the given folder or
 installer/payload/launcher, which build-installer.ps1 publishes) and changelog.txt. Names are written with '/',
 and the zip is read back and checked: no control characters, nothing outside the install.
 """
@@ -21,7 +21,8 @@ def main(argv):
     launcher = argv[2] if len(argv) > 2 else os.path.join(ROOT, 'installer', 'payload', 'launcher')
     files = [(os.path.join(ROOT, 'build', 'tu', 'fm2.exe'), 'build/tu/fm2.exe'),
              (os.path.join(ROOT, 'build', 'tu', 'd3dcompiler_47.dll'), 'build/tu/d3dcompiler_47.dll'),
-             (os.path.join(ROOT, 'build', 'tu', 'SDL3.dll'), 'build/tu/SDL3.dll'),
+             # SDL3.dll is left out: launchers before 0.9.1 hold it open (controllers) and can't overwrite it,
+             # which stopped the 0.9.0 update before the launcher. It hasn't changed since 0.8.2.
              (os.path.join(ROOT, 'out', 'release', 'FM2', 'changelog.txt'), 'changelog.txt')]
     if not os.path.isfile(os.path.join(launcher, 'FM2Launcher.exe')):
         print('no launcher at', launcher, '(run installer/build-installer.ps1 first)')

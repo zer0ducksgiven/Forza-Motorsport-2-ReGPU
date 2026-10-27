@@ -27,6 +27,10 @@ internal static class Program
         }
         // one window: starting the launcher again brings the open one forward
         using var single = new Mutex(true, "FM2ReGPU.Launcher", out bool first);
+        // After an update the old launcher starts this one and only then closes: wait for it a moment.
+        if (!first)
+            try { first = single.WaitOne(TimeSpan.FromSeconds(5)); }
+            catch (AbandonedMutexException) { first = true; }
         if (!first)
         {
             if (OperatingSystem.IsWindows())
