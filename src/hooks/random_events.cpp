@@ -166,7 +166,7 @@ std::string RandomEventsLuaBefore(const char* name, bool source, const char* tex
 
 // The counts, in the game's own screens (Flows/CareerEventSelect.xml, rewritten as its scripts load: they load
 // again each time the screens open, so the counts are current):
-//  - Race Type: the Random Events category's description (raceTypeQuery) says when the events change and when the
+//  - Race Type: Random Events is listed first, and its description (raceTypeQuery) says when the events change and when the
 //    prize car comes, or which car was won;
 //  - Event Select: "First Place Prize" (PrizeQuery) shows only a prize car (one per event in Rewards_CareerEvents),
 //    so a Random Events event, which pays credits, showed an empty box: it falls back to the event's CashPrize
@@ -203,6 +203,7 @@ bool Replace(std::string& text, std::string_view from, const std::string& to)
 std::string RandomEventsLuaSource(const char* text, uint32_t size)
 {
     static const std::string_view kTypes = "SELECT id, Name, Description, BadgePath";
+    static const std::string_view kTypesOrder = "FROM CareerEventTypes ORDER BY id";
     static const std::string_view kPrize =
         "SELECT ModelShort AS ModelName FROM Rewards_CareerEvents INNER JOIN Data_Car ON Id=CarId WHERE EventId=[Events.Id]";
     if (!ModInstalled())
@@ -222,6 +223,8 @@ std::string RandomEventsLuaSource(const char* text, uint32_t size)
     bool changed = Replace(out, kTypes,
                            "SELECT id, Name, CASE WHEN id=" + std::to_string(kCategory) + " THEN " + Quoted(status) +
                                " ELSE Description END AS Description, BadgePath");
+    // Random Events first in the list
+    changed |= Replace(out, kTypesOrder, "FROM CareerEventTypes ORDER BY id<>" + std::to_string(kCategory) + ", id");
     changed |= Replace(out, kPrize,
                        "SELECT COALESCE((SELECT ModelShort FROM Rewards_CareerEvents INNER JOIN Data_Car ON Data_Car.Id=CarId "
                        "WHERE EventId=e.Id), (e.CashPrize / 1000) || ',000 CR' || " + Quoted(prize) +

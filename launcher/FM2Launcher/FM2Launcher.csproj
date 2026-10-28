@@ -30,6 +30,7 @@
     <Content Include="mods\*" CopyToOutputDirectory="PreserveNewest" />
     <!-- Random Events: built from the player's game files by the launcher (RandomEvents.cs). -->
     <Content Include="..\..\tools\modkit\career\random_events.py" Link="career\random_events.py" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\tools\modkit\career\icons\*.xds" Link="career\icons\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\..\tools\modkit\strtable.py" Link="strtable.py" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 

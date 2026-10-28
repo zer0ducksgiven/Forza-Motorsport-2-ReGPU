@@ -38,6 +38,7 @@ SHARE = [1.0, 0.7, 0.5, 0.35, 0.25, 0.15, 0.1, 0.05]  # prize by place
 DRIVES = {1: 'FWD', 2: 'RWD', 3: 'AWD'}
 REGIONS = {1: 'Asian', 2: 'European', 3: 'North American'}
 SKIP_TRACKS = ('DebugTrack', 'TuningTrack')
+ICONS = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'icons')  # make_icons.py's .xds files
 # The event's picture (Events.EventIcon -> Media/UI/Textures/L_Map/Event_Bkgds/EventBkgd<n>.tga): the game's own
 # event closest to the theme.
 ICON = dict(classics=101, modern=34, fwd=4, rwd=6, awd=5, turbo=26, free=30, light=11)
@@ -186,8 +187,14 @@ def main():
         model = look('Data_Car', 'SELECT Id, DisplayName FROM Data_Car')
         for cid, year, make, cost in g.execute('SELECT Id, Year, MakeID, BaseCost FROM Data_Car ORDER BY Id'):
             f.write('%d %d %d %s\n' % (cid, cost, year, model.get(cid) or names['make'].get(make, '')))
+    # the category's pictures (career/icons, drawn by make_icons.py), added to the game's UI textures
+    with zipfile.ZipFile(os.path.join(extra, 'RandomEventsOverrides2_pri_170.zip'), 'w', zipfile.ZIP_DEFLATED) as z:
+        for f in sorted(os.listdir(ICONS)):
+            if f.endswith('.xds'):
+                z.write(os.path.join(ICONS, f), 'C_Map/C_TYP_Map/' + f)
     open(os.path.join(extra, 'zipmount.xml'), 'w', newline='\r\n').write(
-        '<?xml version="1.0" ?>\n<zipmount>\n\t<zip Name="RandomEventsOverrides1_pri_170.zip" Mount="game:\\Media\\StringTables\\" />\n</zipmount>\n')
+        '<?xml version="1.0" ?>\n<zipmount>\n\t<zip Name="RandomEventsOverrides1_pri_170.zip" Mount="game:\\Media\\StringTables\\" />\n'
+        '\t<zip Name="RandomEventsOverrides2_pri_170.zip" Mount="game:\\Media\\UI\\Textures\\" />\n</zipmount>\n')
     open(os.path.join(extra, 'stringtables.xml'), 'w', newline='\r\n').write(
         '<?xml version="1.0" ?>\n<stringtables >\n\t<table Name="careereventtypes" />\n\t<table Name="events" />\n</stringtables>\n')
 
@@ -202,7 +209,9 @@ def main():
 
     cols = table('CareerEventTypes')
     row = dict(zip(cols, g.execute('SELECT * FROM CareerEventTypes WHERE id=1').fetchone()))
-    row.update(id=CATEGORY_ID, Name=ref(cat_prefix, cat_keys[0]), Description=ref(cat_prefix, cat_keys[1]), Level=0)
+    row.update(id=CATEGORY_ID, Name=ref(cat_prefix, cat_keys[0]), Description=ref(cat_prefix, cat_keys[1]), Level=0,
+               IconPath='GAME:\\Media\\UI\\Textures\\C_Map\\C_TYP_Map\\C_TYP_Icon_RandomEvents.tga',
+               BadgePath='GAME:\\Media\\UI\\Textures\\C_Map\\C_TYP_Map\\C_TYP_Badge_RandomEvents.tga')
     insert('CareerEventTypes', cols, row)
     ecols = table('Events'); rcols = table('Races'); xcols = table('EventRestrictions'); pcols = table('EventParticipants'); scols = table('EventScoring')
     template = dict(zip(ecols, g.execute('SELECT * FROM Events WHERE Id=?', (TEMPLATE_EVENT,)).fetchone()))
