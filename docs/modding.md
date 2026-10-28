@@ -4,8 +4,15 @@ Mods for the port are packaged as **DLC**: the same Xbox 360 package files (STFS
 The game loads them the way it loaded real DLC, so a mod can do anything a car pack could, such as adding cars or
 patching the game database. You don't change the game's files.
 
-The port comes with one example, the **Engine Swap Pack** by Aiden. It adds engine swap upgrades to 190 cars, and
-it's installed switched off. Its source is in [`tools/modkit/examples/EngineSwapPack`](../tools/modkit/examples/EngineSwapPack).
+The port comes with two mods, both installed switched off:
+
+- The **Engine Swap Pack** by Aiden adds engine swap upgrades to 190 cars. Its source is in
+  [`tools/modkit/examples/EngineSwapPack`](../tools/modkit/examples/EngineSwapPack).
+- **Random Events** adds a career category of four generated events that change every two races, with prizes that
+  follow the player's level and garage. It holds the game's own string tables, so it isn't shipped: the launcher
+  builds it from the player's game files the first time it starts
+  ([`tools/modkit/career/random_events.py`](../tools/modkit/career/random_events.py); the port's
+  `src/hooks/random_events.cpp` does the race counts, prizes and prize car).
 
 ## Installing a mod (players)
 

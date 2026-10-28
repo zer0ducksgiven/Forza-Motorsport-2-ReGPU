@@ -173,7 +173,7 @@ option for an explanation.
   Chinese, as on the disc; the disc's Polish, Czech and Hungarian text can't be picked yet). Every change is
   saved to `Documents\fm2\settings.ini` straight away.
 - **Settings**: the shader cache (size, delete, rebuild now), the DLC packs (switch one off to keep it out of
-  the game, add packages, open the folder), and the install and user folders.
+  the game, add packages, open the folder), the mods (see [Mods](#mods)), and the install and user folders.
 - **Updates**: checks GitHub for the latest release, shows its notes, and downloads and installs its
   `FM2-x.y.z-patch.zip` over the install. Files of the running launcher are renamed to `*.old` and replaced;
   the next start removes them.
@@ -190,6 +190,22 @@ differs from the resolution), windowed or borderless fullscreen, VSync, and max 
 is also the display's refresh rate. `FM2_NO_LAUNCHER=1` skips the launcher and uses the
 saved settings; these variables override the file for one run: `FM2_PROFILE`,
 `FM2_RESOLUTION`, `FM2_RENDER_SCALE`, `FM2_MAX_FPS`, `FM2_VSYNC`, `FM2_FULLSCREEN`.
+
+### Mods
+
+Mods are packaged like the game's DLC, so they add cars, upgrades or database changes without touching the game's
+files. In the launcher's **Settings** tab, the **Mods** panel installs them (**Add mod**), switches them on and off,
+and removes them. Two come with the launcher, both switched off:
+
+- **Random Events**: four career events (Easy, Medium, Hard, Extreme) made from your game's cars and tracks, listed
+  first in Go Race. A new set every two career races, and a random prize car every five Random Events races. Prizes
+  follow your level and garage size, so it can't be farmed. The launcher builds it from your game files the first
+  time it starts.
+- **Engine Swap Pack** by Aiden: engine swap upgrades for 190 cars.
+
+Keep a mod switched on once a career uses it: a save with a mod's cars or upgrades needs that mod. **Project Forza
+Plus 2** is installed from its own panel, and while it's on, no DLC or other mods are loaded.
+[docs/modding.md](docs/modding.md) explains how to make a mod.
 
 ### Upscaling (removed from the launcher for now)
 
