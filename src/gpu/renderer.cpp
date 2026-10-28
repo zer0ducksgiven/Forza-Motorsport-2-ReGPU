@@ -2149,6 +2149,8 @@ struct VertexArena
         uint32_t sizeClass = 0;
         uint64_t staged = ~0ull, stagedFrame = ~0ull; // this frame's copy in the upload ring
         bool watched = false;   // its pages were write-watched when it was last copied
+        uint64_t copiedSeq = 0; // WriteWatchSeq() then: a page written after it, even re-armed by another entry, is a change
+        bool hashed = false;    // its memory couldn't be watched (memory.cpp): hashed each frame instead
         uint32_t changes = 0;   // checks in a row that found it changed
         uint64_t dynamicUntil = 0; // changing every frame: copied each frame, unwatched, until then
     };
@@ -2255,14 +2257,35 @@ uint64_t VertexCacheLocked(uint32_t address, uint32_t bytes, bool& arenaHit)
     static LiveSwitch hashOnly("FM2_VERTEX_HASH");
     uint64_t hash = 0;
     bool unchanged;
-    if (hashOnly)
+    if (hashOnly || e.hashed)
     {
         hash = FullHash(src, bytes);
         arena.hashed += bytes;
         unchanged = !inserted && hash == e.hash;
     }
     else
-        unchanged = !inserted && e.watched && WriteWatchClean(physical, bytes);
+        unchanged = !inserted && e.watched && WriteWatchClean(physical, bytes, e.copiedSeq);
+    // FM2_VERTEX_VERIFY=1 (diagnostic): a buffer the watch calls unchanged is hashed anyway, and one
+    // that changed without a write being seen is logged (its first 20) and copied.
+    static LiveSwitch verify("FM2_VERTEX_VERIFY");
+    if (verify && !hashOnly)
+    {
+        const uint64_t now = FullHash(src, bytes);
+        if (unchanged && e.hash && now != e.hash)
+        {
+            static int logged = 0;
+            if (logged++ < 20)
+            {
+                MEMORY_BASIC_INFORMATION mbi{};
+                VirtualQuery(src, &mbi, sizeof(mbi));
+                Log("vertex arena: %08X (%u bytes, frame %llu) changed with no write seen: copied at seq %llu, now %llu, page protect %lX, watched %d",
+                    address, bytes, (unsigned long long)g_r.frame, (unsigned long long)e.copiedSeq, (unsigned long long)WriteWatchSeq(), mbi.Protect,
+                    int(e.watched));
+            }
+            unchanged = false;
+        }
+        hash = now;
+    }
     if (unchanged)
     {
         e.changes = 0;
@@ -2283,8 +2306,14 @@ uint64_t VertexCacheLocked(uint32_t address, uint32_t bytes, bool& arenaHit)
         e.changes = 0;
     }
     e.watched = !hashOnly && g_r.frame >= e.dynamicUntil;
-    if (e.watched)
-        WriteWatchArm(physical, bytes); // before the copy: a write after it faults and is seen
+    e.copiedSeq = WriteWatchSeq() + 1; // (a write between now and the copy counts as after it: copied again)
+    if (e.watched && !WriteWatchArm(physical, bytes)) // before the copy: a write after it faults and is seen
+    {
+        e.watched = false;
+        e.hashed = true;
+    }
+    if (e.hashed && !hash)
+        hash = FullHash(src, bytes);
     memcpy(Frame().ringCpu + offset, src, bytes);
     arena.uploaded += bytes;
     e.staged = offset;

@@ -97,8 +97,13 @@ void* PhysicalSection();
 // page is writable again and counts as written. WriteWatchClean: no page of the range written
 // since it was armed. Ranges under 16 MB (also seen through the writeback window) never count
 // as clean. Physical offsets (address & 0x1FFFFFFF).
-void WriteWatchArm(uint32_t offset, uint32_t bytes);
-bool WriteWatchClean(uint32_t offset, uint32_t bytes);
+// Several ranges can share a page, and the first to see it written re-arms it: so a range also
+// keeps the WriteWatchSeq() it was copied at and is clean only if none of its pages was written
+// since (report #27: tyre marks, one buffer drawn in overlapping ranges, kept stale copies).
+// False when the range can't be watched (memory that can't be made read-only): hash it instead.
+bool WriteWatchArm(uint32_t offset, uint32_t bytes);
+bool WriteWatchClean(uint32_t offset, uint32_t bytes, uint64_t since);
+uint64_t WriteWatchSeq();
 // Before a write the kernel makes for us (ReadFile into guest memory: it fails on a read-only
 // page instead of faulting): the range's armed pages become writable and count as written.
 void GuestWillWrite(uint32_t address, uint32_t bytes);

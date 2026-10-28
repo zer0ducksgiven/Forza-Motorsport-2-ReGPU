@@ -238,6 +238,8 @@ namespace
 // One bit per 4 KB page of physical memory: armed (read-only in every view, not written since).
 constexpr uint32_t kPage = 4096, kPages = kPhysicalSize / kPage, kFirstTracked = 0x01000000;
 std::atomic<uint64_t> g_armed[kPages / 64];
+std::atomic<uint64_t> g_writeSeq{ 1 };
+uint64_t g_lastWrite[kPages]; // the g_writeSeq of each page's last write seen (under g_watchLock)
 SRWLOCK g_watchLock = SRWLOCK_INIT; // arming and disarming (bit and page protection together)
 std::atomic<uint32_t> g_watchFaults{ 0 }, g_watchProtects{ 0 };
 std::atomic<uint64_t> g_watchProtectTicks{ 0 }, g_watchWaitTicks{ 0 };
@@ -263,15 +265,23 @@ bool Armed(uint32_t page)
     return (g_armed[page / 64].load(std::memory_order_acquire) >> (page % 64)) & 1;
 }
 
-void Protect(uint32_t firstPage, uint32_t pages, DWORD protect)
+// Whether every view changed (read-only failed with error 87 on an RTX 4070 once the GPU had a heap
+// over the section, OpenExistingHeapFromFileMapping).
+bool Protect(uint32_t firstPage, uint32_t pages, DWORD protect)
 {
     const uint64_t start = Ticks();
     DWORD old;
+    bool ok = true;
     for (uint32_t view : kPhysicalViews)
-        VirtualProtect(g_base + view + size_t(firstPage) * kPage, size_t(pages) * kPage, protect, &old);
+        ok &= VirtualProtect(g_base + view + size_t(firstPage) * kPage, size_t(pages) * kPage, protect, &old) != FALSE;
     g_watchProtectTicks += Ticks() - start;
     g_watchProtects++;
+    return ok;
 }
+
+// Read-only failed: the watch can't see writes here, so nothing is armed from then on (report #27:
+// the arena kept tyre marks from before the race start, a write never faulting).
+std::atomic<bool> g_watchUnavailable{ false };
 
 // Disarms the armed pages of [first, first + count): writable again, counted as written.
 void Disarm(uint32_t first, uint32_t count)
@@ -285,9 +295,11 @@ void Disarm(uint32_t first, uint32_t count)
             continue;
         }
         uint32_t end = p;
+        const uint64_t seq = ++g_writeSeq;
         while (end < first + count && Armed(end))
         {
             g_armed[end / 64].fetch_and(~(1ull << (end % 64)), std::memory_order_acq_rel);
+            g_lastWrite[end] = seq;
             end++;
         }
         Protect(p, end - p, PAGE_READWRITE);
@@ -327,11 +339,11 @@ LONG CALLBACK OnWatchedWrite(EXCEPTION_POINTERS* info)
 }
 }
 
-void WriteWatchArm(uint32_t offset, uint32_t bytes)
+bool WriteWatchArm(uint32_t offset, uint32_t bytes)
 {
     static const bool handler = [] { return AddVectoredExceptionHandler(1, OnWatchedWrite) != nullptr; }();
-    if (!handler || !bytes || offset < kFirstTracked || uint64_t(offset) + bytes > kPhysicalSize)
-        return;
+    if (!handler || g_watchUnavailable || !bytes || offset < kFirstTracked || uint64_t(offset) + bytes > kPhysicalSize)
+        return false;
     const uint32_t first = offset / kPage, end = (offset + bytes + kPage - 1) / kPage;
     LockExclusive();
     for (uint32_t p = first; p < end;)
@@ -347,21 +359,39 @@ void WriteWatchArm(uint32_t offset, uint32_t bytes)
             g_armed[run / 64].fetch_or(1ull << (run % 64), std::memory_order_acq_rel);
             run++;
         }
-        Protect(p, run - p, PAGE_READONLY);
+        if (!Protect(p, run - p, PAGE_READONLY))
+        {
+            const DWORD error = GetLastError();
+            for (uint32_t q = p; q < run; q++)
+                g_armed[q / 64].fetch_and(~(1ull << (q % 64)), std::memory_order_acq_rel);
+            Protect(p, run - p, PAGE_READWRITE);
+            if (!g_watchUnavailable.exchange(true))
+                Log("write watch: guest memory can't be made read-only (error %lu): changed vertex buffers are found by hashing", error);
+            ReleaseSRWLockExclusive(&g_watchLock);
+            return false;
+        }
         p = run;
     }
     ReleaseSRWLockExclusive(&g_watchLock);
+    return true;
 }
 
-bool WriteWatchClean(uint32_t offset, uint32_t bytes)
+bool WriteWatchClean(uint32_t offset, uint32_t bytes, uint64_t since)
 {
     if (!bytes || offset < kFirstTracked || uint64_t(offset) + bytes > kPhysicalSize)
         return false;
     const uint32_t first = offset / kPage, end = (offset + bytes + kPage - 1) / kPage;
-    for (uint32_t p = first; p < end; p++)
-        if (!Armed(p))
-            return false;
-    return true;
+    AcquireSRWLockShared(&g_watchLock);
+    bool clean = true;
+    for (uint32_t p = first; p < end && clean; p++)
+        clean = Armed(p) && g_lastWrite[p] < since;
+    ReleaseSRWLockShared(&g_watchLock);
+    return clean;
+}
+
+uint64_t WriteWatchSeq()
+{
+    return g_writeSeq.load(std::memory_order_acquire);
 }
 
 void GuestWillWrite(uint32_t address, uint32_t bytes)
