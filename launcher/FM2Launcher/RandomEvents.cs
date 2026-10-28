@@ -7,13 +7,14 @@ namespace FM2Launcher;
 /// Random Events, the career mod (tools/modkit/career/random_events.py, shipped beside the launcher in career\): four
 /// generated career events that change every two career races, and a random car every fifth Random Events race
 /// (fm2.exe, hooks/random_events.cpp). The mod holds the game's own string tables, so it's built here from the
-/// player's game files rather than shipped: Install builds it into dlc-disabled as a mod (switched on in the Mods
-/// panel like the others), and before each launch Rotate rebuilds an enabled one when the profile's set is due
+/// player's game files rather than shipped: the Mods panel's first listing builds it into dlc-disabled as a mod
+/// (Dlc.InstallBundled; switched on there like the others), and before each launch Rotate rebuilds an enabled one when the profile's set is due
 /// (races / 2 from profiles\&lt;name&gt;\random_events.ini, which fm2.exe keeps).
 /// </summary>
 public static class RandomEvents
 {
-    const string Folder = "RandomEvents";
+    public const string Id = "RandomEvents";
+    const string Folder = Id;
 
     static string Script => Path.Combine(AppContext.BaseDirectory, "career", "random_events.py");
     static string Python => Platform.Linux ? "python3"
@@ -36,6 +37,8 @@ public static class RandomEvents
         enabled = false;
         return null;
     }
+
+    public static bool IsInstalled => Installed(out _) is not null;
 
     public static bool Available => File.Exists(Script) && File.Exists(GameDb);
 

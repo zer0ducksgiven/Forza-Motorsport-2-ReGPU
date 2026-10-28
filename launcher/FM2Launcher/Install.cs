@@ -423,6 +423,10 @@ public static class Dlc
             }
             catch (Exception) { } // a broken bundled package mustn't stop the launcher; Add shows the error
         }
+        // Random Events is built from the player's game files, not shipped: built here once, switched off.
+        if (!removed.Contains(RandomEvents.Id) && RandomEvents.Available && !RandomEvents.IsInstalled)
+            try { RandomEvents.Install(); }
+            catch (Exception ex) { File.WriteAllText(Path.Combine(Paths.User, "random_events_error.txt"), $"install: {ex.Message}\n"); }
     }
 
     static List<Pack> ListAll(bool mods)
@@ -492,7 +496,7 @@ public static class Dlc
                 if (Directory.Exists(p)) Directory.Delete(p, true);
                 else if (File.Exists(p)) File.Delete(p);
             }
-        if (File.Exists(Path.Combine(AppContext.BaseDirectory, "mods", id)))
+        if (File.Exists(Path.Combine(AppContext.BaseDirectory, "mods", id)) || id == RandomEvents.Id)
             File.AppendAllText(Removed, id + Environment.NewLine);
     }
 }

@@ -90,8 +90,6 @@ public sealed class Bridge
                     var (added, errors) = Dlc.Add(files, true);
                     return new { added, errors, state = State() };
                 }
-            case "mods.randomevents":
-                await Task.Run(RandomEvents.Install);
                 return State();
             case "mods.remove":
                 Dlc.Remove(Str(a, "id"));
@@ -323,7 +321,6 @@ public sealed class Bridge
             forzaPlus2 = ForzaPlus2.State(),
             dlc = Dlc.List(),
             mods = Dlc.Mods(),
-            randomEvents = RandomEvents.Available,
         };
     }
 }

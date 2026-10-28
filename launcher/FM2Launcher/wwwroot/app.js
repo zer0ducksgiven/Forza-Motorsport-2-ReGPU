@@ -277,8 +277,6 @@ function render() {
     ml.append(it)
   }
   $("mods-add").disabled = s.checks.running
-  $("mods-random").hidden = !s.randomEvents || s.mods.some((m) => m.id === "RandomEvents")
-  $("mods-random").disabled = s.checks.running
 
   const pf = s.forzaPlus2, pl = $("pfp")
   pl.replaceChildren()
@@ -444,12 +442,6 @@ async function addPackages(cmd, what) {
 }
 $("dlc-add").onclick = () => guarded(() => addPackages("dlc.add", "package"))
 $("mods-add").onclick = () => guarded(() => addPackages("mods.add", "mod"))
-$("mods-random").onclick = () => guarded(async () => {
-  $("mods-random").disabled = true
-  state = await call("mods.randomevents")
-  render()
-  toast("Random Events built from your game. Switch it on to play it.", true)
-})
 $("pfp-install").onclick = () => guarded(async () => {
   pfpInstalling = true
   $("pfp-install").disabled = true

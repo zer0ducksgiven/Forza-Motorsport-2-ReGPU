@@ -18,7 +18,7 @@ Out folder: <out>/RandomEvents/media/db/patch/92000_merge.slt and <out>/DLCZips-
 zipmount.xml, stringtables.xml, RandomEventsPrizes.txt), for make_mod.py <out>/RandomEvents ... --zip RandomEvents.
 RandomEventsPrizes.txt lists every car ("<id> <price> <year> <make> <model>"): the port draws the prize car from it.
 """
-import argparse, os, random, sqlite3, sys, zipfile
+import argparse, os, random, shutil, sqlite3, sys, zipfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 import strtable
@@ -182,16 +182,33 @@ def main():
                 tables[table].add(kk, text, sym)
             for t in ('CareerEventTypes', 'Events'):
                 z.writestr('%s/%s.str' % (lang, t), tables[t].build())
+    # the events' descriptions, which the port shows with the races left until the next set (hooks/random_events.cpp)
+    with open(os.path.join(extra, 'RandomEventsDescriptions.txt'), 'w', encoding='utf-8', newline='\n') as f:
+        for i, (table, kk, sym, text) in enumerate(t for t in texts if t[0] == 'Events' and t[2].startswith('IDS_Description_')):
+            f.write('%d\t%s\n' % (FIRST_EVENT_ID + i, text))
     # the prize list: every car, for the port to draw from every fifth Random Events race (hooks/random_events.cpp)
     with open(os.path.join(extra, 'RandomEventsPrizes.txt'), 'w', encoding='utf-8', newline='\n') as f:
         model = look('Data_Car', 'SELECT Id, DisplayName FROM Data_Car')
         for cid, year, make, cost in g.execute('SELECT Id, Year, MakeID, BaseCost FROM Data_Car ORDER BY Id'):
             f.write('%d %d %d %s\n' % (cid, cost, year, model.get(cid) or names['make'].get(make, '')))
-    # the category's pictures (career/icons, drawn by make_icons.py), added to the game's UI textures
+    # the category's pictures (career/icons, drawn by make_icons.py), added to the game's UI textures; and its trophy:
+    # the trophy script names the files by the category (C_TRK_Trophy0<id>_Gold.tga, Trophy0<id>_Gold.bik), so
+    # category 10 gets copies of category 4's (the Forza 2 cup), from the player's game files
+    media = os.path.dirname(os.path.dirname(os.path.abspath(a.gamedb)))
+    trophy = '%02d' % CATEGORY_ID
     with zipfile.ZipFile(os.path.join(extra, 'RandomEventsOverrides2_pri_170.zip'), 'w', zipfile.ZIP_DEFLATED) as z:
         for f in sorted(os.listdir(ICONS)):
             if f.endswith('.xds'):
                 z.write(os.path.join(ICONS, f), 'C_Map/C_TYP_Map/' + f)
+        textures = zipfile.ZipFile(os.path.join(media, 'UI', 'Textures.zip'))
+        for place in ('Gold', 'Silver', 'Bronze'):
+            z.writestr('C_Map/C_TRK_Map/C_TRK_Trophy0%s_%s.xds' % (trophy, place),
+                       textures.read('C_Map/C_TRK_Map/C_TRK_Trophy04_%s.xds' % place))
+    # the trophy videos: Bink reads its files from the disk, not through the zip mounts, so with --install the copies go
+    # beside the game's own (additions only: nothing of the game's is changed)
+    videos = [(os.path.join(media, 'UI', 'Videos', 'Trophies', 'Trophy04_%s.bik' % place),
+               os.path.join(media, 'UI', 'Videos', 'Trophies', 'Trophy0%s_%s.bik' % (trophy, place)))
+              for place in ('Gold', 'Silver', 'Bronze')]
     open(os.path.join(extra, 'zipmount.xml'), 'w', newline='\r\n').write(
         '<?xml version="1.0" ?>\n<zipmount>\n\t<zip Name="RandomEventsOverrides1_pri_170.zip" Mount="game:\\Media\\StringTables\\" />\n'
         '\t<zip Name="RandomEventsOverrides2_pri_170.zip" Mount="game:\\Media\\UI\\Textures\\" />\n</zipmount>\n')
@@ -239,10 +256,10 @@ def main():
     p.commit()
     p.close()
     if a.install:
-        install(mod, extra, a.install, a.rotation)
+        install(mod, extra, a.install, a.rotation, videos)
 
 
-def install(mod, extra, dlczips, rotation):
+def install(mod, extra, dlczips, rotation, videos=()):
     """An installed pack (the launcher keeps one, rebuilt at launch when the rotation changes): the mod's zip and the
     extra files written into its Media/DLCZips, and RandomEventsRotation.txt saying which rotation it holds. The
     game unpacks the database patch again when the zip changes (imports_xam.cpp UnpackDlcPatches)."""
@@ -258,6 +275,9 @@ def install(mod, extra, dlczips, rotation):
     for f in os.listdir(extra):
         with open(os.path.join(extra, f), 'rb') as i, open(os.path.join(dlczips, f), 'wb') as o:
             o.write(i.read())
+    for source, copy in videos:
+        if not os.path.exists(copy):
+            shutil.copyfile(source, copy)
     with open(os.path.join(dlczips, 'RandomEventsRotation.txt'), 'w') as f:
         f.write('%d\n' % rotation)
     print('installed rotation %d in %s' % (rotation, dlczips))

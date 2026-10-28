@@ -39,6 +39,7 @@ constexpr uint32_t kFirstEvent = 900, kLastEvent = 903, kRotateEvery = 2, kPrize
 struct State
 {
     uint32_t races = 0, randomRaces = 0, rotation = 0, prize = 0, prizePrice = 0;
+    uint32_t level = 0, cars = 0; // the player's, as Event Select last saw them (ScaledPrizes): the prize car's value
     std::string prizeName;
     std::filesystem::path loadedFrom; // the profile's file it was read from (the profile signs in after boot)
 } g_state;
@@ -87,25 +88,58 @@ void Load()
         else if (key == "prize") g_state.prize = v;
         else if (key == "prize_price") g_state.prizePrice = v;
         else if (key == "prize_name") g_state.prizeName = value;
+        else if (key == "level") g_state.level = v;
+        else if (key == "cars") g_state.cars = v;
     }
 }
 
 void Save()
 {
     std::ofstream out(StateFile(), std::ios::trunc);
-    out << "races=" << g_state.races << "\nrandom_races=" << g_state.randomRaces << "\nrotation=" << g_state.rotation << "\n";
+    out << "races=" << g_state.races << "\nrandom_races=" << g_state.randomRaces << "\nrotation=" << g_state.rotation << "\nlevel=" << g_state.level
+        << "\ncars=" << g_state.cars << "\n";
     if (g_state.prize)
         out << "prize=" << g_state.prize << "\nprize_price=" << g_state.prizePrice << "\nprize_name=" << g_state.prizeName << "\n";
 }
 
-// A car from the prize list, any of them.
+// The prize car's top price for the player: what the game's own Go Race events give as reward cars at that level
+// (Rewards_CareerEvents' dearest by Events.Level: 12,000 CR at level 0, 44,000 at 10, 60,000 at 15, 70,000 from
+// 25; in between, linear), times the collection factor ScaledPrizes uses (1% less per car over 10, half at least).
+uint32_t PrizeCap()
+{
+    static const uint32_t kCap[][2] = { {0, 12000}, {3, 29000}, {5, 31000}, {7, 41000}, {10, 44000}, {15, 60000}, {25, 70000} };
+    double cap = kCap[std::size(kCap) - 1][1];
+    for (size_t i = 0; i + 1 < std::size(kCap); i++)
+        if (g_state.level < kCap[i + 1][0])
+        {
+            cap = kCap[i][1] + double(kCap[i + 1][1] - kCap[i][1]) * (g_state.level - kCap[i][0]) / (kCap[i + 1][0] - kCap[i][0]);
+            break;
+        }
+    const double collection = std::max(0.5, 1 - 0.01 * std::max(0, int(g_state.cars) - 10));
+    return uint32_t(std::max(12000.0, cap * collection));
+}
+
+// A car from the prize list, priced between 40% of PrizeCap and PrizeCap (the cheapest cars when none are).
 void DrawPrize()
 {
     std::ifstream in(ModFolder() / "RandomEventsPrizes.txt");
-    std::vector<std::string> cars;
+    const uint32_t cap = PrizeCap();
+    std::vector<std::string> cars, cheapest;
+    uint32_t lowest = UINT32_MAX;
     for (std::string line; std::getline(in, line);)
-        if (!line.empty())
+    {
+        unsigned price = 0;
+        if (line.empty() || sscanf(line.c_str(), "%*u %u", &price) < 1)
+            continue;
+        if (price <= cap && price * 10 >= cap * 4)
             cars.push_back(line);
+        if (price < lowest)
+            lowest = price, cheapest.clear();
+        if (price == lowest)
+            cheapest.push_back(line);
+    }
+    if (cars.empty())
+        cars = cheapest;
     if (cars.empty())
     {
         Log("random events: no prize list (RandomEventsPrizes.txt) in the mod");
@@ -120,20 +154,37 @@ void DrawPrize()
     g_state.prize = id;
     g_state.prizePrice = price;
     g_state.prizeName = std::to_string(year) + " " + (line.c_str() + used);
-    Log("random events: prize car won: %s (car %u, %u CR)", g_state.prizeName.c_str(), id, price);
+    Log("random events: prize car won: %s (car %u, %u CR; level %u, %u cars, up to %u CR)", g_state.prizeName.c_str(), id, price,
+        g_state.level, g_state.cars, cap);
 }
 }
 
 // For hooks/lua.cpp, as a script loads: Lua to run before it, in the same state (the prize car's purchase), or empty.
 std::string RandomEventsLuaBefore(const char* name, bool source, const char* text, uint32_t size)
 {
-    (void)text;
-    (void)size;
     static LiveSwitch logNames("FM2_LUA_NAMES");
     if (logNames)
         Log("lua: loading %s (%s)", name, source ? "source" : "compiled");
     if (!ModInstalled())
         return {};
+    // ScaledPrizes' note of the player's level and garage, for the prize car (it loads the line, unrun).
+    static const std::string_view kNote = "--random events: level=";
+    if (size > kNote.size() && std::string_view(text, kNote.size()) == kNote)
+    {
+        unsigned level = 0, cars = 0;
+        if (sscanf(text + kNote.size(), "%u cars=%u", &level, &cars) == 2)
+        {
+            std::lock_guard lock(g_mutex);
+            Load();
+            if (g_state.level != level || g_state.cars != cars)
+            {
+                g_state.level = level;
+                g_state.cars = cars;
+                Save();
+            }
+        }
+        return {};
+    }
     static const std::string target = getenv("FM2_PRIZE_CHUNK") ? getenv("FM2_PRIZE_CHUNK") : "C_MYC_MainMenu.lua";
     static bool told = false;
     if (logNames && !told)
@@ -169,9 +220,13 @@ std::string RandomEventsLuaBefore(const char* name, bool source, const char* tex
 //  - Race Type: Random Events is listed first, and its description (raceTypeQuery) says when the events change and when the
 //    prize car comes, or which car was won;
 //  - Event Select: "First Place Prize" (PrizeQuery) shows only a prize car (one per event in Rewards_CareerEvents),
-//    so a Random Events event, which pays credits, showed an empty box: it falls back to the event's CashPrize
-//    ("12,000 CR"; the generator's prizes are whole thousands) and the races to the prize car.
+//    so a Random Events event, which pays credits, showed an empty box: it falls back to first place's credits
+//    (EventScoring, "10,300 CR") and the races to the prize car; each event's
+//    description (the events query; the generator's RandomEventsDescriptions.txt) ends with the races to the next set.
 // Text the queries return in place of a string reference is shown as it is.
+// The prizes scale with the player's career (ScaledPrizes): Lua run first in the event screen's script sets them.
+// (The trophies are files named by the category, C_TRK_Trophy0<id>_Gold.tga and Trophy0<id>_Gold.bik: the generator
+// puts copies of category 4's in the mod.)
 namespace
 {
 constexpr uint32_t kCategory = 10; // CareerEventTypes.id (tools/modkit/career/random_events.py, CATEGORY_ID)
@@ -190,6 +245,62 @@ std::string Quoted(const std::string& text)
     return out + "'";
 }
 
+// The mod's event descriptions: "<id>	<text>" lines.
+std::vector<std::pair<uint32_t, std::string>> Descriptions()
+{
+    std::vector<std::pair<uint32_t, std::string>> out;
+    std::ifstream in(ModFolder() / "RandomEventsDescriptions.txt");
+    for (std::string line; std::getline(in, line);)
+    {
+        const size_t tab = line.find('	');
+        if (tab != std::string::npos)
+            out.emplace_back(uint32_t(strtoul(line.c_str(), nullptr, 10)), line.substr(tab + 1));
+    }
+    return out;
+}
+
+// Lua setting the events' prizes (EventScoring.Credits, the race's pay by place; Events.CashPrize, the bonus for
+// finishing the event, is 0: each event is one race, so the bonus would pay a win twice) from the player's level and garage, so the events pay what the career pays at that point
+// and can't be farmed early or by a big collection:
+//   first place = base(level) x 1.5 x tier x collection
+//   base: what the best Go Race series open at that level pay a first place per race (EventScoring by
+//         Events.Level, categories 1-8, endurance left out): 1,000 CR at level 0, 7,000 at 10, 11,000 at 15,
+//         25,000 at 30, 45,000 at 50; in between, linear
+//   tier: Easy 0.6, Medium 0.8, Hard 1.0, Extreme 1.25 (events 900-903, the generator's order)
+//   collection: 1 up to 10 cars, 1% less for each car over, 0.5 from 60 cars
+// times 1.5: the game's own one-race events pay the race and a bonus of 1.5x it; here that is first place alone.
+// The other places get the generator's shares of it (SHARE).
+std::string ScaledPrizes()
+{
+    return R"(pcall(function()
+local level = ProfileManager.Main.Level or 0
+local cars = DB:execute("SELECT COUNT(1) AS n FROM " .. Lobby.activePlayer.DB.Garage).n or 0
+loadstring("--random events: level=" .. level .. " cars=" .. cars)
+local B = { {0, 1000}, {3, 2000}, {5, 3000}, {7, 5000}, {10, 7000}, {15, 11000}, {20, 16000}, {25, 21000}, {30, 25000}, {35, 30000}, {40, 36000}, {45, 42000}, {50, 45000} }
+local base = B[table.getn(B)][2]
+for i = 1, table.getn(B) - 1 do
+  if level < B[i + 1][1] then
+    base = B[i][2] + (B[i + 1][2] - B[i][2]) * (level - B[i][1]) / (B[i + 1][1] - B[i][1])
+    break
+  end
+end
+local collection = 1 - 0.01 * math.max(0, cars - 10)
+if collection < 0.5 then collection = 0.5 end
+local tiers = { 0.6, 0.8, 1.0, 1.25 }
+local share = { 1.0, 0.7, 0.5, 0.35, 0.25, 0.15, 0.1, 0.05 }
+for t = 1, 4 do
+  local id = 899 + t
+  local first = math.max(1000, base * 1.5 * tiers[t] * collection)
+  DB:execute("UPDATE Events SET CashPrize=0 WHERE Id=" .. id)
+  for place = 1, 8 do
+    DB:execute("UPDATE EventScoring SET Credits=" .. math.floor(first * share[place] / 100 + 0.5) * 100 ..
+               " WHERE Event_ID=" .. id .. " AND place=" .. place)
+  end
+end
+end)
+)";
+}
+
 bool Replace(std::string& text, std::string_view from, const std::string& to)
 {
     const size_t at = text.find(from);
@@ -206,10 +317,18 @@ std::string RandomEventsLuaSource(const char* text, uint32_t size)
     static const std::string_view kTypesOrder = "FROM CareerEventTypes ORDER BY id";
     static const std::string_view kPrize =
         "SELECT ModelShort AS ModelName FROM Rewards_CareerEvents INNER JOIN Data_Car ON Id=CarId WHERE EventId=[Events.Id]";
+    static const std::string_view kEvents = "SELECT Id,Name,Level,Description,EventIcon";
     if (!ModInstalled())
         return {};
     std::string out(text, size);
-    if (out.find(kTypes) == std::string::npos && out.find(kPrize) == std::string::npos)
+    // The Event Results trophy screen (Flows/CareerTrophy.xml) isn't shown after a Random Events race: the event
+    // is that one race, so the screen would only repeat the result.
+    static const std::string_view kTrophy = "if RewardReveal.ShowTrophy then";
+    if (Replace(out, kTrophy, "if RewardReveal.ShowTrophy and (RewardReveal.EventId < " + std::to_string(kFirstEvent) +
+                                  " or RewardReveal.EventId > " + std::to_string(kLastEvent) + ") then"))
+        return out;
+    if (out.find(kTypes) == std::string::npos && out.find(kPrize) == std::string::npos &&
+        out.find(kEvents) == std::string::npos)
         return {};
     std::lock_guard lock(g_mutex);
     Load();
@@ -227,8 +346,20 @@ std::string RandomEventsLuaSource(const char* text, uint32_t size)
     changed |= Replace(out, kTypesOrder, "FROM CareerEventTypes ORDER BY id<>" + std::to_string(kCategory) + ", id");
     changed |= Replace(out, kPrize,
                        "SELECT COALESCE((SELECT ModelShort FROM Rewards_CareerEvents INNER JOIN Data_Car ON Data_Car.Id=CarId "
-                       "WHERE EventId=e.Id), (e.CashPrize / 1000) || ',000 CR' || " + Quoted(prize) +
-                           ") AS ModelName FROM Events e WHERE e.Id=[Events.Id]");
+                       "WHERE EventId=e.Id), (s.Credits / 1000) || ',' || substr('00' || (s.Credits % 1000), -3) || ' CR' || " +
+                           Quoted(prize) + ") AS ModelName FROM Events e LEFT JOIN EventScoring s ON s.Event_ID=e.Id AND s.place=1 "
+                           "WHERE e.Id=[Events.Id]");
+    std::string descriptions = "CASE Id";
+    for (const auto& [id, description] : Descriptions())
+        descriptions += " WHEN " + std::to_string(id) + " THEN " +
+                        Quoted(description + " New events in " + Plural(toRotate, "race") + ".");
+    if (descriptions != "CASE Id")
+        changed |= Replace(out, kEvents, "SELECT Id,Name,Level," + descriptions + " ELSE Description END AS Description,EventIcon");
+    if (out.find(kEvents) != std::string::npos || out.find("ELSE Description END AS Description,EventIcon") != std::string::npos)
+    {
+        out.insert(0, ScaledPrizes());
+        changed = true;
+    }
     if (changed)
         Log("random events: the career screens show the counts (%s)", status.c_str());
     return changed ? out : std::string();
