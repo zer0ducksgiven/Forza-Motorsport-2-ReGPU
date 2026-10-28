@@ -8264,18 +8264,18 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
         // Clamp X and Y (dword 0 bits 10-12, 13-15): 0 wrap, 1 mirrored repeat, 2 and up clamp,
         // the odd ones mirrored once first. Filter: dword 3 bits 19-20 (mag): 0 point. With only one
         // axis clamped (kerbs: clamped across, repeating along) the wrapping sampler is used and the
-        // shader clamps that axis (bits 18, 19). The shader mirrors (bits 20, 21 repeat; 22, 23 once):
-        // the telemetry's car diagram draws its symmetric parts mirrored, which clamped smeared the
-        // edge column across the other half (report #26).
+        // shader clamps that axis (bits 18, 19). The shader mirrors first (bits 20, 21 repeat; 22, 23
+        // once): the telemetry's car diagram draws its symmetric parts mirrored, which clamped smeared
+        // the edge column across the other half (report #26). A mirrored axis is still clamped after
+        // the fold: wrapped, the filter blended the opposite edge in, a line down menu images.
         const uint32_t clampX = (fetch.dwords[0] >> 10) & 7, clampY = (fetch.dwords[0] >> 13) & 7;
         LiveSwitch &oldClamp = g_sw_FM2_OLD_CLAMP; // A/B: X's mode for both axes (before the kerb fix)
-        static LiveSwitch noMirror("FM2_NO_TEXTURE_MIRROR"); // A/B: mirrored modes as before
-        auto clamps = [&](uint32_t m) { return noMirror ? m != 0 : m >= 2; };
-        const bool clamp = oldClamp ? clampX != 0 : clamps(clampX) && clamps(clampY);
+        static LiveSwitch noMirror("FM2_NO_TEXTURE_MIRROR"); // A/B: mirrored modes clamped only
+        const bool clamp = oldClamp ? clampX != 0 : clampX != 0 && clampY != 0;
         const bool point = ((fetch.dwords[3] >> 19) & 3) == 0;
         ti[0] = (point ? (clamp ? 2 : 3) : (clamp ? 1 : 0)) | ((uint32_t(fetch.ExpAdjust()) & 0x3F) << 8);
         if (!clamp && !oldClamp)
-            ti[0] |= (clamps(clampX) ? 1u << 18 : 0u) | (clamps(clampY) ? 1u << 19 : 0u);
+            ti[0] |= (clampX ? 1u << 18 : 0u) | (clampY ? 1u << 19 : 0u);
         if (!oldClamp && !noMirror)
             ti[0] |= (clampX == 1 ? 1u << 20 : 0u) | (clampY == 1 ? 1u << 21 : 0u) | (clampX >= 3 && (clampX & 1) ? 1u << 22 : 0u) |
                 (clampY >= 3 && (clampY & 1) ? 1u << 23 : 0u);
