@@ -70,6 +70,11 @@ public static class Joysticks
         if (Platform.Linux ? !NativeLibrary.TryLoad(LibraryFile, out _) : !File.Exists(LibraryFile)) return false;
         SDL_SetHint("SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS", "1");
         SDL_SetHint("SDL_JOYSTICK_HIDAPI", "0");
+        // As the game: with these off, SDL named a T598 "Thrustmaster Advanced Mode Racer" here but "44F B696" in
+        // the game, and the name's CRC is part of the GUID the bindings go by (report #21).
+        SDL_SetHint("SDL_JOYSTICK_HIDAPI_PS4", "1");
+        SDL_SetHint("SDL_JOYSTICK_HIDAPI_PS5", "1");
+        SDL_SetHint("SDL_JOYSTICK_HIDAPI_SWITCH", "1");
         SDL_SetHint("SDL_JOYSTICK_RAWINPUT", "0");
         SDL_SetHint("SDL_XINPUT_ENABLED", "0");
         return _started = SDL_Init(InitJoystick);

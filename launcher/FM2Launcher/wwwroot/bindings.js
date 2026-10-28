@@ -41,6 +41,9 @@ const PAD_BUTTONS = ["A", "B", "X", "Y", "LB", "RB", "LT", "RT", "Back", "Start"
 const PAD_AXES = ["Left stick X", "Left stick Y", "Right stick X", "Right stick Y"]
 const MOUSE = { 0: 1, 2: 2, 1: 4, 3: 5, 4: 6 } // event.button to its virtual key
 const isPseudo = (guid) => guid === "keyboard" || guid === "pad"
+// The same device, the name's CRC in its SDL GUID (hex digits 4-7) aside: launchers before 0.9.8 named some
+// wheels differently from the game, so bindings saved then carry another CRC (report #21).
+const sameDevice = (a, b) => a === b || (a.length === 32 && b.length === 32 && a.slice(0, 4) === b.slice(0, 4) && a.slice(8) === b.slice(8))
 const isKeyboard = (src) => src.startsWith("keyboard/")
 
 // The game's own keys (src/kernel/imports_xam.cpp). A row without keys bound keeps its key, shown as a chip, unless
@@ -137,7 +140,7 @@ function hideTip() {
 function deviceName(guid) {
   if (guid === "keyboard") return KEYBOARD.name
   if (guid === "pad") return PAD.name
-  const d = devices.find((x) => x.guid === guid)
+  const d = devices.find((x) => sameDevice(x.guid, guid))
   return d ? d.name : names[guid] || "Unplugged device"
 }
 
@@ -261,7 +264,7 @@ function drawRows() {
     else if (!list.length && !(listen && listen.key === t.key)) chips.append(el("span", "default", "game default"))
     list.forEach((src, i) => {
       const info = sourceText(src)
-      const chip = el("span", "chip-b" + (isPseudo(info.guid) || devices.some((d) => d.guid === info.guid) ? "" : " missing"))
+      const chip = el("span", "chip-b" + (isPseudo(info.guid) || devices.some((d) => sameDevice(d.guid, info.guid)) ? "" : " missing"))
       chip.append(el("span", "", info.what), el("span", "dev", deviceName(info.guid)))
       if (t.key === "steer") {
         const rev = el("button", "rev" + (info.reversed ? " on" : ""), "reverse")
@@ -314,11 +317,13 @@ document.addEventListener("mousedown", (e) => {
 })
 document.addEventListener("contextmenu", (e) => { if (listen) e.preventDefault() })
 
-// The first connected controller through the Gamepad API (standard layout): buttons pressed, sticks.
+// The first connected controller through the Gamepad API (standard layout): buttons pressed, sticks. Only
+// a standard-layout one: wheels are in that list too, and a wheel's button bound as a controller's
+// ("pad/b1") is never read from the wheel (report #21).
 function padState() {
   let pads = []
   try { pads = navigator.getGamepads ? [...navigator.getGamepads()] : [] } catch { } // not allowed: no controller, keys still bind
-  const p = pads.find((g) => g && g.connected)
+  const p = pads.find((g) => g && g.connected && g.mapping === "standard")
   return p ? { buttons: p.buttons.map((b) => b.pressed || b.value > 0.5), axes: [...p.axes] } : null
 }
 

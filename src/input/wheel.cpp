@@ -278,11 +278,19 @@ void LoadBindings()
         Log("wheel: %d pad inputs bound (wheel_bindings.ini)", bound);
 }
 
+// Two SDL GUIDs for the same device, the name's CRC (hex digits 4-7) aside: SDL names a device differently
+// with its HIDAPI PlayStation and Switch drivers on (the game) or off (the launcher before 0.9.8), "44F B696"
+// or "Thrustmaster Advanced Mode Racer" for a T598, and every binding the launcher saved missed (report #21).
+bool SameDevice(const std::string& a, const std::string& b)
+{
+    return a.size() == b.size() && a.size() >= 8 && a.compare(0, 4, b, 0, 4) == 0 && a.compare(8, std::string::npos, b, 8) == 0;
+}
+
 bool Bound(const std::string& guid)
 {
     for (const auto& list : g_bindings)
         for (const Source& s : list)
-            if (s.guid == guid)
+            if (SameDevice(s.guid, guid))
                 return true;
     return false;
 }
@@ -290,7 +298,7 @@ bool Bound(const std::string& guid)
 const Device* DeviceOf(Driver& d, const std::string& guid)
 {
     for (const Device& dev : d.devices)
-        if (dev.guid == guid)
+        if (SameDevice(dev.guid, guid))
             return &dev;
     return nullptr;
 }
