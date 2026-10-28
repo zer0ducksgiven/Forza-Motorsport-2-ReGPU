@@ -8261,16 +8261,24 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
         uint32_t ti[4]{};
         float tb[4]{};
         ti[3] = (cube ? 3 : 1) | (onGpu ? (1u << 31) | (swizzle << 8) : 0);
-        // Clamp X and Y (dword 0 bits 10-12, 13-15): 0 wrap, else clamp. Filter: dword 3 bits
-        // 19-20 (mag): 0 point. With only one axis clamped (kerbs: clamped across, repeating
-        // along) the wrapping sampler is used and the shader clamps that axis (bits 18, 19).
+        // Clamp X and Y (dword 0 bits 10-12, 13-15): 0 wrap, 1 mirrored repeat, 2 and up clamp,
+        // the odd ones mirrored once first. Filter: dword 3 bits 19-20 (mag): 0 point. With only one
+        // axis clamped (kerbs: clamped across, repeating along) the wrapping sampler is used and the
+        // shader clamps that axis (bits 18, 19). The shader mirrors (bits 20, 21 repeat; 22, 23 once):
+        // the telemetry's car diagram draws its symmetric parts mirrored, which clamped smeared the
+        // edge column across the other half (report #26).
         const uint32_t clampX = (fetch.dwords[0] >> 10) & 7, clampY = (fetch.dwords[0] >> 13) & 7;
         LiveSwitch &oldClamp = g_sw_FM2_OLD_CLAMP; // A/B: X's mode for both axes (before the kerb fix)
-        const bool clamp = oldClamp ? clampX != 0 : clampX != 0 && clampY != 0;
+        static LiveSwitch noMirror("FM2_NO_TEXTURE_MIRROR"); // A/B: mirrored modes as before
+        auto clamps = [&](uint32_t m) { return noMirror ? m != 0 : m >= 2; };
+        const bool clamp = oldClamp ? clampX != 0 : clamps(clampX) && clamps(clampY);
         const bool point = ((fetch.dwords[3] >> 19) & 3) == 0;
         ti[0] = (point ? (clamp ? 2 : 3) : (clamp ? 1 : 0)) | ((uint32_t(fetch.ExpAdjust()) & 0x3F) << 8);
         if (!clamp && !oldClamp)
-            ti[0] |= (clampX ? 1u << 18 : 0u) | (clampY ? 1u << 19 : 0u);
+            ti[0] |= (clamps(clampX) ? 1u << 18 : 0u) | (clamps(clampY) ? 1u << 19 : 0u);
+        if (!oldClamp && !noMirror)
+            ti[0] |= (clampX == 1 ? 1u << 20 : 0u) | (clampY == 1 ? 1u << 21 : 0u) | (clampX >= 3 && (clampX & 1) ? 1u << 22 : 0u) |
+                (clampY >= 3 && (clampY & 1) ? 1u << 23 : 0u);
         // Clamp to border on both axes (modes 6, 7): the shader returns the border colour
         // outside the image (dword 5 bits 0-1: 1 white, else black).
         if (clampX >= 6 && clampY >= 6)

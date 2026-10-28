@@ -246,6 +246,11 @@ float4 TFetchRaw(uint slot, float3 coord, bool denorm, bool vertexStage, float b
     const float2 texelSize = float2(max(tinfo[slot].yz & 0xFFFFu, uint2(1, 1)));
     if (denorm) uv = (uv + texel) / texelSize;
     else uv += texel / texelSize;
+    // Mirrored (tinfo.x bits 20 U, 21 V: repeating; 22 U, 23 V: once, then clamped below).
+    if ((tinfo[slot].x >> 20) & 1u) uv.x = 1.0 - abs(frac(uv.x * 0.5) * 2.0 - 1.0);
+    if ((tinfo[slot].x >> 21) & 1u) uv.y = 1.0 - abs(frac(uv.y * 0.5) * 2.0 - 1.0);
+    if ((tinfo[slot].x >> 22) & 1u) uv.x = abs(uv.x);
+    if ((tinfo[slot].x >> 23) & 1u) uv.y = abs(uv.y);
     // Clamp to border (tinfo.x bit 16; bit 17 white): outside the image the border colour, as
     // shadow maps rely on (white: nothing casts a shadow beyond the map).
     if (((tinfo[slot].x >> 16) & 1u) && any(uv < 0.0 || uv > 1.0))
