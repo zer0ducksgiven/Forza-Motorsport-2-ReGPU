@@ -195,13 +195,33 @@ saved settings; these variables override the file for one run: `FM2_PROFILE`,
 
 Mods are packaged like the game's DLC, so they add cars, upgrades or database changes without touching the game's
 files. In the launcher's **Settings** tab, the **Mods** panel installs them (**Add mod**), switches them on and off,
-and removes them. Two come with the launcher, both switched off:
+and removes them. Two come with the launcher. Both are **optional and switched off**: the game is unchanged unless
+you switch one on.
 
-- **Random Events**: four career events (Easy, Medium, Hard, Extreme) made from your game's cars and tracks, listed
-  first in Go Race. A new set every two career races, and a random prize car every five Random Events races. Prizes
-  follow your level and garage size, so it can't be farmed. The launcher builds it from your game files the first
-  time it starts.
-- **Engine Swap Pack** by Aiden: engine swap upgrades for 190 cars.
+#### Random Events (optional)
+
+Once you've raced the career's events, there's nothing new to race. Random Events adds a career category that keeps
+changing:
+
+- **Where:** Career → Go Race → Race Type. It's listed first, with a dice icon.
+- **What:** four events, **Easy, Medium, Hard and Extreme**. Each is one race with its own entry rules (for example
+  "German cars", "rear-wheel drive" or "V8 engines"), a track and a performance class. The rules are made from the
+  cars and tracks in your own game, and each event says how many cars qualify.
+- **Changes:** after every two career races (any career race counts), the four events are replaced by a new set.
+  Each profile has its own run of events.
+- **Prizes:** credits, scaled to your driver level so they match what the career pays at that point, and a little
+  lower for each car over 10 in your garage, so it can't be used to farm money. Harder events pay more.
+- **Prize car:** every fifth Random Events race wins you a random car, worth about what the career's own prize cars
+  are worth at your level. It goes into your garage the next time you open the Career menu.
+- **Event Select** shows the prize and how many races are left until the events change and until the prize car.
+
+To try it: **Settings → Mods**, switch **Random Events** on, and start the game. Switching it off again removes the
+category; your credits and cars stay. The launcher builds it from your game files the first time it starts (it
+needs no download).
+
+#### Engine Swap Pack (optional)
+
+By Aiden: engine swap upgrades for 190 cars.
 
 Keep a mod switched on once a career uses it: a save with a mod's cars or upgrades needs that mod. **Project Forza
 Plus 2** is installed from its own panel, and while it's on, no DLC or other mods are loaded.
