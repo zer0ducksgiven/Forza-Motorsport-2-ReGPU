@@ -127,6 +127,115 @@ bool MusicPacket(const uint8_t* p)
 std::set<uint32_t> g_enabled;
 std::once_flag g_started;
 
+AVCodecContext* OpenCodec(uint32_t ch, uint32_t hz)
+{
+    const AVCodec* codec = avcodec_find_decoder(AV_CODEC_ID_XMA2);
+    AVCodecContext* av = codec ? avcodec_alloc_context3(codec) : nullptr;
+    if (!av)
+        return nullptr;
+    av->sample_rate = int(hz);
+    av_channel_layout_default(&av->ch_layout, int(ch));
+    av->block_align = kPacketBytes;
+    // XMA2WAVEFORMATEX (34 bytes): one stream; FFmpeg reads the stream count from it.
+    av->extradata = static_cast<uint8_t*>(av_mallocz(34 + AV_INPUT_BUFFER_PADDING_SIZE));
+    av->extradata_size = 34;
+    av->extradata[0] = 1;
+    if (avcodec_open2(av, codec, nullptr) < 0)
+        avcodec_free_context(&av);
+    return av;
+}
+
+// Codecs are opened and freed only by the decoder thread, outside g_mutex. An XMA2 codec takes about
+// 6 MB and 1-3 ms to open (eight stream decoders and their transforms), and since the engine-sound
+// decode every engine sound start needs a fresh one. Opened by whatever stepped the stream, that was
+// the title's mixer thread (XMAEnableContext decodes the first blocks) or the decoder thread holding
+// g_mutex, which the mixer waits on: at a race start (about 40 sounds at once) the mixer missed its
+// 1024-sample deadline and the console's driver replayed the last block, heard on slower CPUs as
+// stretched, crusty sound. A stream that needs a codec when none is ready waits for the next pass
+// (2 ms; the hardware decodes in the background too). FM2_XMA_NO_CODEC_POOL=1: opened in place.
+constexpr size_t kPooledCodecs = 2;
+std::mutex g_poolMutex;
+std::map<std::pair<uint32_t, uint32_t>, std::vector<AVCodecContext*>> g_codecPool;
+std::map<std::pair<uint32_t, uint32_t>, size_t> g_codecsWanted; // streams waiting for one, this pass
+std::vector<AVCodecContext*> g_retiredCodecs;
+
+bool NoCodecPool()
+{
+    static LiveSwitch noPool("FM2_XMA_NO_CODEC_POOL");
+    return noPool;
+}
+
+// Whether a codec for ch/hz can be taken now. If not, the decoder thread opens one before its next pass.
+bool CodecReady(uint32_t ch, uint32_t hz)
+{
+    if (NoCodecPool())
+        return true;
+    std::lock_guard lock(g_poolMutex);
+    if (!g_codecPool[{ ch, hz }].empty())
+        return true;
+    g_codecsWanted[{ ch, hz }]++;
+    return false;
+}
+
+AVCodecContext* TakeCodec(uint32_t ch, uint32_t hz)
+{
+    if (!NoCodecPool())
+    {
+        std::lock_guard lock(g_poolMutex);
+        auto& pool = g_codecPool[{ ch, hz }]; // (a new entry: the decoder thread keeps it filled)
+        if (!pool.empty())
+        {
+            AVCodecContext* av = pool.back();
+            pool.pop_back();
+            return av;
+        }
+    }
+    return OpenCodec(ch, hz); // (with the pool: a first use, or a caller that didn't ask CodecReady)
+}
+
+void RetireCodec(AVCodecContext* av)
+{
+    if (!av)
+        return;
+    if (NoCodecPool())
+        return avcodec_free_context(&av);
+    std::lock_guard lock(g_poolMutex);
+    g_retiredCodecs.push_back(av);
+}
+
+// On the decoder thread, without g_mutex: frees used codecs, then opens codecs for the streams waiting
+// and up to kPooledCodecs spare, for about a millisecond at most (one at least) so streams already
+// playing are still decoded on time; the rest next pass.
+void RefillCodecPool()
+{
+    std::vector<AVCodecContext*> retired;
+    std::vector<std::pair<uint32_t, uint32_t>> wanted;
+    {
+        std::lock_guard lock(g_poolMutex);
+        retired.swap(g_retiredCodecs);
+        for (const auto& [key, pool] : g_codecPool)
+        {
+            const size_t waiting = g_codecsWanted.count(key) ? g_codecsWanted[key] : 0;
+            for (size_t i = pool.size(); i < kPooledCodecs + waiting; i++)
+                wanted.push_back(key);
+        }
+        g_codecsWanted.clear();
+    }
+    for (AVCodecContext* av : retired)
+        avcodec_free_context(&av);
+    const auto start = Clock::now();
+    for (const auto& key : wanted)
+    {
+        if (AVCodecContext* av = OpenCodec(key.first, key.second))
+        {
+            std::lock_guard lock(g_poolMutex);
+            g_codecPool[key].push_back(av);
+        }
+        if (Clock::now() - start > std::chrono::milliseconds(1))
+            break;
+    }
+}
+
 struct Decoder
 {
     AVCodecContext* av = nullptr;
@@ -158,31 +267,23 @@ struct Decoder
 
     void Close()
     {
-        avcodec_free_context(&av);
+        RetireCodec(av);
+        av = nullptr;
         av_packet_free(&packet);
         av_frame_free(&frame);
     }
 
+    // A codec from the pool (see CodecReady): opening one takes milliseconds, too long for the title's
+    // mixer thread, which steps streams through XMAEnableContext.
     bool Open(uint32_t ch, uint32_t hz)
     {
-        Close();
-        const AVCodec* codec = avcodec_find_decoder(AV_CODEC_ID_XMA2);
-        if (!codec || !(av = avcodec_alloc_context3(codec)))
+        RetireCodec(av);
+        if (!(av = TakeCodec(ch, hz)))
             return false;
-        av->sample_rate = int(hz);
-        av_channel_layout_default(&av->ch_layout, int(ch));
-        av->block_align = kPacketBytes;
-        // XMA2WAVEFORMATEX (34 bytes): one stream; FFmpeg reads the stream count from it.
-        av->extradata = static_cast<uint8_t*>(av_mallocz(34 + AV_INPUT_BUFFER_PADDING_SIZE));
-        av->extradata_size = 34;
-        av->extradata[0] = 1;
-        if (avcodec_open2(av, codec, nullptr) < 0)
-        {
-            avcodec_free_context(&av);
-            return false;
-        }
-        packet = av_packet_alloc();
-        frame = av_frame_alloc();
+        if (!packet)
+            packet = av_packet_alloc();
+        if (!frame)
+            frame = av_frame_alloc();
         channels = ch;
         rate = hz;
         return true;
@@ -428,7 +529,7 @@ bool Step(uint32_t ctx)
     const uint32_t channels = Field(ctx, 1, 29, 1) ? 2 : 1, rate = kRates[Field(ctx, 1, 27, 2)];
     Decoder& d = g_decoders[ctx];
     if (!d.av || d.channels != channels || d.rate != rate)
-        if (!d.Open(channels, rate))
+        if (!CodecReady(channels, rate) || !d.Open(channels, rate))
             return false;
     if (WriteBlock(ctx, d))
         return true;
@@ -476,6 +577,9 @@ bool Step(uint32_t ctx)
                 Log("xma: %08X decode starts mid-packet: packet %u of %u, offset %u in it, the packet's first frame at %u", ctx, packet, packets, start,
                     32 + ((header >> 11) & 0x7FFF));
         }
+        // An engine sound's start opens a fresh codec (Decode): only once one is ready.
+        if (d.flush && FindSeamlessLoop(StreamHash(GuestPtr<uint8_t>(buffer + packet * kPacketBytes), kPacketBytes)) && !CodecReady(channels, rate))
+            return false;
         d.seeked = false;
         d.music = MusicPacket(GuestPtr<uint8_t>(buffer + packet * kPacketBytes));
         if (d.music)
@@ -514,6 +618,7 @@ void DecoderLoop()
     {
         next += std::chrono::milliseconds(2);
         std::this_thread::sleep_until(next);
+        RefillCodecPool();
         std::lock_guard lock(g_mutex);
         for (uint32_t ctx : g_enabled)
             while (Step(ctx))
