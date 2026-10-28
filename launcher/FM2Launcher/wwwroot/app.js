@@ -258,6 +258,28 @@ function render() {
   }
   $("dlc-add").disabled = s.checks.running
 
+  const ml = $("mods")
+  ml.replaceChildren()
+  if (!s.mods.length) ml.append(el("div", "empty", "No mods installed."))
+  for (const p of s.mods) {
+    const it = el("div", "item" + (p.enabled ? "" : " off"))
+    const main = el("div", "main")
+    main.append(el("div", "title", p.name), el("div", "meta", p.enabled && s.forzaPlus2.enabled ? "On, but not loaded while Forza Plus 2 is on" : size(p.bytes)))
+    const rm = el("button", "ghost small", "Remove")
+    rm.dataset.tip = "Deletes the installed mod. A save that used it may not load without it."
+    rm.disabled = s.checks.running
+    rm.onclick = () => guarded(async () => { if (confirm(`Remove ${p.name}?`)) { state = await call("mods.remove", { id: p.id }); render() } })
+    const sw = el("button", "switch" + (p.enabled ? " on" : ""))
+    sw.dataset.tip = p.enabled ? "On: the game loads this mod. Click to switch it off." : "Off: kept, not loaded. Click to switch it on."
+    sw.disabled = s.checks.running
+    sw.onclick = () => guarded(async () => { state = await call("dlc.toggle", { id: p.id, enabled: !p.enabled }); render() })
+    it.append(main, rm, sw)
+    ml.append(it)
+  }
+  $("mods-add").disabled = s.checks.running
+  $("mods-random").hidden = !s.randomEvents || s.mods.some((m) => m.id === "RandomEvents")
+  $("mods-random").disabled = s.checks.running
+
   const pf = s.forzaPlus2, pl = $("pfp")
   pl.replaceChildren()
   $("pfp-install").textContent = pf.installed ? "Reinstall" : "Install"
@@ -421,6 +443,13 @@ async function addPackages(cmd, what) {
   else if (r.added) toast(`${r.added} ${what}${r.added > 1 ? "s" : ""} installed. ${r.added > 1 ? "They appear" : "It appears"} in the game next time it starts.`, true)
 }
 $("dlc-add").onclick = () => guarded(() => addPackages("dlc.add", "package"))
+$("mods-add").onclick = () => guarded(() => addPackages("mods.add", "mod"))
+$("mods-random").onclick = () => guarded(async () => {
+  $("mods-random").disabled = true
+  state = await call("mods.randomevents")
+  render()
+  toast("Random Events built from your game. Switch it on to play it.", true)
+})
 $("pfp-install").onclick = () => guarded(async () => {
   pfpInstalling = true
   $("pfp-install").disabled = true

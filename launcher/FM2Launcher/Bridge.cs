@@ -83,6 +83,19 @@ public sealed class Bridge
                     var (added, errors) = Dlc.Add(files, false);
                     return new { added, errors, state = State() };
                 }
+            case "mods.add":
+                {
+                    var files = await _window.ShowOpenFileAsync("Choose mod packages", null, true, AnyFile);
+                    if (files is not { Length: > 0 }) return new { added = 0, errors = Array.Empty<string>(), state = State() };
+                    var (added, errors) = Dlc.Add(files, true);
+                    return new { added, errors, state = State() };
+                }
+            case "mods.randomevents":
+                await Task.Run(RandomEvents.Install);
+                return State();
+            case "mods.remove":
+                Dlc.Remove(Str(a, "id"));
+                return State();
             case "pfp.install":
                 {
                     var picked = await _window.ShowOpenFolderAsync("Choose the unzipped Forza Plus 2 folder (the one with \"Main Game Changes\" in it)", null, false);
@@ -310,6 +323,7 @@ public sealed class Bridge
             forzaPlus2 = ForzaPlus2.State(),
             dlc = Dlc.List(),
             mods = Dlc.Mods(),
+            randomEvents = RandomEvents.Available,
         };
     }
 }

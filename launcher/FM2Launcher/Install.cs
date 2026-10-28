@@ -297,6 +297,7 @@ public static class Game
         if (!File.Exists(Paths.Exe)) throw new InvalidOperationException($"fm2.exe isn't at {Paths.Exe}.");
         CopyMissing(Path.Combine(Paths.Root, "update"), Paths.Update);
         CopyMissing(Path.Combine(Paths.Root, "dlc"), Paths.Dlc, Paths.DlcDisabled);
+        RandomEvents.Rotate();
         Directory.CreateDirectory(Path.Combine(Paths.Root, "out"));
         var log = Path.Combine(Paths.Root, "out", "play.log");
         var psi = Platform.Linux ? LinuxStart(log) : new ProcessStartInfo("cmd.exe", $"/c \"\"{Paths.Exe}\" > \"{log}\" 2>&1\"")
@@ -383,9 +384,46 @@ public static class Dlc
 {
     public sealed record Pack(string Id, string Name, bool Enabled, long Bytes);
 
-    // Mods (backported cars in the same package format) live beside the DLC, marked by a .mod file, listed apart.
+    // Mods (backported cars, database patches: the same package format) live beside the DLC, marked by a .mod file,
+    // listed apart.
     public static List<Pack> List() => ListAll(mods: false);
-    public static List<Pack> Mods() => ListAll(mods: true);
+    public static List<Pack> Mods()
+    {
+        InstallBundled();
+        return ListAll(mods: true);
+    }
+
+    // Example mods shipped with the launcher (launcher\mods, docs\modding.md): installed switched off, once. The .mod
+    // file holds the bundled package's size, so a newer one replaces it (keeping on or off); Remove is remembered in
+    // mods-removed.txt so it doesn't come back.
+    static bool _bundledDone;
+    static string Removed => Path.Combine(Paths.User, "mods-removed.txt");
+
+    static void InstallBundled()
+    {
+        if (_bundledDone || Game.Running) return;
+        _bundledDone = true;
+        var dir = Path.Combine(AppContext.BaseDirectory, "mods");
+        if (!Directory.Exists(dir)) return;
+        var removed = File.Exists(Removed) ? File.ReadAllLines(Removed).Select(l => l.Trim()).ToHashSet() : [];
+        foreach (var f in Directory.EnumerateFiles(dir))
+        {
+            var id = Path.GetFileName(f);
+            if (removed.Contains(id)) continue;
+            var stamp = new FileInfo(f).Length.ToString();
+            var on = File.Exists(Path.Combine(Paths.Dlc, id + ".mod"));
+            var marker = Path.Combine(on ? Paths.Dlc : Paths.DlcDisabled, id + ".mod");
+            if (File.Exists(marker) && File.ReadAllText(marker).Trim() == stamp) continue;
+            try
+            {
+                Directory.CreateDirectory(Paths.DlcDisabled);
+                var target = File.Exists(marker) && on ? Paths.Dlc : Paths.DlcDisabled;
+                Stfs.Install(f, target, true);
+                File.WriteAllText(Path.Combine(target, id + ".mod"), stamp);
+            }
+            catch (Exception) { } // a broken bundled package mustn't stop the launcher; Add shows the error
+        }
+    }
 
     static List<Pack> ListAll(bool mods)
     {
@@ -454,5 +492,7 @@ public static class Dlc
                 if (Directory.Exists(p)) Directory.Delete(p, true);
                 else if (File.Exists(p)) File.Delete(p);
             }
+        if (File.Exists(Path.Combine(AppContext.BaseDirectory, "mods", id)))
+            File.AppendAllText(Removed, id + Environment.NewLine);
     }
 }

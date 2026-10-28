@@ -4,6 +4,9 @@
 // the type tag at +8, TString characters at +16.
 #include <algorithm>
 #include <cstring>
+#include <mutex>
+#include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "kernel/imports.h"
@@ -74,10 +77,116 @@ static void SwapLayoutLabels(uint32_t buffer, uint32_t size, uint32_t name)
     Log("lua: %s: D-pad and left stick labels swapped for the DualSense picture", n);
 }
 
+std::string RandomEventsLuaBefore(const char* name, bool source, const char* text, uint32_t size); // hooks/random_events.cpp
+std::string RandomEventsLuaSource(const char* text, uint32_t size);
+
+#if FM2_TITLE_UPDATE
+// lua_pcall(L, nargs, nresults, errfunc): luaB_pcall's call (the base library's "pcall"); a title update address,
+// pasted together so tools/xexremap.py leaves it be.
+#define TU_SUB(address) sub_##address
+PPC_EXTERN_FUNC(TU_SUB(824D2898));
+#endif
+
+// Lua to run before a script loads (the Random Events prize car): loaded with the same loader into the same state
+// and run there with lua_pcall (its errors still reach luaD_throw's log), the stack put back as it was; then the
+// script loads as usual.
+template <typename Loader>
+static void RunBefore(PPCContext& ctx, uint8_t* base, Loader load)
+{
+    const uint32_t L = ctx.r3.u32, buffer = ctx.r4.u32, size = ctx.r5.u32, name = ctx.r6.u32;
+    if (!L || !buffer || !name)
+        return;
+    const bool source = size < 4 || memcmp(GuestPtr<const char>(buffer), "\x1bLua", 4) != 0;
+    const std::string code = RandomEventsLuaBefore(GuestPtr<const char>(name), source, GuestPtr<const char>(buffer), size);
+#if FM2_TITLE_UPDATE
+    if (code.empty())
+        return;
+    static const char kName[] = "=random events";
+    const uint32_t mem = GuestAlloc(Heap::Virtual, uint32_t(code.size() + sizeof(kName)));
+    if (!mem)
+        return;
+    memcpy(GuestPtr<char>(mem), code.data(), code.size());
+    memcpy(GuestPtr<char>(mem + uint32_t(code.size())), kName, sizeof(kName));
+    const PPCContext saved = ctx;
+    const uint32_t top = LoadBE32(L + 8); // L->top
+    ctx.r4.u64 = mem;
+    ctx.r5.u64 = code.size();
+    ctx.r6.u64 = mem + code.size();
+    load(ctx, base);
+    if (ctx.r3.u32 == 0)
+    {
+        ctx.r3.u64 = L;
+        ctx.r4.u64 = 0;
+        ctx.r5.u64 = 0;
+        ctx.r6.u64 = 0;
+        TU_SUB(824D2898)(ctx, base);
+        Log("lua: random events code run before %s (lua_pcall %u)", GuestPtr<const char>(name), ctx.r3.u32);
+    }
+    else
+        Log("lua: random events code didn't load (%u)", ctx.r3.u32);
+    StoreBE32(L + 8, top);
+    ctx = saved;
+#else
+    (void)base; (void)load;
+#endif
+}
+
+// A script's text changed before it loads (RandomEventsLuaSource): the new text goes in place of the buffer. One
+// guest copy per distinct text, kept, as a flow's scripts load again each time its screen opens.
+static void Rewrite(PPCContext& ctx)
+{
+    const uint32_t buffer = ctx.r4.u32, size = ctx.r5.u32;
+    if (!buffer || size < 4 || memcmp(GuestPtr<const char>(buffer), "\x1bLua", 4) == 0)
+        return;
+    const std::string text = RandomEventsLuaSource(GuestPtr<const char>(buffer), size);
+    if (text.empty())
+        return;
+    static std::mutex mutex;
+    static std::unordered_map<std::string, uint32_t> copies;
+    std::lock_guard lock(mutex);
+    uint32_t& mem = copies[text];
+    if (!mem && !(mem = GuestAlloc(Heap::Virtual, uint32_t(text.size()))))
+        return;
+    memcpy(GuestPtr<char>(mem), text.data(), text.size());
+    ctx.r4.u64 = mem;
+    ctx.r5.u64 = text.size();
+}
+
+#if FM2_TITLE_UPDATE
+// luaL_loadstring(L, s): the flows' scripts (the Lua in Media\UI\Flows\*.xml) load through this one, the text
+// being its own name. Rewritten as Rewrite does, with the copy NUL-terminated.
+#define TU_IMP(address) __imp__sub_##address
+PPC_FUNC_IMPL(TU_IMP(8256AD00));
+PPC_FUNC(TU_SUB(8256AD00))
+{
+    const uint32_t s = ctx.r4.u32;
+    if (s)
+    {
+        const char* text = GuestPtr<const char>(s);
+        const std::string changed = RandomEventsLuaSource(text, uint32_t(strlen(text)));
+        if (!changed.empty())
+        {
+            static std::mutex mutex;
+            static std::unordered_map<std::string, uint32_t> copies;
+            std::lock_guard lock(mutex);
+            uint32_t& mem = copies[changed];
+            if (mem || (mem = GuestAlloc(Heap::Virtual, uint32_t(changed.size() + 1))))
+            {
+                memcpy(GuestPtr<char>(mem), changed.c_str(), changed.size() + 1);
+                ctx.r4.u64 = mem;
+            }
+        }
+    }
+    TU_IMP(8256AD00)(ctx, base);
+}
+#endif
+
 PPC_FUNC_IMPL(__imp__sub_8254DDF8);
 PPC_FUNC(sub_8254DDF8)
 {
     SwapLayoutLabels(ctx.r4.u32, ctx.r5.u32, ctx.r6.u32);
+    RunBefore(ctx, base, __imp__sub_8254DDF8);
+    Rewrite(ctx);
     __imp__sub_8254DDF8(ctx, base);
 }
 
@@ -85,5 +194,7 @@ PPC_FUNC_IMPL(__imp__sub_8254DF80);
 PPC_FUNC(sub_8254DF80)
 {
     SwapLayoutLabels(ctx.r4.u32, ctx.r5.u32, ctx.r6.u32);
+    RunBefore(ctx, base, __imp__sub_8254DDF8); // the plain loader: this one also runs what it loads
+    Rewrite(ctx);
     __imp__sub_8254DF80(ctx, base);
 }

@@ -1,0 +1,2 @@
+# Keep the example patches and packages byte for byte (the game reads them as they are).
+* -text

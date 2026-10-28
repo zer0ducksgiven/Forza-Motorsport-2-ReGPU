@@ -238,6 +238,16 @@
           <button class="ghost small" data-open="log" data-tip="out\play.log: send it with bug reports.">Open logs</button>
         </div>
       </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Mods</h2>
+        <button class="primary small" id="mods-add" data-tip="Installs mod packages (made like DLC: see docs\modding.md). They appear in the game next time it starts.">Add mod</button>
+        <button class="ghost small" id="mods-random" hidden data-tip="Random Events: four career events built from your game, new ones every two races, and a random car every five Random Events races. Built switched off: switch it on below.">Add Random Events</button>
+      </div>
+      <p class="hint" id="mods-hint">Car and database mods packaged as DLC. Switch one on before you start a career with it, and keep it on: a save that uses a mod's cars or upgrades needs that mod.</p>
+      <div class="list" id="mods"></div>
+    </section>
     </div>
 
     <div class="stack">
