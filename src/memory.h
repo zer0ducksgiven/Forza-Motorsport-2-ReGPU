@@ -102,6 +102,7 @@ void* PhysicalSection();
 // since (report #27: tyre marks, one buffer drawn in overlapping ranges, kept stale copies).
 // False when the range can't be watched (memory that can't be made read-only): hash it instead.
 bool WriteWatchArm(uint32_t offset, uint32_t bytes);
+bool WriteWatchUnavailable(); // an arm failed: memory here can't be made read-only
 bool WriteWatchClean(uint32_t offset, uint32_t bytes, uint64_t since);
 uint64_t WriteWatchSeq();
 // Before a write the kernel makes for us (ReadFile into guest memory: it fails on a read-only

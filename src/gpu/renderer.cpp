@@ -2170,6 +2170,18 @@ ID3D12Resource* VertexCacheBeginFrame()
     g_vertexCacheThisFrame = false;
     if (off || !GetSettings().vertexArena)
         return nullptr;
+    // Where the write watch can't work (guest memory shared with the GPU can't be made read-only:
+    // the main PC's 4070 and the FX's GTX 970), the arena would have to hash every buffer each frame
+    // to see changes: 65 fps on the FX against 80 read in place. Read in place instead, from the
+    // frame after the first failure. Without zero-copy the arena is the only way: it hashes.
+    if (g_r.physical && WriteWatchUnavailable())
+    {
+        static bool logged = false;
+        if (!logged)
+            Log("vertex arena: off, vertex data is read in place (guest memory can't be write-watched)");
+        logged = true;
+        return nullptr;
+    }
     if (!arena.buffer)
     {
         arena.buffer = CreateBuffer(VertexArena::kBytes, D3D12_HEAP_TYPE_DEFAULT,

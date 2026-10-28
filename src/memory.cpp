@@ -366,7 +366,7 @@ bool WriteWatchArm(uint32_t offset, uint32_t bytes)
                 g_armed[q / 64].fetch_and(~(1ull << (q % 64)), std::memory_order_acq_rel);
             Protect(p, run - p, PAGE_READWRITE);
             if (!g_watchUnavailable.exchange(true))
-                Log("write watch: guest memory can't be made read-only (error %lu): changed vertex buffers are found by hashing", error);
+                Log("write watch: guest memory can't be made read-only (error %lu): vertex buffers are hashed, or read in place", error);
             ReleaseSRWLockExclusive(&g_watchLock);
             return false;
         }
@@ -387,6 +387,11 @@ bool WriteWatchClean(uint32_t offset, uint32_t bytes, uint64_t since)
         clean = Armed(p) && g_lastWrite[p] < since;
     ReleaseSRWLockShared(&g_watchLock);
     return clean;
+}
+
+bool WriteWatchUnavailable()
+{
+    return g_watchUnavailable.load(std::memory_order_acquire);
 }
 
 uint64_t WriteWatchSeq()
