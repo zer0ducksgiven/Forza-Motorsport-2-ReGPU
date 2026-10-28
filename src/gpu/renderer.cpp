@@ -2448,9 +2448,13 @@ struct Manifest
 // Shader compilation runs on worker threads so the command processor never
 // stalls on fxc: a draw whose shaders are still compiling is skipped. The
 // bytecode is cached on disk by HLSL hash, so later runs start warm.
-// Pixel shader cache entries' seed: 3 since they compile without FM2_VERTEX_STAGE (the 1 entries
-// sampled without mipmapping).
-constexpr uint64_t kPixelCacheSeed = 3;
+// Shader cache entries' seed: pixel 3 since they compile without FM2_VERTEX_STAGE (the 1 entries
+// sampled without mipmapping); pixel 4 and vertex 5 since the register file compiles as variables
+// (RegistersAsVariables: the cache is keyed on the HLSL before that rewrite).
+uint64_t CacheSeed(bool pixel)
+{
+    return RegistersAsArray() ? (pixel ? 3 : 2) : (pixel ? 4 : 5);
+}
 
 std::filesystem::path ShaderCachePath(uint64_t key)
 {
@@ -2571,7 +2575,8 @@ struct ShaderCompiler
         // (mip 0): no mipmapping anywhere, minified ground textures sparkled (the grainy asphalt,
         // sand and gravel since 0.5.3).
         const D3D_SHADER_MACRO vertexMacros[] = { { "FM2_VERTEX_STAGE", "" }, { nullptr, nullptr } };
-        const HRESULT hr = D3DCompile(cs.info.hlsl.data(), cs.info.hlsl.size(), nullptr, cs.pixel ? nullptr : vertexMacros, nullptr, "main",
+        const std::string hlsl = RegistersAsVariables(cs.info.hlsl);
+        const HRESULT hr = D3DCompile(hlsl.data(), hlsl.size(), nullptr, cs.pixel ? nullptr : vertexMacros, nullptr, "main",
             cs.pixel ? "ps_5_1" : "vs_5_1", D3DCOMPILE_SKIP_OPTIMIZATION | D3DCOMPILE_ENABLE_UNBOUNDED_DESCRIPTOR_TABLES, 0, &cs.code, &errors);
         const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
         if (FAILED(hr))
@@ -2913,7 +2918,7 @@ const CompiledShader& GetShaderLocked(uint64_t hash, const std::vector<uint32_t>
             Log("debug: ps alias %016llx returns %s", (unsigned long long)hash, expr.c_str());
         }
     }
-    cs.cacheKey = Fnv(cs.info.hlsl.data(), cs.info.hlsl.size(), pixel ? kPixelCacheSeed : 2);
+    cs.cacheKey = Fnv(cs.info.hlsl.data(), cs.info.hlsl.size(), CacheSeed(pixel));
     if (auto b = g_bytecode.find(cs.cacheKey); b != g_bytecode.end())
     {
         cs.code = b->second;
@@ -3045,7 +3050,7 @@ const CompiledShader* MotionShaderLookup(const CompiledShader& base)
         cs.state = CompiledShader::Failed;
         return nullptr;
     }
-    cs.cacheKey = Fnv(cs.info.hlsl.data(), cs.info.hlsl.size(), source.pixel ? kPixelCacheSeed : 2);
+    cs.cacheKey = Fnv(cs.info.hlsl.data(), cs.info.hlsl.size(), CacheSeed(source.pixel));
     if (auto b = g_bytecode.find(cs.cacheKey); b != g_bytecode.end())
     {
         cs.code = b->second;

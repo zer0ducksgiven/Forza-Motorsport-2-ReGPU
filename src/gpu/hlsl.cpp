@@ -1218,3 +1218,61 @@ TranslatedShader TranslateShader(const Shader& shader)
     result.ok = true;
     return result;
 }
+
+bool RegistersAsArray()
+{
+    static const bool registerArray = getenv("FM2_REGISTER_ARRAY") != nullptr;
+    return registerArray;
+}
+
+std::string RegistersAsVariables(const std::string& hlsl)
+{
+    const std::string declRegisters = "float4 r[64];\n    [unroll] for (int i = 0; i < 64; i++) r[i] = 0;\n";
+    const size_t declAt = RegistersAsArray() ? std::string::npos : hlsl.find(declRegisters);
+    if (declAt == std::string::npos)
+        return hlsl;
+    // The guest function ends at its closing brace (the generated body is indented).
+    const size_t start = declAt + declRegisters.size(), end = hlsl.find("\n}\n", start);
+    if (end == std::string::npos)
+        return hlsl;
+    std::string body = hlsl.substr(start, end - start);
+    const std::string inputs = "[unroll] for (int j = 0; j < 16; j++) r[j] = input.o[j];";
+    if (const size_t at = body.find(inputs); at != std::string::npos)
+    {
+        std::string s;
+        for (int j = 0; j < 16; j++)
+            s += "r[" + std::to_string(j) + "] = input.o[" + std::to_string(j) + "]; ";
+        body.replace(at, inputs.size(), s);
+    }
+    const std::string param = "if (pinfo.y < 16u) r[pinfo.y] = float4(input.pos.xy * pinfo2.yz, input.pcoord);";
+    if (const size_t at = body.find(param); at != std::string::npos)
+    {
+        std::string s = "{ const float4 gp = float4(input.pos.xy * pinfo2.yz, input.pcoord); switch (pinfo.y) { ";
+        for (int j = 0; j < 16; j++)
+            s += "case " + std::to_string(j) + ": r[" + std::to_string(j) + "] = gp; break; ";
+        body.replace(at, param.size(), s + "} }");
+    }
+    // r[N] -> rN (not inside a longer name such as loopIter[). Any other index keeps the array.
+    std::string out;
+    out.reserve(body.size());
+    for (size_t i = 0; i < body.size();)
+    {
+        if (body[i] == 'r' && i + 1 < body.size() && body[i + 1] == '[' && (i == 0 || !(isalnum(uint8_t(body[i - 1])) || body[i - 1] == '_')))
+        {
+            size_t j = i + 2;
+            while (j < body.size() && isdigit(uint8_t(body[j])))
+                j++;
+            if (j == i + 2 || j == body.size() || body[j] != ']')
+                return hlsl;
+            out += 'r';
+            out.append(body, i + 2, j - i - 2);
+            i = j + 1;
+            continue;
+        }
+        out += body[i++];
+    }
+    std::string decl = "float4 r0 = 0";
+    for (int i = 1; i < 64; i++)
+        decl += ", r" + std::to_string(i) + " = 0";
+    return hlsl.substr(0, declAt) + decl + ";\n" + out + hlsl.substr(end);
+}

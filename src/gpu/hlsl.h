@@ -48,6 +48,14 @@ bool TranslateVertexFetchLayout(const ucode::Shader& shader, TranslatedShader& o
 // unpacking, 12.7 -> 10.0 ms of GPU time a frame on a GTX 970, at the cost of each patched copy of
 // a shader compiling on its own. FM2_DYNAMIC_VFETCH=1 reads them from the constants instead.
 bool BakedVertexFetch();
+// The translated register file, float4 r[64], rewritten as 64 variables just before compiling (so
+// later edits of the HLSL can still find r[N]). Compiled without optimisation, fxc declares the
+// array as an indexable temp, which an AMD driver can keep in scratch memory: a Ryzen 5800H's
+// Radeon spent ~20 ms of a 720p race frame in the main pass, GPU-bound at 29 fps. The HLSL comes
+// back unchanged if a register is indexed by anything but a constant.
+// FM2_REGISTER_ARRAY=1 keeps the array.
+std::string RegistersAsVariables(const std::string& hlsl);
+bool RegistersAsArray();
 
 // Shared HLSL declarations both stages compile against.
 const char* HlslPreamble();
