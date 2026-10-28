@@ -90,7 +90,6 @@ public sealed class Bridge
                     var (added, errors) = Dlc.Add(files, true);
                     return new { added, errors, state = State() };
                 }
-                return State();
             case "mods.remove":
                 Dlc.Remove(Str(a, "id"));
                 return State();
