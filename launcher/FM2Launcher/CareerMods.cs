@@ -11,15 +11,16 @@ namespace FM2Launcher;
 /// <item>Random Events: four generated career events that change every two career races, and a random car every
 /// fifth Random Events race (fm2.exe, hooks/random_events.cpp). Before each launch Rotate rebuilds an enabled one
 /// when the profile's set is due (races / 2 from profiles\&lt;name&gt;\random_events.ini, which fm2.exe keeps).</item>
-/// <item>Roguelike Career (FM2-roguelike-scope.md): a career run on a fresh profile, a new car after every race and no
-/// prize money (hooks/roguelike.cpp). Its package also carries the career flows it changes.</item>
+/// <item>Rogue Mode, Roguelike Career (FM2-roguelike-scope.md): a career run on a fresh profile, parts and cars from
+/// wins, strikes that lose cars and no prize money (hooks/roguelike.cpp). Its package also carries the career flows it
+/// changes. Settings has its own switch for it (rogue.toggle), so the Mods list leaves it out.</item>
 /// </list>
 /// They share the career's machinery, so only one is on at a time (Dlc.SetEnabled).
 /// </summary>
 public sealed class CareerMod
 {
     public static readonly CareerMod RandomEvents = new("RandomEvents", "Random Events", "random");
-    public static readonly CareerMod Roguelike = new("Roguelike", "Roguelike Career", "roguelike");
+    public static readonly CareerMod Roguelike = new("Roguelike", "Rogue Mode", "roguelike");
     public static readonly CareerMod[] All = [RandomEvents, Roguelike];
 
     public string Id { get; }

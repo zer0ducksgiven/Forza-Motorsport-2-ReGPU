@@ -66,6 +66,9 @@ button:disabled { opacity: .45; cursor: default; }
 .grid-updates { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.8fr); }
 .grid-report { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); }
 .panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; display: flex; flex-direction: column; min-height: 0; overflow-y: auto; }
+/* a panel kept whole when its column runs short (the others scroll inside): Settings' Rogue Mode */
+.panel.whole { flex-shrink: 0; }
+.panel.whole .list { flex: none; }
 .panel-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; min-height: 26px; }
 h2 { margin: 0; font-size: 13px; letter-spacing: 1px; text-transform: uppercase; color: #cfd2da; }
 .hint { margin: -4px 0 12px; color: var(--muted); font-size: 12.5px; }

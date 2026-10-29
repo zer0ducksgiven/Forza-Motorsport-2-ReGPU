@@ -52,6 +52,37 @@ def art(w, h):
     return out.resize((w, h), Image.LANCZOS)
 
 
+GREY, RED = (70, 70, 70), (210, 20, 20)  # the career title bar's strike crosses (roguelike_ui.py's TITLE)
+
+
+def cross(w, h):
+    """An X like the title bar's (its brush font's): a heavy, steep stroke from top left to bottom right, cut flat,
+    across a long thin one from bottom left to top right. Its alpha only, drawn at 4x."""
+    k = 4
+    W, H = w * k, h * k
+    img = Image.new('L', (W, H))
+    d = ImageDraw.Draw(img)
+    for stroke in (((0.23, 0.0), (0.57, 0.03), (0.79, 0.97), (0.43, 1.0)),    # the heavy one
+                   ((0.0, 1.0), (0.17, 1.0), (1.0, 0.0), (0.84, 0.0))):      # the thin one
+        d.polygon([(u * W, v * H) for u, v in stroke], fill=255)
+    return img.resize((w, h), Image.LANCZOS)
+
+
+def strikes_art(w, h, struck):
+    """The car level badge's icon as a car's strikes (Select Car; the port puts the strikes in the garage's car level):
+    two crosses, the first red when struck (roguelike_ui.py moves the icon into the middle of the badge's box). Each
+    half is its cross's colour throughout (only alpha changes), so no 4x4 block mixes the two."""
+    out = Image.new('RGBA', (w, h))
+    for i, colour in enumerate((RED if struck else GREY, GREY)):
+        half = Image.new('RGBA', (w // 2, h), colour + (0,))
+        a = cross(int(w * 0.42), int(h * 0.30))
+        mask = Image.new('L', half.size)
+        mask.paste(a, ((half.width - a.width) // 2, (h - a.height) // 2))
+        half.putalpha(mask)
+        out.paste(half, (i * w // 2, 0))
+    return out
+
+
 def dxt5_block(px):
     """16 RGBA pixels -> a DXT5 block (alpha: 8 levels between the block's min and max; colour: endpoints along
     the luminance range, enough for these grey pictures)."""
@@ -113,6 +144,13 @@ def main():
         out = encode(img, data[:52], len(data) - 52)
         open(os.path.join(OUT, name + '.xds'), 'wb').write(out)
         print(name, w, h)
+    # Roguelike Career's strikes, in place of the car level icons 0 and 1 (random_events.py)
+    data = z.read('L_Map/Car_Level_Icons/CarLevelIcon0.xds')
+    _, (fmt, w, h) = xds.decode(data)
+    for n in (0, 1):
+        img = strikes_art(w, h, n == 1)
+        open(os.path.join(OUT, 'CarLevelIcon%d.xds' % n), 'wb').write(encode(img, data[:52], len(data) - 52))
+        print('CarLevelIcon%d' % n, w, h)
 
 
 if __name__ == '__main__':

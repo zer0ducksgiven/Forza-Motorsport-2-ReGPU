@@ -278,6 +278,21 @@ function render() {
   }
   $("mods-add").disabled = s.checks.running
 
+  const rg = s.rogue, rl = $("rogue")
+  rl.replaceChildren()
+  if (!rg.available) rl.append(el("div", "empty", "Needs the game files and the launcher's career folder."))
+  else {
+    const it = el("div", "item" + (rg.enabled ? "" : " off"))
+    const main = el("div", "main")
+    main.append(el("div", "title", "Rogue Mode"), el("div", "meta", rg.enabled ? "On: Career plays as Rogue Mode" : "Off: the normal career"))
+    const sw = el("button", "switch" + (rg.enabled ? " on" : ""))
+    sw.dataset.tip = rg.enabled ? "On: Career is Rogue Mode. Click for the normal career." : "Off: the normal career. Click to play Rogue Mode (the first time builds it from your game files: a few seconds)."
+    sw.disabled = s.checks.running
+    sw.onclick = () => guarded(async () => { state = await call("rogue.toggle", !rg.enabled); render() })
+    it.append(main, sw)
+    rl.append(it)
+  }
+
   const pf = s.forzaPlus2, pl = $("pfp")
   pl.replaceChildren()
   $("pfp-install").textContent = pf.installed ? "Reinstall" : "Install"

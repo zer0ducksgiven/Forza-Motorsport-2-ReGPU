@@ -93,6 +93,14 @@ public sealed class Bridge
             case "mods.remove":
                 Dlc.Remove(Str(a, "id"));
                 return State();
+            case "rogue.toggle":
+                {
+                    // Rogue Mode (Settings): built from the game files the first time it's switched on
+                    var on = a!.GetValue<bool>();
+                    if (on && !CareerMod.Roguelike.IsInstalled) await Task.Run(CareerMod.Roguelike.Install);
+                    Dlc.SetEnabled(CareerMod.Roguelike.Id, on);
+                    return State();
+                }
             case "pfp.install":
                 {
                     var picked = await _window.ShowOpenFolderAsync("Choose the unzipped Forza Plus 2 folder (the one with \"Main Game Changes\" in it)", null, false);
@@ -319,7 +327,8 @@ public sealed class Bridge
             shaders = ShaderCache.Get(),
             forzaPlus2 = ForzaPlus2.State(),
             dlc = Dlc.List(),
-            mods = Dlc.Mods(),
+            mods = Dlc.Mods().Where(p => p.Id != CareerMod.Roguelike.Id),
+            rogue = new { available = CareerMod.Available, enabled = CareerMod.Roguelike.IsEnabled },
         };
     }
 }

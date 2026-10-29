@@ -81,6 +81,7 @@ std::string RandomEventsLuaBefore(const char* name, bool source, const char* tex
 std::string RandomEventsLuaSource(const char* text, uint32_t size);
 bool RoguelikeLuaNote(const char* text, uint32_t size); // hooks/roguelike.cpp
 std::string RoguelikeLuaSource(const char* text, uint32_t size);
+std::string RoguelikeLuaBytecode(const char* data, uint32_t size);
 
 // A flow's Lua as the mods change it (Random Events, Roguelike Career), or empty when unchanged.
 static std::string ModLuaSource(const char* text, uint32_t size)
@@ -142,14 +143,17 @@ static void RunBefore(PPCContext& ctx, uint8_t* base, Loader load)
 #endif
 }
 
-// A script's text changed before it loads (RandomEventsLuaSource): the new text goes in place of the buffer. One
-// guest copy per distinct text, kept, as a flow's scripts load again each time its screen opens.
+// A script's text changed before it loads (RandomEventsLuaSource; compiled ones, RoguelikeLuaBytecode): the new text
+// goes in place of the buffer. One guest copy per distinct text, kept, as a flow's scripts load again each time its
+// screen opens.
 static void Rewrite(PPCContext& ctx)
 {
     const uint32_t buffer = ctx.r4.u32, size = ctx.r5.u32;
-    if (!buffer || size < 4 || memcmp(GuestPtr<const char>(buffer), "\x1bLua", 4) == 0)
+    if (!buffer || size < 4)
         return;
-    const std::string text = ModLuaSource(GuestPtr<const char>(buffer), size);
+    const bool compiled = memcmp(GuestPtr<const char>(buffer), "\x1bLua", 4) == 0;
+    const std::string text = compiled ? RoguelikeLuaBytecode(GuestPtr<const char>(buffer), size)
+                                      : ModLuaSource(GuestPtr<const char>(buffer), size);
     if (text.empty())
         return;
     static std::mutex mutex;

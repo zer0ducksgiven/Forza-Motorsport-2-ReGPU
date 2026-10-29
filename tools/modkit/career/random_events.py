@@ -48,6 +48,10 @@ MODES = {
                                   'to buy upgrades.'),
 }
 PACK = 'RandomEvents'      # the pack's folder and file names
+# Roguelike Career's names in the flows' string tables (StringTables/<language>.zip, <flow>_flow.str), every language
+FLOW_TEXTS = {'careermenu_Flow': {'IDS_CAREER_MENU_TITLE': 'Rogue Motorsport'}, 'Forza_Flow': {'IDS_Career': 'Rogue Mode',
+                                                                                    'IDS_CAREER_BAR_LEVEL': ' '},  # no driver level
+              'C_CAR_CarSelect': {'IDS_Label_Level': ' '}}  # the car level badge: its icon only (a car's strikes)
 DRIVES = {1: 'FWD', 2: 'RWD', 3: 'AWD'}
 REGIONS = {1: 'Asian', 2: 'European', 3: 'North American'}
 SKIP_TRACKS = ('DebugTrack', 'TuningTrack')
@@ -157,14 +161,18 @@ def main():
     mod = os.path.join(a.out, PACK); extra = os.path.join(a.out, 'DLCZips-extra')
     os.makedirs(os.path.join(mod, 'media', 'db', 'patch'), exist_ok=True); os.makedirs(extra, exist_ok=True)
 
-    langs = {}
+    langs, flow_files = {}, {}
     for f in sorted(os.listdir(a.stringtables)):
         if f.lower().endswith('.zip'):
             z = zipfile.ZipFile(os.path.join(a.stringtables, f))
             names = {n.lower(): n for n in z.namelist()}
             langs[f[:-4]] = {t: strtable.Table(z.read(names[t.lower() + '.str']))
                              for t in ('CareerEventTypes', 'Events', 'Tracks', 'List_CarMake', 'List_Country', 'Data_Car')
+                             + tuple(FLOW_TEXTS if a.mode == 'roguelike' else ())
                              if t.lower() + '.str' in names}
+            for t in FLOW_TEXTS:  # each language's own file name (the case differs), for the overrides
+                if t.lower() + '.str' in names:
+                    flow_files[f[:-4], t] = names[t.lower() + '.str'][:-4]
     en = langs['EN']
     def look(table, sql):  # id -> English text of a string reference column
         return {i: en[table].strings.get(int(r[2:]) & 0xFFFF, '') for i, r in g.execute(sql) if r and r.startswith('_&')}
@@ -200,6 +208,12 @@ def main():
                 tables[table].add(kk, text, sym)
             for t in ('CareerEventTypes', 'Events'):
                 z.writestr('%s/%s.str' % (lang, t), tables[t].build())
+            for t, changes in (FLOW_TEXTS.items() if a.mode == 'roguelike' else ()):
+                if t not in tables: continue
+                by_symbol = {sym: kk for kk, sym in tables[t].symbols.items()}
+                for sym, text in changes.items():
+                    tables[t].strings[by_symbol[sym]] = text
+                z.writestr('%s/%s.str' % (lang, flow_files[lang, t]), tables[t].build(keep_order=True))
     # the events' descriptions, which the port shows with the races left until the next set (hooks/random_events.cpp)
     with open(os.path.join(extra, PACK + 'Descriptions.txt'), 'w', encoding='utf-8', newline='\n') as f:
         for i, (table, kk, sym, text) in enumerate(t for t in texts if t[0] == 'Events' and t[2].startswith('IDS_Description_')):
@@ -216,12 +230,22 @@ def main():
     trophy = '%02d' % CATEGORY_ID
     with zipfile.ZipFile(os.path.join(extra, PACK + 'Overrides2_pri_170.zip'), 'w', zipfile.ZIP_DEFLATED) as z:
         for f in sorted(os.listdir(ICONS)):
-            if f.endswith('.xds'):
+            if f.startswith('C_TYP_') and f.endswith('.xds'):
                 z.write(os.path.join(ICONS, f), 'C_Map/C_TYP_Map/' + f)
         textures = zipfile.ZipFile(os.path.join(media, 'UI', 'Textures.zip'))
         for place in ('Gold', 'Silver', 'Bronze'):
             z.writestr('C_Map/C_TRK_Map/C_TRK_Trophy0%s_%s.xds' % (trophy, place),
                        textures.read('C_Map/C_TRK_Map/C_TRK_Trophy04_%s.xds' % place))
+        if a.mode == 'roguelike':
+            # the car level badge shows a car's strikes (the port keeps them in its car level) as the title bar's
+            # crosses (make_icons.py); the levels a run never reaches emptied, DXT5 all zeros being clear throughout
+            for level in range(6):
+                name = 'L_Map/Car_Level_Icons/CarLevelIcon%d.xds' % level
+                if level < 2:
+                    z.write(os.path.join(ICONS, 'CarLevelIcon%d.xds' % level), name)
+                else:
+                    icon = textures.read(name)
+                    z.writestr(name, icon[:52] + bytes(len(icon) - 52))
     # the trophy videos: Bink reads its files from the disk, not through the zip mounts, so with --install the copies go
     # beside the game's own (additions only: nothing of the game's is changed)
     videos = [(os.path.join(media, 'UI', 'Videos', 'Trophies', 'Trophy04_%s.bik' % place),
@@ -242,10 +266,15 @@ def main():
                     if n: f.write('%s\t%d\t%s\n' % (kind, i, n))
             for cid, m in sorted(model.items()):
                 if m: f.write('car\t%d\t%s\n' % (cid, m))
+            # the short model names, as the career menus' footer shows them (with the strikes after, in game)
+            for cid, m in sorted(look('Data_Car', 'SELECT Id, ModelShort FROM Data_Car').items()):
+                if m: f.write('short\t%d\t%s\n' % (cid, m))
         import roguelike_ui
         roguelike_ui.build(os.path.join(media, 'UI.zip'), os.path.join(extra, 'overlay', 'game', 'media', 'ui.zip'))
     open(os.path.join(extra, 'stringtables.xml'), 'w', newline='\r\n').write(
-        '<?xml version="1.0" ?>\n<stringtables >\n\t<table Name="careereventtypes" />\n\t<table Name="events" />\n</stringtables>\n')
+        '<?xml version="1.0" ?>\n<stringtables >\n\t<table Name="careereventtypes" />\n\t<table Name="events" />\n' +
+        ''.join('\t<table Name="%s" />\n' % t.lower() for t in (FLOW_TEXTS if a.mode == 'roguelike' else ())) +
+        '</stringtables>\n')
 
     path = os.path.join(mod, 'media', 'db', 'patch', '92000_merge.slt')
     if os.path.exists(path): os.remove(path)

@@ -181,6 +181,9 @@ tiers differ in three ways:
 | Hard | 6 | 4 | the 7 from your car's PI up | +5% |
 | Extreme | 1 | 2 | the 7 fastest | +10% |
 
+- **Laps:** the tier's distance (10, 15, 20, 25 km) in laps, then held to Easy at most 3, Medium at most 5, Hard 5 to
+  7 and Extreme 5 to 7. A lap over 10 km (only the Nordschleife, 20.8 km) is a race already: at least 1 lap and no
+  floor, so it stays at one lap on every tier.
 - **Difficulty settings:** Novice uses skill 4 levels easier and Hardcore 4 levels harder (the game's Hard
   difficulty uses the same AI column as Intermediate).
 - **Torque:** the generator adds the game's skill rows again as `AISkills` 101–120 (`NominalTorqueScale` ×1.05)

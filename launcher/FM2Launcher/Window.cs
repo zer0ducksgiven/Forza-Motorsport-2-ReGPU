@@ -66,6 +66,18 @@ public static class Web
         }
         var full = Path.GetFullPath(Path.Combine(root, rel));
         if (!full.StartsWith(Path.GetFullPath(root) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) || !File.Exists(full)) return null;
-        try { return File.OpenRead(full); } catch { return null; }
+        try { return contentType == "text/html" ? Stamped(full, root) : File.OpenRead(full); } catch { return null; }
+    }
+
+    // A page with its scripts and stylesheets named by their file's time ("app.js?v=<ticks>"): WebView2 keeps them in
+    // its cache (the handler can't send headers), so an updated launcher went on running the old app.js.
+    static Stream Stamped(string page, string root)
+    {
+        var html = System.Text.RegularExpressions.Regex.Replace(File.ReadAllText(page), @"(src|href)=""([\w.-]+\.(?:js|css))""", m =>
+        {
+            var file = Path.Combine(root, m.Groups[2].Value);
+            return File.Exists(file) ? $"{m.Groups[1].Value}=\"{m.Groups[2].Value}?v={File.GetLastWriteTimeUtc(file).Ticks}\"" : m.Value;
+        });
+        return new MemoryStream(System.Text.Encoding.UTF8.GetBytes(html));
     }
 }
