@@ -48,18 +48,10 @@
       <div class="buttons-row">
         <button class="ghost small" data-open="music" data-tip="Opens Documents\fm2\music in Explorer.">Open music folder</button>
       </div>
-      <div class="toggle-row" data-tip="Changes how loud each car's exhaust and its turbo or supercharger are, compared with the game's own mix. It applies the next time a car loads. You can also change it on the in-game Audio options screen.">
-        <div><div class="toggle-title">Car sound mix</div><div class="toggle-sub">Louder exhaust and turbo</div></div>
+      <div class="toggle-row spaced" data-tip="Lets you change how loud each car's exhaust and its turbo or supercharger are, compared with the game's own mix. It applies the next time a car loads.">
+        <div><div class="toggle-title">Car sound mix</div><div class="toggle-sub">Set the exhaust and turbo volumes with the sliders in the game's Audio menu</div></div>
         <button class="switch" id="carSoundMix" role="switch"></button>
       </div>
-      <label class="field" data-tip="The exhaust's loudness: 100% is the game's own.">
-        <span>Exhaust volume</span>
-        <select id="exhaustVolume"></select>
-      </label>
-      <label class="field" data-tip="The turbo's and supercharger's loudness (whine and blow-off): 100% is the game's own.">
-        <span>Turbo volume</span>
-        <select id="turboVolume"></select>
-      </label>
       <label class="field" data-tip="The language of the game's menus and text, from the string tables on your disc.">
         <span>Language</span>
         <select id="language"></select>
@@ -199,6 +191,7 @@
         <button class="ghost small" id="prof-import" data-tip="Adds a profile from a zip made with Export or Back up (yours or someone else's).">Import…</button>
         <button class="ghost small" data-open="user" data-tip="Opens Documents\fm2. Profiles are in its profiles folder.">Open folder</button>
         <button class="ghost small photos" id="photos-open" data-tip="Opens the Photos window: every profile's Photo Mode pictures, to view, copy or save.">Photos</button>
+        <button class="ghost small danger push" id="prof-delete" data-tip="Deletes the selected profile. It's backed up first, so you can restore it from the Backups list.">Delete</button>
       </div>
     </section>
 
@@ -237,30 +230,9 @@
   </main>
 
   <!-- SETTINGS -->
-  <main class="page grid2" id="page-settings" hidden>
+  <main class="page grid2 flow" id="page-settings" hidden>
     <div class="stack">
       <section class="panel">
-        <div class="panel-head"><h2>Shader cache</h2></div>
-        <p class="hint">Every shader in the game is compiled on the first start and kept here, so races don't stutter later.</p>
-        <div class="stats" id="shader-stats" hidden></div>
-        <div class="buttons-row">
-          <button class="ghost small" id="shaders-rebuild" data-tip="Deletes the cache and starts the game, which compiles everything again behind the loading screen (a few minutes, then up to a minute of black screen while pipelines build). Use it if graphics look broken after an update.">Rebuild now</button>
-          <button class="ghost small danger" id="shaders-delete" data-tip="Deletes the compiled shaders and pipelines. The next start rebuilds them. Nothing else is touched: saves and settings stay.">Delete cache</button>
-          <button class="ghost small" data-open="shaders" data-tip="Opens Documents\fm2, where the cache lives.">Open folder</button>
-        </div>
-      </section>
-
-      <section class="panel">
-        <div class="panel-head"><h2>Folders</h2></div>
-        <div class="kv" id="folders"></div>
-        <div class="buttons-row">
-          <button class="ghost small" data-open="user" data-tip="Saves, settings, caches, DLC and the title update.">Open user folder</button>
-          <button class="ghost small" data-open="install" data-tip="The installed game and this launcher.">Open install folder</button>
-          <button class="ghost small" data-open="log" data-tip="out\play.log: send it with bug reports.">Open logs</button>
-        </div>
-      </section>
-
-    <section class="panel">
       <div class="panel-head">
         <h2>Mods</h2>
         <button class="primary small" id="mods-add" data-tip="Installs mod packages (made like DLC: see docs\modding.md). They appear in the game next time it starts.">Add mod</button>
@@ -268,17 +240,8 @@
       <p class="hint" id="mods-hint">Car and database mods packaged as DLC. Switch one on before you start a career with it, and keep it on: a save that uses a mod's cars or upgrades needs that mod.</p>
       <div class="list" id="mods"></div>
     </section>
-    </div>
 
-    <div class="stack">
-    <section class="panel whole">
-      <div class="panel-head"><h2>Rogue Mode <span class="badge">test</span></h2></div>
-      <p class="hint">Career as a run: start with a random Class D car, win races for parts and the odd car, and every podium raises the run's level and its races' difficulty. Two finishes of 4th or worse in a row in one car lose that car; lose your last and the run starts again. No prize money: selling cars is the only income.</p>
-      <p class="hint note">Start it on a new profile (Profiles tab): Career turns away a profile that already has one. It replaces Random Events while it's on.</p>
-      <div class="list" id="rogue"></div>
-    </section>
-
-    <section class="panel">
+      <section class="panel">
       <div class="panel-head">
         <h2>DLC packs</h2>
         <button class="primary small" id="dlc-add" data-tip="Installs DLC packages (the files as downloaded from Xbox Live) into the game's DLC folder. They appear in the game next time it starts.">Add DLC</button>
@@ -289,8 +252,17 @@
         <button class="ghost small" data-open="dlc" data-tip="Opens Documents\fm2\dlc.">Open DLC folder</button>
       </div>
     </section>
+    </div>
 
-    <section class="panel">
+    <div class="stack">
+      <section class="panel whole">
+      <div class="panel-head"><h2>Rogue Mode <span class="badge">test</span></h2></div>
+      <p class="hint">Career as a run: start with a random Class D car, win races for parts and the odd car, and every podium raises the run's level and its races' difficulty. Two finishes of 4th or worse in a row in one car lose that car; lose your last and the run starts again. No prize money: selling cars is the only income.</p>
+      <p class="hint note">Start it on a new profile (Profiles tab): Career turns away a profile that already has one. It replaces Random Events while it's on.</p>
+      <div class="list" id="rogue"></div>
+    </section>
+
+      <section class="panel">
       <div class="panel-head">
         <h2>Forza Plus 2 <span class="badge">mod</span></h2>
         <button class="primary small" id="pfp-install" data-tip="Copies Project Forza Plus 2 into Documents\fm2\mods from its unzipped folder (the one with &quot;Main Game Changes&quot; in it). Your game files stay as they are.">Install</button>
@@ -300,8 +272,25 @@
       <p class="hint" id="pfp-status"></p>
       <div class="list" id="pfp"></div>
     </section>
-    </div>
 
+      <section class="panel">
+        <div class="panel-head"><h2>Files</h2></div>
+        <div class="kv" id="folders"></div>
+        <div class="buttons-row">
+          <button class="ghost small" data-open="user" data-tip="Saves, settings, caches, DLC and the title update.">Open user folder</button>
+          <button class="ghost small" data-open="install" data-tip="The installed game and this launcher.">Open install folder</button>
+          <button class="ghost small" data-open="log" data-tip="out\play.log: send it with bug reports.">Open logs</button>
+        </div>
+        <div class="panel-head sub"><h2>Shader cache</h2></div>
+        <p class="hint">Every shader in the game is compiled on the first start and kept here, so races don't stutter later.</p>
+        <div class="stats" id="shader-stats" hidden></div>
+        <div class="buttons-row">
+          <button class="ghost small" id="shaders-rebuild" data-tip="Deletes the cache and starts the game, which compiles everything again behind the loading screen (a few minutes, then up to a minute of black screen while pipelines build). Use it if graphics look broken after an update.">Rebuild now</button>
+          <button class="ghost small danger" id="shaders-delete" data-tip="Deletes the compiled shaders and pipelines. The next start rebuilds them. Nothing else is touched: saves and settings stay.">Delete cache</button>
+          <button class="ghost small" data-open="shaders" data-tip="Opens Documents\fm2, where the cache lives.">Open folder</button>
+        </div>
+      </section>
+    </div>
   </main>
 
   <!-- REPORT -->
@@ -368,7 +357,6 @@
         <button class="ghost" id="prof-rename" data-tip="Renames the profile and its folder. Its saves keep working.">Rename…</button>
         <button class="ghost" id="prof-export" data-tip="Saves a zip of this profile wherever you like, to move it to another PC or share it.">Export…</button>
         <button class="ghost" id="prof-merge" data-tip="Copies the saved photos of another profile into this one. Careers and garages can't be merged: each is one encrypted save.">Merge photos from…</button>
-        <button class="ghost danger" id="prof-delete" data-tip="Deletes the profile. It's backed up first, so you can restore it from the list below.">Delete</button>
       </div>
       <div class="status" id="prof-status"></div>
     </div>
