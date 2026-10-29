@@ -198,10 +198,14 @@ function render() {
   fill($("renderScale"), o.renderScale, set.renderScale)
   fill($("sharpening"), o.sharpening, set.sharpening)
   fill($("language"), o.languages.map((l) => ({ value: l.id, name: l.name })), set.language)
+  fill($("musicVolume"), [10, 20, 30, 40, 50, 60, 70, 80, 90, 100].map((v) => ({ value: v, name: v + "%" })), set.musicVolume)
+  const mix = [0, 25, 50, 75, 100, 125, 150, 175, 200, 250, 300, 350, 400].map((v) => ({ value: v, name: v + "%" }))
+  fill($("exhaustVolume"), mix, set.exhaustVolume)
+  fill($("turboVolume"), mix, set.turboVolume)
   $("lang-note").textContent = o.missingLanguages.length
     ? `Your disc also has ${o.missingLanguages.join(", ")} text. Those can't be picked yet.` : ""
   for (const b of $("display").children) b.classList.toggle("on", (b.dataset.full === "1") === set.fullscreen)
-  for (const k of ["vsync", "skipIntro", "xboxPrompts", "hideShaderOverlay", "lowPerformance", "vertexArena"]) $(k).classList.toggle("on", !!set[k])
+  for (const k of ["vsync", "skipIntro", "xboxPrompts", "hideShaderOverlay", "lowPerformance", "vertexArena", "raceMusic", "carSoundMix"]) $(k).classList.toggle("on", !!set[k])
 
   const lang = o.languages.find((l) => l.id === set.language)
   const aspect = o.aspects.find((a) => a.value === set.aspect)
@@ -399,8 +403,11 @@ $("anisotropy").onchange = (e) => change({ anisotropy: +e.target.value })
 $("renderScale").onchange = (e) => change({ renderScale: +e.target.value })
 $("sharpening").onchange = (e) => change({ sharpening: +e.target.value })
 $("language").onchange = (e) => change({ language: +e.target.value })
+$("musicVolume").onchange = (e) => change({ musicVolume: +e.target.value })
+$("exhaustVolume").onchange = (e) => change({ exhaustVolume: +e.target.value })
+$("turboVolume").onchange = (e) => change({ turboVolume: +e.target.value })
 $("display").onclick = (e) => { const b = e.target.closest("button"); if (b) change({ fullscreen: b.dataset.full === "1" }) }
-for (const k of ["vsync", "skipIntro", "xboxPrompts", "hideShaderOverlay", "lowPerformance", "vertexArena"]) $(k).onclick = () => change({ [k]: !state.settings[k] })
+for (const k of ["vsync", "skipIntro", "xboxPrompts", "hideShaderOverlay", "lowPerformance", "vertexArena", "raceMusic", "carSoundMix"]) $(k).onclick = () => change({ [k]: !state.settings[k] })
 
 // ---- actions
 

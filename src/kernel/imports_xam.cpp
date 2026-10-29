@@ -33,6 +33,8 @@ std::atomic<int64_t> g_inputEpochNs{ 0 };
 #include <Xinput.h>
 #pragma comment(lib, "xinput.lib")
 
+void MusicPad(uint16_t& buttons); // audio/music.cpp
+
 namespace
 {
 // The profile's offline XUID (0xE000...). The saves are signed for their owner, so it is kept in
@@ -896,6 +898,7 @@ bool ReadPad(uint32_t user, PadState& s)
         static const std::vector<std::pair<double, uint16_t>> script = [] {
             std::vector<std::pair<double, uint16_t>> v;
             static const std::pair<const char*, uint16_t> names[] = { { "A", XINPUT_GAMEPAD_A }, { "B", XINPUT_GAMEPAD_B },
+        MusicPad(s.buttons); // in-race music's D-pad controls (audio/music.cpp)
                 { "X", XINPUT_GAMEPAD_X }, { "Y", XINPUT_GAMEPAD_Y }, { "START", XINPUT_GAMEPAD_START }, { "BACK", XINPUT_GAMEPAD_BACK },
                 { "UP", XINPUT_GAMEPAD_DPAD_UP }, { "DOWN", XINPUT_GAMEPAD_DPAD_DOWN }, { "LEFT", XINPUT_GAMEPAD_DPAD_LEFT },
                 { "RIGHT", XINPUT_GAMEPAD_DPAD_RIGHT }, { "LB", XINPUT_GAMEPAD_LEFT_SHOULDER }, { "RB", XINPUT_GAMEPAD_RIGHT_SHOULDER } };

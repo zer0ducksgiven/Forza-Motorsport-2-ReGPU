@@ -39,6 +39,27 @@
         <div><div class="toggle-title">Enable original Xbox 360 button icons</div><div class="toggle-sub">Even with a PlayStation or modern Xbox controller</div></div>
         <button class="switch" id="xboxPrompts" role="switch"></button>
       </div>
+      <div class="toggle-row" data-tip="Plays the MP3s you put in Documents\fm2\music (subfolders too), shuffled, while you drive: it fades out when you pause or finish and carries on in the next race.">
+        <div><div class="toggle-title">In-race music</div><div class="toggle-sub">Your MP3s from the music folder</div></div>
+        <select id="musicVolume" data-tip="The music's volume, apart from the game's."></select>
+        <button class="switch" id="raceMusic" role="switch"></button>
+      </div>
+      <p class="hint">Off by default, as in the original game. To use it, copy your MP3 files into <b>Documents\fm2\music</b> (subfolders work too). They play in shuffled order while you race. Each song's name comes from its tags, so it shows up when the track starts.</p>
+      <div class="buttons-row">
+        <button class="ghost small" data-open="music" data-tip="Opens Documents\fm2\music in Explorer.">Open music folder</button>
+      </div>
+      <div class="toggle-row" data-tip="Changes how loud each car's exhaust and its turbo or supercharger are, compared with the game's own mix. It applies the next time a car loads. You can also change it on the in-game Audio options screen.">
+        <div><div class="toggle-title">Car sound mix</div><div class="toggle-sub">Louder exhaust and turbo</div></div>
+        <button class="switch" id="carSoundMix" role="switch"></button>
+      </div>
+      <label class="field" data-tip="The exhaust's loudness: 100% is the game's own.">
+        <span>Exhaust volume</span>
+        <select id="exhaustVolume"></select>
+      </label>
+      <label class="field" data-tip="The turbo's and supercharger's loudness (whine and blow-off): 100% is the game's own.">
+        <span>Turbo volume</span>
+        <select id="turboVolume"></select>
+      </label>
       <label class="field" data-tip="The language of the game's menus and text, from the string tables on your disc.">
         <span>Language</span>
         <select id="language"></select>

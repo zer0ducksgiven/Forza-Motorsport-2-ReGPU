@@ -45,6 +45,8 @@ extern "C"
 
 bool DealerMutesMusic(); // hooks/dealer.cpp: the easter egg is playing
 
+float CarSoundStreamGain(uint64_t firstPacketHash); // audio/car_sound.cpp
+
 namespace
 {
 constexpr uint32_t kContextSize = 0x40;
@@ -262,6 +264,7 @@ struct Decoder
     uint8_t firstPacket[kPacketBytes] = {};
     uint64_t firstHash = 0;
     bool exact = false; // an engine sound: decoded as the hardware does
+    float gain = 1.0f; // the car sound mix's for this stream (audio/car_sound.cpp): turbo and blow-off samples
     std::vector<int16_t> head; // its first 512 output frames (the loop crossfade, see Drain)
     const SeamlessLoop* loop = nullptr; // its seamless loop, if it has one
     std::vector<int16_t> history; // with one: its samples as decoded
@@ -313,8 +316,12 @@ struct Decoder
             for (int c = 0; c < int(channels); c++)
             {
                 const float* in = reinterpret_cast<const float*>(frame->extended_data[std::min(c, ch - 1)]);
-                for (int i = skip; i < n; i++)
-                    pcm[base + size_t(i - skip) * channels + c] = int16_t(std::clamp(in[i], -1.0f, 1.0f) * 32767.0f);
+                if (gain == 1.0f)
+                    for (int i = skip; i < n; i++)
+                        pcm[base + size_t(i - skip) * channels + c] = int16_t(std::clamp(in[i], -1.0f, 1.0f) * 32767.0f);
+                else // louder, with its peaks rounded off rather than clipped
+                    for (int i = skip; i < n; i++)
+                        pcm[base + size_t(i - skip) * channels + c] = int16_t(std::tanh(in[i] * gain) * 32767.0f);
             }
             av_frame_unref(frame);
         }
@@ -438,6 +445,7 @@ struct Decoder
             firstHash = StreamHash(data, kPacketBytes);
             const SeamlessLoop* listed = FindSeamlessLoop(firstHash);
             exact = listed != nullptr;
+            gain = CarSoundStreamGain(firstHash);
             loop = listed && (listed->n || listed->n2) ? listed : nullptr;
             streamFrames = trimStart = trimEnd = skipStart = 0;
             streamOut = 0;

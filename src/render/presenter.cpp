@@ -499,7 +499,8 @@ void PresenterUseRenderer()
     g_rendererActive = true;
 }
 
-bool PresenterRecordCopy(ID3D12GraphicsCommandList* list, ID3D12Resource* src, ID3D12Resource* overlay, uint32_t overlayW, uint32_t overlayH)
+bool PresenterRecordCopy(ID3D12GraphicsCommandList* list, ID3D12Resource* src, ID3D12Resource* overlay, uint32_t overlayW, uint32_t overlayH,
+                         ID3D12Resource* toast, uint32_t toastW, uint32_t toastH, float toastRise)
 {
     if (!g_p.ready)
         return false;
@@ -547,6 +548,23 @@ bool PresenterRecordCopy(ID3D12GraphicsCommandList* list, ID3D12Resource* src, I
         from.pResource = overlay;
         from.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
         list->CopyTextureRegion(&dst, offsetX + 24, offsetY + 24, 0, &from, nullptr);
+    }
+    const UINT shownW = UINT(std::min(sd.Width, bd.Width)), shownH = std::min(sd.Height, bd.Height);
+    if (toast && toastW && toastH && toastW <= shownW && toastH < shownH)
+    {
+        // up from just below the image to a twentieth of its height above the bottom; what is still below is cut off
+        const UINT bottom = offsetY + shownH, margin = shownH / 20;
+        const UINT y = bottom - UINT(float(toastH + margin) * std::clamp(toastRise, 0.0f, 1.0f));
+        if (y < bottom)
+        {
+            D3D12_TEXTURE_COPY_LOCATION dst{}, from{};
+            dst.pResource = backBuffer;
+            dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+            from.pResource = toast;
+            from.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+            const D3D12_BOX box{ 0, 0, 0, toastW, std::min(toastH, bottom - y), 1 };
+            list->CopyTextureRegion(&dst, offsetX + (shownW - toastW) / 2, y, 0, &from, &box);
+        }
     }
     b.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
     b.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
