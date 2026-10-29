@@ -289,6 +289,16 @@ void LoadTitle(const std::filesystem::path& xexPath)
             }
         }
     }
+    // Diagnostic: FM2_PROTECT_GUEST=lo-hi (hex) makes that guest range read-only, so whatever writes
+    // into it (image data that should never change) faults at the write, with its stack.
+    if (const char* e = getenv("FM2_PROTECT_GUEST"))
+    {
+        uint32_t lo = 0, hi = 0;
+        DWORD old;
+        if (sscanf(e, "%x-%x", &lo, &hi) == 2 && hi > lo)
+            Log("loader: guest %08X-%08X read-only: %s", lo, hi,
+                VirtualProtect(g_base + (lo & ~0xFFFu), ((hi - (lo & ~0xFFFu)) + 0xFFF) & ~0xFFFu, PAGE_READONLY, &old) ? "ok" : "failed");
+    }
 
     // XEX header, kept in guest memory for RtlImageXexHeaderField and XAM.
     const uint32_t headerSize = Be32(file.data() + 8);
