@@ -104,7 +104,11 @@ struct Datagram
 // WSAGetOverlappedResult (from the Forza Horizon recomp's net.cpp, MIT).
 struct PendingRecv
 {
-    uint32_t buffers = 0, count = 0; // guest WSABUF array (u32 length, u32 buffer)
+    // The WSABUF entries (length, buffer) as they were when the receive was posted: like Windows,
+    // the descriptors are copied at the call (the game keeps its WSABUF array on the stack, so read
+    // at completion it named whatever the stack held by then, and a datagram from the server was
+    // copied over live objects: the crash leaving Arcade under FM2_LIVE). The buffers stay the game's.
+    std::vector<std::pair<uint32_t, uint32_t>> buffers;
     uint32_t from = 0, fromLen = 0;  // guest sockaddr_in*, int* (0 for WSARecv)
     uint32_t overlapped = 0;         // WSAOVERLAPPED { status, bytes, offset, offset high, event }
 };
@@ -136,17 +140,28 @@ void SignalEvent(uint32_t handle)
 }
 
 // Copies a datagram into guest WSABUFs; returns the bytes copied.
-uint32_t Scatter(uint32_t buffers, uint32_t count, const std::vector<uint8_t>& data)
+uint32_t Scatter(const std::vector<std::pair<uint32_t, uint32_t>>& buffers, const std::vector<uint8_t>& data)
 {
     size_t done = 0;
-    for (uint32_t i = 0; i < count && done < data.size(); i++)
+    for (const auto& [length, buffer] : buffers)
     {
-        const size_t n = std::min<size_t>(LoadBE32(buffers + 8 * i), data.size() - done);
+        if (done >= data.size())
+            break;
+        const size_t n = std::min<size_t>(length, data.size() - done);
         if (n)
-            memcpy(GuestPtr(LoadBE32(buffers + 8 * i + 4)), data.data() + done, n);
+            memcpy(GuestPtr(buffer), data.data() + done, n);
         done += n;
     }
     return uint32_t(done);
+}
+
+// The guest WSABUF array (u32 length, u32 buffer per entry), read now.
+std::vector<std::pair<uint32_t, uint32_t>> ReadBuffers(uint32_t buffers, uint32_t count)
+{
+    std::vector<std::pair<uint32_t, uint32_t>> out;
+    for (uint32_t i = 0; i < count && i < 64; i++)
+        out.emplace_back(LoadBE32(buffers + 8 * i), LoadBE32(buffers + 8 * i + 4));
+    return out;
 }
 
 // Joins guest WSABUFs into one datagram.
@@ -994,7 +1009,7 @@ private:
     // caller sets once it has unlocked.
     uint32_t CompleteRecvLocked(const PendingRecv& r, const Datagram& d, uint32_t& bytes, uint32_t& event)
     {
-        bytes = Scatter(r.buffers, r.count, d.data);
+        bytes = Scatter(r.buffers, d.data);
         if (r.from)
             WriteSockaddr(r.from, d.vip, d.port);
         if (r.fromLen)
@@ -1247,6 +1262,7 @@ GUEST_EXPORT(NetDll_XNetRandom)
     static std::mutex m;
     static std::mt19937_64 rng(std::random_device{}());
     std::lock_guard lock(m);
+    Log("net: XNetRandom %08X length %u (r3 %08X lr %08X)", ctx.r4.u32, ctx.r5.u32, ctx.r3.u32, uint32_t(ctx.lr));
     for (uint32_t i = 0; i < ctx.r5.u32; i++)
         *GuestPtr<uint8_t>(ctx.r4.u32 + i) = uint8_t(rng() >> 24);
     Return(ctx, 0);
@@ -1448,14 +1464,14 @@ uint64_t RecvBuffers(PPCContext& ctx, uint32_t from, uint32_t fromLen, uint32_t 
         StoreBE32(flags, 0);
     uint32_t bytes = 0, error = 0;
     if (overlapped)
-        error = VNet::Get().RecvOverlapped(handle, { buffers, count, from, fromLen, overlapped }, bytes);
+        error = VNet::Get().RecvOverlapped(handle, { ReadBuffers(buffers, count), from, fromLen, overlapped }, bytes);
     else
     {
         Datagram d;
         error = VNet::Get().ReceiveFrom(handle, d);
         if (!error)
         {
-            bytes = Scatter(buffers, count, d.data);
+            bytes = Scatter(ReadBuffers(buffers, count), d.data);
             if (from)
                 WriteSockaddr(from, d.vip, d.port);
             if (fromLen)
