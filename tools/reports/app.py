@@ -87,10 +87,26 @@ def stats():
         return {'install': install_logs[0]['install'], 'noHardware': True, 'reason': 'title update missing' if 'title update' in fatal else 'other'}
     with ThreadPoolExecutor(8) as pool:
         results = list(pool.map(summary, per_install.values()))
-    data = {'logs': len(all_logs), 'installs': [r for r in results if not r.get('noHardware')],
+    old = {r['install'] for r in results if too_old(r.get('version'))}
+    data = {'logs': sum(l['install'] not in old for l in all_logs), 'old': old,
+            'installs': [r for r in results if not r.get('noHardware') and r['install'] not in old],
             'noHardware': [r for r in results if r.get('noHardware')]}
     _stats.update(at=time.time(), data=data)
     return data
+
+
+MIN_VERSION = (0, 8, 0)  # older builds aren't relevant any more: their issues, installs and logs are left out
+
+
+def too_old(v):
+    """True for a version before MIN_VERSION; anything that isn't a version is kept."""
+    parts = []
+    for p in (v or '').lstrip('v').split('.'):
+        digits = ''.join(c for c in p if c.isdigit()) if p[:1].isdigit() else ''
+        if not digits:
+            break
+        parts.append(int(digits))
+    return bool(parts) and tuple(parts) < MIN_VERSION
 
 
 def source(q):
@@ -117,12 +133,13 @@ class Handler(BaseHTTPRequestHandler):
                 with open(os.path.join(HERE, 'desk.html'), 'rb') as f:
                     return self.send(200, f.read(), 'text/html; charset=utf-8')
             if u.path == '/api/issues':
-                return self.send(200, reports.all_issues(q.get('state', 'all')))
+                return self.send(200, [i for i in reports.all_issues(q.get('state', 'all')) if not too_old(i.get('version'))])
             if u.path.startswith('/api/issue/'):
                 return self.send(200, reports.issue(int(u.path.rsplit('/', 1)[1]), source(q)))
             if u.path == '/api/logs':
                 # Each log with when it arrived and its PC (the CPU and GPU its install logged).
-                rows = logs()
+                old = stats()['old']
+                rows = [l for l in logs() if l['install'] not in old]
                 try:
                     times = reports.log_times()
                 except reports.GhError:
@@ -137,7 +154,7 @@ class Handler(BaseHTTPRequestHandler):
                 text = reports.log_text(q.get('path', ''))
                 return self.send(200, {'path': q['path'], 'text': text, 'summary': reports.log_summary(text)})
             if u.path == '/api/stats':
-                return self.send(200, stats())
+                return self.send(200, {k: v for k, v in stats().items() if k != 'old'})
             return self.send(404, {'error': 'Not found.'})
         except reports.GhError as e:
             return self.send(502, {'error': str(e)})
