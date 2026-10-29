@@ -21,6 +21,7 @@ RandomEventsPrizes.txt lists every car ("<id> <price> <year> <make> <model>"): t
 import argparse, os, random, shutil, sqlite3, sys, zipfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # roguelike_ui (python -I leaves the script's folder out)
 import strtable
 
 CATEGORY_ID = 10           # CareerEventTypes: the game has 1-9
@@ -35,6 +36,18 @@ TIERS = [  # name, classes (one is picked), target distance (m), first prize, AI
     ('Extreme', [4, 'race'], 25000, 50000, (20, 6, 1)),
 ]
 SHARE = [1.0, 0.7, 0.5, 0.35, 0.25, 0.15, 0.1, 0.05]  # prize by place
+# --mode: Random Events, or Roguelike Career (FM2-roguelike-scope.md): the same events under their own IDs and names,
+# no prize money, and the career flows it changes (roguelike_ui.py) in the pack's overlay folder, which the port merges
+# into the game's UI.zip while the pack is switched on (kernel/zip_overlay.cpp)
+MODES = {
+    'random': dict(pack='RandomEvents', category=10, first_event=900, first_row=20000, title='Random Events',
+                   description='Four new events every two races: random tracks, random cars, random rules. '
+                               'Every five races wins you a random car.'),
+    'roguelike': dict(pack='Roguelike', category=11, first_event=910, first_row=21000, title='Roguelike Career',
+                      description='A new car after every race, and no prize money: sell cars for 10% of their price '
+                                  'to buy upgrades.'),
+}
+PACK = 'RandomEvents'      # the pack's folder and file names
 DRIVES = {1: 'FWD', 2: 'RWD', 3: 'AWD'}
 REGIONS = {1: 'Asian', 2: 'European', 3: 'North American'}
 SKIP_TRACKS = ('DebugTrack', 'TuningTrack')
@@ -135,9 +148,13 @@ def main():
     ap.add_argument('--rotation', type=int, default=0); ap.add_argument('--seed', type=int, default=1)
     ap.add_argument('--laps', type=int, help='every event this many laps (for testing)')
     ap.add_argument('--install', help="write the finished files into this installed pack's Media/DLCZips (the launcher)")
+    ap.add_argument('--mode', choices=sorted(MODES), default='random')
     a = ap.parse_args()
+    global CATEGORY_ID, FIRST_EVENT_ID, FIRST_ROW_ID, PACK
+    mode = MODES[a.mode]
+    CATEGORY_ID, FIRST_EVENT_ID, FIRST_ROW_ID, PACK = mode['category'], mode['first_event'], mode['first_row'], mode['pack']
     g = sqlite3.connect(a.gamedb)
-    mod = os.path.join(a.out, 'RandomEvents'); extra = os.path.join(a.out, 'DLCZips-extra')
+    mod = os.path.join(a.out, PACK); extra = os.path.join(a.out, 'DLCZips-extra')
     os.makedirs(os.path.join(mod, 'media', 'db', 'patch'), exist_ok=True); os.makedirs(extra, exist_ok=True)
 
     langs = {}
@@ -158,14 +175,15 @@ def main():
     events = generate(g, a.rotation, a.seed, names)
     if a.laps:
         for e in events: e['laps'] = a.laps
+    if a.mode == 'roguelike':
+        for e in events: e['prize'] = 0
 
     cat_prefix = int(g.execute('SELECT Name FROM CareerEventTypes WHERE id=1').fetchone()[0][2:]) >> 16
     ev_prefix = int(g.execute('SELECT Name FROM Events WHERE Id=?', (TEMPLATE_EVENT,)).fetchone()[0][2:]) >> 16
     key = en['CareerEventTypes'].free_key(0x0100)
     cat_keys = (key, key + 1)
-    texts = [('CareerEventTypes', key, 'IDS_Name_RandomEvents', 'Random Events'),
-             ('CareerEventTypes', key + 1, 'IDS_Description_RandomEvents',
-              'Four new events every two races: random tracks, random cars, random rules. Every five races wins you a random car.')]
+    texts = [('CareerEventTypes', key, 'IDS_Name_' + PACK, mode['title']),
+             ('CareerEventTypes', key + 1, 'IDS_Description_' + PACK, mode['description'])]
     k = en['Events'].free_key(0x0100)
     for i, e in enumerate(events):
         while k in en['Events'].strings or k + 1 in en['Events'].strings: k += 1
@@ -175,7 +193,7 @@ def main():
                       '%s. %s, %d lap%s. %d eligible cars.' % (
                           e['track_name'], e['cls_name'], e['laps'], 's' if e['laps'] > 1 else '', e['eligible'])))
         k += 2
-    zpath = os.path.join(extra, 'RandomEventsOverrides1_pri_170.zip')
+    zpath = os.path.join(extra, PACK + 'Overrides1_pri_170.zip')
     with zipfile.ZipFile(zpath, 'w', zipfile.ZIP_DEFLATED) as z:
         for lang, tables in langs.items():
             for table, kk, sym, text in texts:
@@ -183,11 +201,11 @@ def main():
             for t in ('CareerEventTypes', 'Events'):
                 z.writestr('%s/%s.str' % (lang, t), tables[t].build())
     # the events' descriptions, which the port shows with the races left until the next set (hooks/random_events.cpp)
-    with open(os.path.join(extra, 'RandomEventsDescriptions.txt'), 'w', encoding='utf-8', newline='\n') as f:
+    with open(os.path.join(extra, PACK + 'Descriptions.txt'), 'w', encoding='utf-8', newline='\n') as f:
         for i, (table, kk, sym, text) in enumerate(t for t in texts if t[0] == 'Events' and t[2].startswith('IDS_Description_')):
             f.write('%d\t%s\n' % (FIRST_EVENT_ID + i, text))
     # the prize list: every car, for the port to draw from every fifth Random Events race (hooks/random_events.cpp)
-    with open(os.path.join(extra, 'RandomEventsPrizes.txt'), 'w', encoding='utf-8', newline='\n') as f:
+    with open(os.path.join(extra, PACK + 'Prizes.txt'), 'w', encoding='utf-8', newline='\n') as f:
         model = look('Data_Car', 'SELECT Id, DisplayName FROM Data_Car')
         for cid, year, make, cost in g.execute('SELECT Id, Year, MakeID, BaseCost FROM Data_Car ORDER BY Id'):
             f.write('%d %d %d %s\n' % (cid, cost, year, model.get(cid) or names['make'].get(make, '')))
@@ -196,7 +214,7 @@ def main():
     # category 10 gets copies of category 4's (the Forza 2 cup), from the player's game files
     media = os.path.dirname(os.path.dirname(os.path.abspath(a.gamedb)))
     trophy = '%02d' % CATEGORY_ID
-    with zipfile.ZipFile(os.path.join(extra, 'RandomEventsOverrides2_pri_170.zip'), 'w', zipfile.ZIP_DEFLATED) as z:
+    with zipfile.ZipFile(os.path.join(extra, PACK + 'Overrides2_pri_170.zip'), 'w', zipfile.ZIP_DEFLATED) as z:
         for f in sorted(os.listdir(ICONS)):
             if f.endswith('.xds'):
                 z.write(os.path.join(ICONS, f), 'C_Map/C_TYP_Map/' + f)
@@ -210,8 +228,22 @@ def main():
                os.path.join(media, 'UI', 'Videos', 'Trophies', 'Trophy0%s_%s.bik' % (trophy, place)))
               for place in ('Gold', 'Silver', 'Bronze')]
     open(os.path.join(extra, 'zipmount.xml'), 'w', newline='\r\n').write(
-        '<?xml version="1.0" ?>\n<zipmount>\n\t<zip Name="RandomEventsOverrides1_pri_170.zip" Mount="game:\\Media\\StringTables\\" />\n'
-        '\t<zip Name="RandomEventsOverrides2_pri_170.zip" Mount="game:\\Media\\UI\\Textures\\" />\n</zipmount>\n')
+        '<?xml version="1.0" ?>\n<zipmount>\n\t<zip Name="%sOverrides1_pri_170.zip" Mount="game:\\Media\\StringTables\\" />\n'
+        '\t<zip Name="%sOverrides2_pri_170.zip" Mount="game:\\Media\\UI\\Textures\\" />\n</zipmount>\n' % (PACK, PACK))
+    if a.mode == 'roguelike':
+        # every car's class and type, for the port to draw the run's cars from (hooks/roguelike.cpp)
+        with open(os.path.join(extra, 'RoguelikeCars.txt'), 'w', encoding='utf-8', newline='\n') as f:
+            for cid, cls, cartype in g.execute('SELECT Id, ClassID, CarTypeID FROM Data_Car ORDER BY Id'):
+                f.write('%d %d %d\n' % (cid, cls, cartype))
+        # English names for the events the port builds in game ("<kind>\t<id>\t<name>")
+        with open(os.path.join(extra, 'RoguelikeNames.txt'), 'w', encoding='utf-8', newline='\n') as f:
+            for kind in ('make', 'country', 'track', 'cylinders'):
+                for i, n in sorted(names[kind].items()):
+                    if n: f.write('%s\t%d\t%s\n' % (kind, i, n))
+            for cid, m in sorted(model.items()):
+                if m: f.write('car\t%d\t%s\n' % (cid, m))
+        import roguelike_ui
+        roguelike_ui.build(os.path.join(media, 'UI.zip'), os.path.join(extra, 'overlay', 'game', 'media', 'ui.zip'))
     open(os.path.join(extra, 'stringtables.xml'), 'w', newline='\r\n').write(
         '<?xml version="1.0" ?>\n<stringtables >\n\t<table Name="careereventtypes" />\n\t<table Name="events" />\n</stringtables>\n')
 
@@ -253,6 +285,15 @@ def main():
         for place, share in enumerate(SHARE, 1):
             insert('EventScoring', scols, dict(Event_ID=eid, place=place, Credits=int(e['prize'] * share)))
         print('%d %-8s %-60s %d laps, %d eligible, rules %s' % (eid, e['tier'], ('%s (%d) at %s' % (e['title'], e['icon'], e['track_name']))[:60], e['laps'], e['eligible'], e['rules']))
+    if a.mode == 'roguelike':
+        # AI skills with more engine torque, for the harder events' opponents (the port's event builder): the game's
+        # skills 1-20 again as 101-120 (+5%) and 201-220 (+10%)
+        kcols = table('AISkills')
+        for boost, scale in ((100, 1.05), (200, 1.10)):
+            for row in g.execute('SELECT * FROM AISkills WHERE id BETWEEN 1 AND 20'):
+                skill = dict(zip(kcols, row))
+                skill.update(id=skill['id'] + boost, SoloLapping_NominalTorqueScale=skill['SoloLapping_NominalTorqueScale'] * scale)
+                insert('AISkills', kcols, skill)
     p.commit()
     p.close()
     if a.install:
@@ -264,21 +305,25 @@ def install(mod, extra, dlczips, rotation, videos=()):
     extra files written into its Media/DLCZips, and RandomEventsRotation.txt saying which rotation it holds. The
     game unpacks the database patch again when the zip changes (imports_xam.cpp UnpackDlcPatches)."""
     os.makedirs(dlczips, exist_ok=True)
-    tmp = os.path.join(dlczips, 'RandomEvents_pri_73.zip.tmp')
+    tmp = os.path.join(dlczips, PACK + '_pri_73.zip.tmp')
     with zipfile.ZipFile(tmp, 'w', zipfile.ZIP_DEFLATED) as z:
         for root, dirs, files in os.walk(mod):
             dirs.sort()
             for f in sorted(files):
                 full = os.path.join(root, f)
                 z.write(full, os.path.relpath(full, mod).replace(os.sep, '/'))
-    os.replace(tmp, os.path.join(dlczips, 'RandomEvents_pri_73.zip'))
+    os.replace(tmp, os.path.join(dlczips, PACK + '_pri_73.zip'))
     for f in os.listdir(extra):
+        if os.path.isdir(os.path.join(extra, f)):  # the overlay folder
+            shutil.rmtree(os.path.join(dlczips, f), ignore_errors=True)
+            shutil.copytree(os.path.join(extra, f), os.path.join(dlczips, f))
+            continue
         with open(os.path.join(extra, f), 'rb') as i, open(os.path.join(dlczips, f), 'wb') as o:
             o.write(i.read())
     for source, copy in videos:
         if not os.path.exists(copy):
             shutil.copyfile(source, copy)
-    with open(os.path.join(dlczips, 'RandomEventsRotation.txt'), 'w') as f:
+    with open(os.path.join(dlczips, PACK + 'Rotation.txt'), 'w') as f:
         f.write('%d\n' % rotation)
     print('installed rotation %d in %s' % (rotation, dlczips))
 

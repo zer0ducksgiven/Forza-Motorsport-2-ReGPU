@@ -4,17 +4,31 @@ using System.Text;
 namespace FM2Launcher;
 
 /// <summary>
-/// Random Events, the career mod (tools/modkit/career/random_events.py, shipped beside the launcher in career\): four
-/// generated career events that change every two career races, and a random car every fifth Random Events race
-/// (fm2.exe, hooks/random_events.cpp). The mod holds the game's own string tables, so it's built here from the
-/// player's game files rather than shipped: the Mods panel's first listing builds it into dlc-disabled as a mod
-/// (Dlc.InstallBundled; switched on there like the others), and before each launch Rotate rebuilds an enabled one when the profile's set is due
-/// (races / 2 from profiles\&lt;name&gt;\random_events.ini, which fm2.exe keeps).
+/// The career mods built by tools/modkit/career/random_events.py (shipped beside the launcher in career\). They hold
+/// the game's own string tables, so they're built here from the player's game files rather than shipped: the Mods
+/// panel's first listing builds each into dlc-disabled (Dlc.InstallBundled; switched on there like the others).
+/// <list type="bullet">
+/// <item>Random Events: four generated career events that change every two career races, and a random car every
+/// fifth Random Events race (fm2.exe, hooks/random_events.cpp). Before each launch Rotate rebuilds an enabled one
+/// when the profile's set is due (races / 2 from profiles\&lt;name&gt;\random_events.ini, which fm2.exe keeps).</item>
+/// <item>Roguelike Career (FM2-roguelike-scope.md): a career run on a fresh profile, a new car after every race and no
+/// prize money (hooks/roguelike.cpp). Its package also carries the career flows it changes.</item>
+/// </list>
+/// They share the career's machinery, so only one is on at a time (Dlc.SetEnabled).
 /// </summary>
-public static class RandomEvents
+public sealed class CareerMod
 {
-    public const string Id = "RandomEvents";
-    const string Folder = Id;
+    public static readonly CareerMod RandomEvents = new("RandomEvents", "Random Events", "random");
+    public static readonly CareerMod Roguelike = new("Roguelike", "Roguelike Career", "roguelike");
+    public static readonly CareerMod[] All = [RandomEvents, Roguelike];
+
+    public string Id { get; }
+    readonly string _title, _mode;
+
+    CareerMod(string id, string title, string mode) => (Id, _title, _mode) = (id, title, mode);
+
+    /// <summary>The career mod this one can't be on with.</summary>
+    public CareerMod Other => this == RandomEvents ? Roguelike : RandomEvents;
 
     static string Script => Path.Combine(AppContext.BaseDirectory, "career", "random_events.py");
     static string Python => Platform.Linux ? "python3"
@@ -23,12 +37,12 @@ public static class RandomEvents
     static string StringTables => Path.Combine(Paths.GameDir, "Media", "StringTables");
 
     /// <summary>The installed pack's DLCZips folder (enabled first), or null.</summary>
-    static string? Installed(out bool enabled)
+    string? Installed(out bool enabled)
     {
         foreach (var (dir, on) in new[] { (Paths.Dlc, true), (Paths.DlcDisabled, false) })
         {
-            var zips = Path.Combine(dir, Folder, "Media", "DLCZips");
-            if (File.Exists(Path.Combine(zips, "RandomEvents_pri_73.zip")))
+            var zips = Path.Combine(dir, Id, "Media", "DLCZips");
+            if (File.Exists(Path.Combine(zips, Id + "_pri_73.zip")))
             {
                 enabled = on;
                 return zips;
@@ -38,25 +52,27 @@ public static class RandomEvents
         return null;
     }
 
-    public static bool IsInstalled => Installed(out _) is not null;
+    public bool IsInstalled => Installed(out _) is not null;
+    public bool IsEnabled => Installed(out var on) is not null && on;
 
     public static bool Available => File.Exists(Script) && File.Exists(GameDb);
 
     /// <summary>Builds the mod (switched off) from the game files, for the Mods panel.</summary>
-    public static void Install()
+    public void Install()
     {
         if (Game.Running) throw new InvalidOperationException("Close the game first.");
-        if (!Available) throw new InvalidOperationException("Random Events needs the game files (game\\Media\\DB) and the launcher's career folder.");
-        var zips = Installed(out _) ?? Path.Combine(Paths.DlcDisabled, Folder, "Media", "DLCZips");
+        if (!Available) throw new InvalidOperationException(_title + " needs the game files (game\\Media\\DB) and the launcher's career folder.");
+        var zips = Installed(out _) ?? Path.Combine(Paths.DlcDisabled, Id, "Media", "DLCZips");
         Build(zips, 0, Seed(GameSettings.Load().Profile));
         var dir = Path.GetDirectoryName(Path.GetDirectoryName(zips))!;
-        File.WriteAllBytes(dir + ".title", Encoding.Unicode.GetBytes("Random Events"));
+        File.WriteAllBytes(dir + ".title", Encoding.Unicode.GetBytes(_title));
         File.WriteAllText(dir + ".license", "FFFFFFFF\r\n");
         File.WriteAllText(dir + ".mod", "");
     }
 
-    /// <summary>Before a launch: the profile's set of events, rebuilt if it has moved on (two races per set).</summary>
-    public static void Rotate()
+    /// <summary>Before a launch (Random Events): the profile's set of events, rebuilt if it has moved on (two races
+    /// per set).</summary>
+    public void Rotate()
     {
         var zips = Installed(out var enabled);
         if (zips is null || !enabled || !Available) return;
@@ -67,7 +83,8 @@ public static class RandomEvents
             foreach (var line in File.ReadAllLines(ini))
                 if (line.StartsWith("races=")) uint.TryParse(line[6..], out races);
         var due = races / 2;
-        var have = File.Exists(Path.Combine(zips, "RandomEventsRotation.txt")) && uint.TryParse(File.ReadAllText(Path.Combine(zips, "RandomEventsRotation.txt")).Trim(), out var h) ? h : uint.MaxValue;
+        var rotation = Path.Combine(zips, Id + "Rotation.txt");
+        var have = File.Exists(rotation) && uint.TryParse(File.ReadAllText(rotation).Trim(), out var h) ? h : uint.MaxValue;
         if (have == due) return;
         // A failed rebuild keeps the old set and doesn't stop the game: it's noted for bug reports.
         try { Build(zips, due, Seed(profile)); }
@@ -82,12 +99,13 @@ public static class RandomEvents
         return h % 1000000;
     }
 
-    static void Build(string zips, uint rotation, uint seed)
+    void Build(string zips, uint rotation, uint seed)
     {
-        var work = Path.Combine(Path.GetTempPath(), "fm2-random-events");
+        var work = Path.Combine(Path.GetTempPath(), "fm2-" + Id.ToLowerInvariant());
         if (Directory.Exists(work)) Directory.Delete(work, true);
         var psi = new ProcessStartInfo(Python) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
-        foreach (var a in new[] { "-I", Script, GameDb, StringTables, work, "--rotation", rotation.ToString(), "--seed", seed.ToString(), "--install", zips })
+        foreach (var a in new[] { "-I", Script, GameDb, StringTables, work, "--rotation", rotation.ToString(), "--seed", seed.ToString(),
+                                  "--mode", _mode, "--install", zips })
             psi.ArgumentList.Add(a);
         using var p = Process.Start(psi) ?? throw new InvalidOperationException("Python didn't start.");
         var output = p.StandardOutput.ReadToEndAsync();

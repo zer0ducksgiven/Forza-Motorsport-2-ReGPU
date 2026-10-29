@@ -297,7 +297,7 @@ public static class Game
         if (!File.Exists(Paths.Exe)) throw new InvalidOperationException($"fm2.exe isn't at {Paths.Exe}.");
         CopyMissing(Path.Combine(Paths.Root, "update"), Paths.Update);
         CopyMissing(Path.Combine(Paths.Root, "dlc"), Paths.Dlc, Paths.DlcDisabled);
-        RandomEvents.Rotate();
+        CareerMod.RandomEvents.Rotate();
         Directory.CreateDirectory(Path.Combine(Paths.Root, "out"));
         var log = Path.Combine(Paths.Root, "out", "play.log");
         var psi = Platform.Linux ? LinuxStart(log) : new ProcessStartInfo("cmd.exe", $"/c \"\"{Paths.Exe}\" > \"{log}\" 2>&1\"")
@@ -423,10 +423,11 @@ public static class Dlc
             }
             catch (Exception) { } // a broken bundled package mustn't stop the launcher; Add shows the error
         }
-        // Random Events is built from the player's game files, not shipped: built here once, switched off.
-        if (!removed.Contains(RandomEvents.Id) && RandomEvents.Available && !RandomEvents.IsInstalled)
-            try { RandomEvents.Install(); }
-            catch (Exception ex) { File.WriteAllText(Path.Combine(Paths.User, "random_events_error.txt"), $"install: {ex.Message}\n"); }
+        // The career mods are built from the player's game files, not shipped: built here once, switched off.
+        foreach (var mod in CareerMod.All)
+            if (!removed.Contains(mod.Id) && CareerMod.Available && !mod.IsInstalled)
+                try { mod.Install(); }
+                catch (Exception ex) { File.AppendAllText(Path.Combine(Paths.User, "random_events_error.txt"), $"install {mod.Id}: {ex.Message}\n"); }
     }
 
     static List<Pack> ListAll(bool mods)
@@ -453,6 +454,9 @@ public static class Dlc
     {
         if (id.Contains('/') || id.Contains('\\') || id.Contains("..")) throw new ArgumentException("Not a package name.");
         if (Game.Running) throw new InvalidOperationException("Close the game first: DLC is read while it runs.");
+        // Random Events and Roguelike Career share the career's machinery: one at a time.
+        if (enabled && CareerMod.All.FirstOrDefault(m => m.Id == id) is { } career && career.Other.IsEnabled)
+            SetEnabled(career.Other.Id, false);
         var (from, to) = enabled ? (Paths.DlcDisabled, Paths.Dlc) : (Paths.Dlc, Paths.DlcDisabled);
         Directory.CreateDirectory(to);
         foreach (var name in new[] { id, id + ".title", id + ".license", id + ".mod" })
@@ -496,7 +500,7 @@ public static class Dlc
                 if (Directory.Exists(p)) Directory.Delete(p, true);
                 else if (File.Exists(p)) File.Delete(p);
             }
-        if (File.Exists(Path.Combine(AppContext.BaseDirectory, "mods", id)) || id == RandomEvents.Id)
+        if (File.Exists(Path.Combine(AppContext.BaseDirectory, "mods", id)) || CareerMod.All.Any(m => m.Id == id))
             File.AppendAllText(Removed, id + Environment.NewLine);
     }
 }

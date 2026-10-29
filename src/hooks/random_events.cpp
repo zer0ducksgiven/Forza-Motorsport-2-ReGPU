@@ -372,12 +372,15 @@ std::string RandomEventsLuaSource(const char* text, uint32_t size)
 
 PPC_FUNC_IMPL(TU_IMP(82348078));
 
+void RoguelikeRaceFinished(uint32_t eventId); // hooks/roguelike.cpp
+
 // CCareerCircuitRaceCoordinator::UpdateRaceResults(this, args)
 PPC_FUNC(TU_SUB(82348078))
 {
     const uint32_t coordinator = ctx.r3.u32;
     const uint32_t eventId = __builtin_bswap32(*GuestPtr<uint32_t>(coordinator + 72));
     TU_IMP(82348078)(ctx, base);
+    RoguelikeRaceFinished(eventId);
     if (!ModInstalled())
         return;
     std::lock_guard lock(g_mutex);

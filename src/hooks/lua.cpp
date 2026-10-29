@@ -79,6 +79,17 @@ static void SwapLayoutLabels(uint32_t buffer, uint32_t size, uint32_t name)
 
 std::string RandomEventsLuaBefore(const char* name, bool source, const char* text, uint32_t size); // hooks/random_events.cpp
 std::string RandomEventsLuaSource(const char* text, uint32_t size);
+bool RoguelikeLuaNote(const char* text, uint32_t size); // hooks/roguelike.cpp
+std::string RoguelikeLuaSource(const char* text, uint32_t size);
+
+// A flow's Lua as the mods change it (Random Events, Roguelike Career), or empty when unchanged.
+static std::string ModLuaSource(const char* text, uint32_t size)
+{
+    std::string out = RandomEventsLuaSource(text, size);
+    if (std::string rogue = out.empty() ? RoguelikeLuaSource(text, size) : RoguelikeLuaSource(out.data(), uint32_t(out.size())); !rogue.empty())
+        out = std::move(rogue);
+    return out;
+}
 
 #if FM2_TITLE_UPDATE
 // lua_pcall(L, nargs, nresults, errfunc): luaB_pcall's call (the base library's "pcall"); a title update address,
@@ -138,7 +149,7 @@ static void Rewrite(PPCContext& ctx)
     const uint32_t buffer = ctx.r4.u32, size = ctx.r5.u32;
     if (!buffer || size < 4 || memcmp(GuestPtr<const char>(buffer), "\x1bLua", 4) == 0)
         return;
-    const std::string text = RandomEventsLuaSource(GuestPtr<const char>(buffer), size);
+    const std::string text = ModLuaSource(GuestPtr<const char>(buffer), size);
     if (text.empty())
         return;
     static std::mutex mutex;
@@ -163,7 +174,7 @@ PPC_FUNC(TU_SUB(8256AD00))
     if (s)
     {
         const char* text = GuestPtr<const char>(s);
-        const std::string changed = RandomEventsLuaSource(text, uint32_t(strlen(text)));
+        const std::string changed = ModLuaSource(text, uint32_t(strlen(text)));
         if (!changed.empty())
         {
             static std::mutex mutex;
@@ -185,6 +196,8 @@ PPC_FUNC_IMPL(__imp__sub_8254DDF8);
 PPC_FUNC(sub_8254DDF8)
 {
     SwapLayoutLabels(ctx.r4.u32, ctx.r5.u32, ctx.r6.u32);
+    if (ctx.r4.u32)
+        RoguelikeLuaNote(GuestPtr<const char>(ctx.r4.u32), ctx.r5.u32);
     RunBefore(ctx, base, __imp__sub_8254DDF8);
     Rewrite(ctx);
     __imp__sub_8254DDF8(ctx, base);
@@ -194,6 +207,8 @@ PPC_FUNC_IMPL(__imp__sub_8254DF80);
 PPC_FUNC(sub_8254DF80)
 {
     SwapLayoutLabels(ctx.r4.u32, ctx.r5.u32, ctx.r6.u32);
+    if (ctx.r4.u32)
+        RoguelikeLuaNote(GuestPtr<const char>(ctx.r4.u32), ctx.r5.u32);
     RunBefore(ctx, base, __imp__sub_8254DDF8); // the plain loader: this one also runs what it loads
     Rewrite(ctx);
     __imp__sub_8254DF80(ctx, base);

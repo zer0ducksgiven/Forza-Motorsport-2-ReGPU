@@ -8,6 +8,8 @@
 //       mods\MyMod\update\media.zip\UI\Flows\Options.xml   (a file of the title update's media.zip)
 //     A file there replaces the member of that name, or is added. Mods apply in name order, after the built-in
 //     changes; a mod folder starting with '_' or '.' is skipped.
+//   - enabled DLC packs, the same way from <pack>\Media\DLCZips\overlay\<zip path>\<member path>, before the mods
+//     (a mod package whose flows switch on and off with it: Roguelike Career)
 // Members we change are stored (not compressed); the rest are copied byte for byte. FM2_NO_OVERLAY=1 opens
 // the original zips (no built-in changes, no mods).
 #include <algorithm>
@@ -193,14 +195,22 @@ std::vector<ModFile> ModFiles(const std::string& zip)
 {
     std::vector<ModFile> files;
     std::error_code ec;
+    // Enabled DLC packs' Media\DLCZips\overlay folders first (a mod package carrying its flows, such as Roguelike
+    // Career: switched with the package), then the mods folder.
+    std::vector<fs::path> packs;
+    for (const auto& pack : fs::directory_iterator(DlcDir(), ec))
+        if (pack.is_directory(ec))
+            if (const fs::path o = DlcPackageRoot(pack.path()) / "Media" / "DLCZips" / "overlay"; fs::is_directory(o, ec))
+                packs.push_back(o);
+    std::sort(packs.begin(), packs.end());
+    std::vector<fs::path> dirs = packs, mine;
     const fs::path mods = UserDir() / "mods";
-    if (!fs::is_directory(mods, ec))
-        return files;
-    std::vector<fs::path> dirs;
-    for (const auto& e : fs::directory_iterator(mods, ec))
-        if (e.is_directory(ec) && e.path().filename().string()[0] != '_' && e.path().filename().string()[0] != '.')
-            dirs.push_back(e.path());
-    std::sort(dirs.begin(), dirs.end());
+    if (fs::is_directory(mods, ec))
+        for (const auto& e : fs::directory_iterator(mods, ec))
+            if (e.is_directory(ec) && e.path().filename().string()[0] != '_' && e.path().filename().string()[0] != '.')
+                mine.push_back(e.path());
+    std::sort(mine.begin(), mine.end());
+    dirs.insert(dirs.end(), mine.begin(), mine.end());
     for (const fs::path& dir : dirs)
     {
         // The zip's folder inside the mod, matched case-insensitively: <mod>\game\media\ui.zip\...
