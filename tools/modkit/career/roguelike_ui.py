@@ -71,6 +71,12 @@ TITLE = ('\t\tpcall(function()\r\n'
 def career_menu(d):
     """A career not started as a Roguelike run is turned away (the run needs a fresh profile); no Buy Car."""
     d = remove(d, r'[ \t]*\{Text="\[UI\.Strings\.IDS_BUY_CAR\]"[^\n]*\n', 'the career menu\'s Buy Car')
+    # (a scene with handlers runs none of its own text: the menu's Lua goes in OnEnter, as C_WIN_CarReveal's does)
+    d = once(d, r'(<scene path="GAME:\\Media\\UI\\Scenes\\C_Scenes\\C_MYC_MainMenu\.xgf" package="careermainmenu">)(.*?)(</scene>)',
+             lambda m: m.group(1) + '\r\n\t\t<OnEnter>' + m.group(2) + '</OnEnter>\r\n' +
+             WELCOME_FIRE.replace('\n', '\r\n').lstrip('\r\n') + '\r\n\t' + m.group(3), 'the career menu\'s scene')
+    d = once(d, r'(<branch package="emptypackage">)', lambda m: m.group(1) + WELCOME.replace('\n', '\r\n'),
+             'the career menu\'s choices')
     d = once(d, r'(<string id="IDS_CAREER_MENU_TITLE"\s+text=")[^"]*', lambda m: m.group(1) + 'Rogue Motorsport',
              'the career menu\'s title')
     d = once(d, r'(\n[ \t]*UI\.Flow\.SceneTitle = UI\.Strings\.IDS_CAREER_MENU_TITLE:GetText\(\))(\r?\n)',
@@ -88,6 +94,38 @@ def career_menu(d):
              '\t\t\t</popup>\r\n\t\t\t<back/>\r\n\t\t</choice>') % (BLOCKED_TITLE, BLOCKED_TEXT)
     return once(d, r'(<choice event="FirstTimeCareer">.*?</choice>)', lambda m: m.group(1) + popup,
                 'the first-career branch')
+
+
+# A new run's welcome, over the career menu once its first car is shown: how Rogue Mode works, OK with A. The menu's
+# scene fires it from its OnUpdate while FirstTimeCareer's flag is set (UI.Storage: UI.Flow is the flow's own), and goes
+# back to the menu after it, as its Livery pop-ups do.
+WELCOME_FIRE = r'''
+		<OnUpdate>
+			if UI.Storage.RogueWelcome then
+				UI.Storage.RogueWelcome = nil
+				UI:fireEvent("RogueWelcome")
+			end
+		</OnUpdate>'''
+WELCOME = r'''
+		<choice event="RogueWelcome">
+	<popup path="GAME:\Media\UI\Scenes\PopUp_Message.xgf">
+		PopupTitle = "Welcome to Rogue Mode"
+		PopupMessage = "Win races to earn upgrade parts, and sometimes a new car.\n" ..
+		               "Every podium raises your level: the races get harder.\n" ..
+		               "Finish 4th or worse twice in a row in one car and you lose that car.\n" ..
+		               "Lose your last car and the run starts again.\n" ..
+		               "There's no prize money: sell cars for credits."
+		PopupButtons =
+		{
+			A = { Event = "OK" },
+		}
+		HelpButtonTexts =
+		{
+			A = "{colour='255 255 255 255'}[UI.Strings.IDS_OK]",
+		}
+	</popup>
+			<back/>
+		</choice>'''
 
 
 def first_time_career(d):
@@ -113,7 +151,8 @@ def first_time_career(d):
     d = once(d, r'(Lobby\.activePlayer\.garage:GetInCar\(gId\))(\s*</logic>)', lambda m: m.group(1) +
              '\r\n\t\tProfileManager.Main.Credits = 0'
              '\r\n\t\tloadstring("--roguelike: run started")'
-             '\r\n\t\tloadstring("--roguelike: reveal " .. tostring(UI.Flow.Car))' + m.group(2) +
+             '\r\n\t\tloadstring("--roguelike: reveal " .. tostring(UI.Flow.Car))'
+             '\r\n\t\tUI.Storage.RogueWelcome = true -- the career menu says how Rogue Mode works, once' + m.group(2) +
              '\r\n\t<flow path="GAME:\\Media\\UI\\Flows\\CarReveal.xml"/>', 'the first car\'s purchase')
     # the reward screen's scene in the flow's package (as CareerCircuitRace.xml's CarReveal-Scene)
     return once(d, r'(<package name="firsttimecareerpackage">)', lambda m: m.group(1) +
