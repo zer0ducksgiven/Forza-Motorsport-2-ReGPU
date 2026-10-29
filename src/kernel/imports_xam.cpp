@@ -891,6 +891,7 @@ bool ReadPad(uint32_t user, PadState& s)
             s.rightTrigger = std::max(s.rightTrigger, w.gas);
             s.buttons |= w.buttons;
         }
+        MusicPad(s.buttons); // in-race music's D-pad controls (audio/music.cpp)
         static LiveSwitch autoStart("FM2_AUTOSTART");
         static const auto start = Clock::now();
         // FM2_INPUT_SCRIPT="7:START,10:A,14:RIGHT,...": press each button for
@@ -898,7 +899,6 @@ bool ReadPad(uint32_t user, PadState& s)
         static const std::vector<std::pair<double, uint16_t>> script = [] {
             std::vector<std::pair<double, uint16_t>> v;
             static const std::pair<const char*, uint16_t> names[] = { { "A", XINPUT_GAMEPAD_A }, { "B", XINPUT_GAMEPAD_B },
-        MusicPad(s.buttons); // in-race music's D-pad controls (audio/music.cpp)
                 { "X", XINPUT_GAMEPAD_X }, { "Y", XINPUT_GAMEPAD_Y }, { "START", XINPUT_GAMEPAD_START }, { "BACK", XINPUT_GAMEPAD_BACK },
                 { "UP", XINPUT_GAMEPAD_DPAD_UP }, { "DOWN", XINPUT_GAMEPAD_DPAD_DOWN }, { "LEFT", XINPUT_GAMEPAD_DPAD_LEFT },
                 { "RIGHT", XINPUT_GAMEPAD_DPAD_RIGHT }, { "LB", XINPUT_GAMEPAD_LEFT_SHOULDER }, { "RB", XINPUT_GAMEPAD_RIGHT_SHOULDER } };
