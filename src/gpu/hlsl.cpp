@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include "gpu/hlsl.h"
 #include "live_switch.h"
@@ -379,6 +380,15 @@ struct Emitter
 
     static std::string Masked(const std::string& target, const std::string& value, uint32_t mask)
     {
+        // One swizzled write for the components in order (r.xyz = v.xyz), unless FM2_FULL_ALU.
+        if (!FullAlu() && std::popcount(mask & 15u) > 1) // (one component keeps its form: ApplyDirtSeamFix finds the car body by it)
+        {
+            std::string comps;
+            for (int c = 0; c < 4; c++)
+                if ((mask >> c) & 1)
+                    comps += "xyzw"[c];
+            return target + "." + comps + " = " + value + "." + comps + "; ";
+        }
         std::string s;
         for (int c = 0; c < 4; c++)
         {
@@ -498,11 +508,31 @@ struct Emitter
         }
     }
 
+    // FM2_FULL_ALU=1: every instruction computes both halves through v and s as before (A/B).
+    static bool FullAlu()
+    {
+        static const bool full = getenv("FM2_FULL_ALU") != nullptr;
+        return full;
+    }
+
     void EmitAlu(const Alu& a)
     {
-        std::string body = "{ float4 v = float4(0, 0, 0, 0); float s = ps; ";
+        // Leaner code for the common cases, the same results: the scalar half "retain previous" (op 50,
+        // unclamped) leaves ps as it is, and a vector result nothing reads (no component written, no
+        // predicate, kill or address side effect) isn't computed. Compiled without optimisation, all of
+        // it reached the GPU's compiler as written.
+        const bool lean = !FullAlu();
+        const bool scalarKept = lean && a.scalarOp == 50 && !a.scalarClamp && !a.scalarMask;
+        const bool vectorSideEffect = (a.vectorOp >= 20 && a.vectorOp <= 27) || a.vectorOp == 29;
+        const bool vectorUnused = lean && !a.vectorMask && !vectorSideEffect &&
+            !(a.exportData && a.scalarDestRelative); // (a relative export zeroes the unwritten components)
+        if (scalarKept && vectorUnused && !a.exportData)
+            return; // a no-op
+        std::string body = std::string("{ ") + (vectorUnused ? "" : "float4 v = float4(0, 0, 0, 0); ") + (scalarKept ? "" : "float s = ps; ");
         const std::string A = Src(a.src[0]), B = Src(a.src[1]), C = Src(a.src[2]);
-        if (a.vectorOp >= 20 && a.vectorOp <= 23)
+        if (vectorUnused)
+            ;
+        else if (a.vectorOp >= 20 && a.vectorOp <= 23)
         {
             static const char* cmp[] = { "== 0.0", "!= 0.0", "> 0.0", ">= 0.0" };
             body += "{ bool c = (" + A + ".w " + cmp[a.vectorOp - 20] + ") && (" + B + ".w == 0.0); p = c; v = c ? 0.0 : (" + A +
@@ -518,14 +548,16 @@ struct Emitter
         }
         else
             body += "v = " + VectorExpr(a, A, B, C) + "; ";
-        if (a.vectorClamp)
+        if (a.vectorClamp && !vectorUnused)
             body += "v = saturate(v); ";
-        body += ScalarCode(a) + " ";
+        if (!scalarKept)
+            body += ScalarCode(a) + " ";
         if (a.vectorOp == 29) // MAXAv: a0 from the first operand's W, after the reads
             body += "a0 = clamp(int(floor((" + A + ").w + 0.5)), -256, 255); ";
         if (a.scalarClamp)
             body += "s = saturate(s); ";
-        body += "ps = s; ";
+        if (!scalarKept)
+            body += "ps = s; ";
 
         if (a.exportData)
         {
