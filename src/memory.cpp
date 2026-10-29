@@ -174,6 +174,15 @@ uint32_t PhysicalViewBase(uint32_t protect)
     return 0xA0000000;
 }
 
+// FM2_TRACE_VIRT=lo-hi (hex): logs virtual allocations and frees overlapping that range, with the
+// host caller (finding who reuses a block another thread still uses).
+static bool TraceVirt(uint32_t address, uint32_t size)
+{
+    static uint32_t lo = 0, hi = 0;
+    static const bool on = [] { const char* e = getenv("FM2_TRACE_VIRT"); return e && sscanf(e, "%x-%x", &lo, &hi) == 2; }();
+    return on && address < hi && address + size > lo;
+}
+
 uint32_t GuestAlloc(Heap heap, uint32_t size, uint32_t alignment)
 {
     if (alignment < 16)
@@ -187,6 +196,8 @@ uint32_t GuestAlloc(Heap heap, uint32_t size, uint32_t alignment)
         return 0;
     }
     memset(g_base + address, 0, (size + 15) & ~15u);
+    if (TraceVirt(address, size))
+        Log("virt: alloc %08X size %X (host %p)", address, size, _ReturnAddress());
     return address;
 }
 
@@ -212,6 +223,8 @@ bool GuestFree(uint32_t address)
         Log("phys: free %08X", address);
     if (IsPhysicalView(address))
         return g_physical.Free(address & 0x1FFFFFFF);
+    if (TraceVirt(address, std::max<uint32_t>(g_virtual.SizeOf(address, nullptr), 1)))
+        Log("virt: free %08X size %X (host %p)", address, g_virtual.SizeOf(address, nullptr), _ReturnAddress());
     return g_virtual.Free(address);
 }
 

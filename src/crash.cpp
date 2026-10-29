@@ -54,7 +54,27 @@ LONG WINAPI OnCrash(EXCEPTION_POINTERS* info)
         Log("CRASH: %s host %016llX = guest %llX", record->ExceptionInformation[0] ? "write to" : "read from", fault, guest);
     }
     if (thread && thread->ctx)
+    {
         Log("CRASH: guest lr %08llX r1 %08X r3 %08X", thread->ctx->lr, thread->ctx->r1.u32, thread->ctx->r3.u32); // (ctr is a local of the recompiled code)
+        // What the object registers point at (a wiped object shows here as zeros or as whatever
+        // overwrote it).
+        const PPCRegister* regs[] = { &thread->ctx->r3, &thread->ctx->r11, &thread->ctx->r28, &thread->ctx->r29, &thread->ctx->r30, &thread->ctx->r31 };
+        const char* names[] = { "r3", "r11", "r28", "r29", "r30", "r31" };
+        for (int i = 0; i < 6; i++)
+        {
+            const uint32_t a = regs[i]->u32;
+            if (a < 0x40000000 || a >= 0x7F000000 || !GuestAllocationSize(a & ~0xFu))
+            {
+                Log("CRASH: %s %08X", names[i], a);
+                continue;
+            }
+            char line[200];
+            int n = snprintf(line, sizeof(line), "CRASH: %s %08X:", names[i], a);
+            for (uint32_t k = 0; k < 48 && n < int(sizeof(line)) - 10; k += 4)
+                n += snprintf(line + n, sizeof(line) - n, " %08X", LoadBE32((a & ~3u) + k));
+            Log("%s", line);
+        }
+    }
 
     // Host call stack.
     CONTEXT context = *info->ContextRecord;

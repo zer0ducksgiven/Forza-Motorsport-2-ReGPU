@@ -38,6 +38,8 @@ GUEST_EXPORT(NtAllocateVirtualMemory)
         LOG_ONCE("NtAllocateVirtualMemory at a fixed address (%08X) is not supported; allocating elsewhere", requested);
 
     const uint32_t address = GuestAlloc(Heap::Virtual, size, 0x10000);
+    if (getenv("FM2_TRACE_VIRT"))
+        Log("virt: NtAllocateVirtualMemory %08X size %X lr %08X", address, size, uint32_t(ctx.lr));
     if (!address)
     {
         Return(ctx, X_STATUS_NO_MEMORY);
@@ -52,6 +54,8 @@ GUEST_EXPORT(NtFreeVirtualMemory)
 {
     // (baseAddress*, regionSize*, freeType, debugMemory)
     const uint32_t address = LoadBE32(ctx.r3.u32);
+    if (getenv("FM2_TRACE_VIRT") && (ctx.r5.u32 & MEM_RELEASE_))
+        Log("virt: NtFreeVirtualMemory %08X type %X lr %08X", address, ctx.r5.u32, uint32_t(ctx.lr));
     if (ctx.r5.u32 & MEM_RELEASE_)
     {
         Return(ctx, GuestFree(address) ? X_STATUS_SUCCESS : X_STATUS_INVALID_PARAMETER);
