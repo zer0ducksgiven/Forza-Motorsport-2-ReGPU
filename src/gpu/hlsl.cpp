@@ -52,10 +52,14 @@ ByteAddressBuffer gphys : register(t1);   // guest physical memory (large vertex
 // Bindless textures: the fetch slot's heap index is in tbias[slot].y.
 Texture2D<float4> gtex[] : register(t0, space1);
 TextureCube<float4> gcube[] : register(t0, space2);
-SamplerState sLinearWrap : register(s0);
-SamplerState sLinearClamp : register(s1);
-SamplerState sPointClamp : register(s2);
-SamplerState sPointWrap : register(s3);
+// The four guest samplers as one array (a descriptor table, renderer.cpp), indexed by the fetch's mode
+// (0 linear wrap, 1 linear clamp, 2 point clamp, 3 point wrap): one sample instruction per fetch instead
+// of a branch to each of four.
+SamplerState gSamplers[4] : register(s0);
+#define sLinearWrap gSamplers[0]
+#define sLinearClamp gSamplers[1]
+#define sPointClamp gSamplers[2]
+#define sPointWrap gSamplers[3]
 
 static const float FLT_MAX = 3.402823466e+38;
 
@@ -280,15 +284,9 @@ float4 TFetchRaw(uint slot, float3 coord, bool denorm, bool vertexStage, float b
     if (pforceLod.x >= 0.0 || (filt & 4u))
     {
         const float lod = clamp((filt & 4u) ? bias : pforceLod.x, 0.0, 16.0);
-        if (mode == 1) return t.SampleLevel(sLinearClamp, uv, lod);
-        if (mode == 2) return t.SampleLevel(sPointClamp, uv, lod);
-        if (mode == 3) return t.SampleLevel(sPointWrap, uv, lod);
-        return t.SampleLevel(sLinearWrap, uv, lod);
+        return t.SampleLevel(gSamplers[mode], uv, lod);
     }
-    if (mode == 1) return FM2_SAMPLE_BIAS_2D(t, sLinearClamp, uv, bias);
-    if (mode == 2) return FM2_SAMPLE_BIAS_2D(t, sPointClamp, uv, bias);
-    if (mode == 3) return FM2_SAMPLE_BIAS_2D(t, sPointWrap, uv, bias);
-    return FM2_SAMPLE_BIAS_2D(t, sLinearWrap, uv, bias);
+    return FM2_SAMPLE_BIAS_2D(t, gSamplers[mode], uv, bias);
 }
 
 float4 CubeOp(float4 a, float4 b)
