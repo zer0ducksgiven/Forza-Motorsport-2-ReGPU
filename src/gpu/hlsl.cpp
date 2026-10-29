@@ -773,6 +773,19 @@ struct Emitter
                 cf.op() != CfOp::CondCall && cf.op() != CfOp::Return;
             loops = loops || cf.op() == CfOp::LoopStart || cf.op() == CfOp::LoopEnd;
         }
+        // Only forward jumps (no loops, calls or returns): the blocks run once, in order, each checking
+        // cfpc, with no loop around them. The loop was a dynamic loop with a branch per block to the GPU's
+        // compiler, every register live across its iterations, for code that is a straight line with
+        // skips. FM2_CF_LOOP=1: the loop for these too (A/B).
+        static const bool cfLoop = getenv("FM2_CF_LOOP") != nullptr;
+        bool forward = !linear && !cfLoop;
+        for (size_t i = 0; i < shader.cf.size() && forward; i++)
+        {
+            const Cf& cf = shader.cf[i];
+            const CfOp op = cf.op();
+            forward = op != CfOp::LoopStart && op != CfOp::LoopEnd && op != CfOp::CondCall && op != CfOp::Return &&
+                (op != CfOp::CondJmp || (cf.lo & 0x1FFF) > i);
+        }
         if (!linear)
         {
             Line("uint cfpc = 0;");
@@ -784,12 +797,16 @@ struct Emitter
                 Line("int loopIter[4] = {0, 0, 0, 0}, loopCount[4] = {0, 0, 0, 0}, loopStart[4] = {0, 0, 0, 0},");
                 Line("    loopStep[4] = {0, 0, 0, 0}, loopAt[4] = {0, 0, 0, 0}; int loopDepth = 0;");
             }
-            Line("int callRet[4] = {0, 0, 0, 0}; int callDepth = 0;");
+            if (!forward)
+                Line("int callRet[4] = {0, 0, 0, 0}; int callDepth = 0;");
             // The guard is a safety net against a program that never ends; it must be larger
             // than the longest legitimate run (a 255-iteration loop over several instructions).
-            Line(std::string("[loop] for (uint guard = 0; guard < ") + (loops ? "65536" : "1024") + "u && cfpc != 0xFFFFu; guard++)");
-            Line("{");
-            indent++;
+            if (!forward)
+            {
+                Line(std::string("[loop] for (uint guard = 0; guard < ") + (loops ? "65536" : "1024") + "u && cfpc != 0xFFFFu; guard++)");
+                Line("{");
+                indent++;
+            }
         }
         // The state machine gets a block only for the CF instructions a program can reach from its start:
         // through fall-through (none after an end, an unconditional jump or a return) and jump, call and
@@ -874,7 +891,8 @@ struct Emitter
                     cond = std::string("BoolConstant(") + (pixel ? "pb" : "vb") + ", " + std::to_string((cf.hi >> 2) & 0xFF) + ") == " +
                         (cf.condition() ? "true" : "false");
                 Line("cfpc = (" + cond + ") ? " + std::to_string(target) + "u : " + next + "u;");
-                Line("continue;");
+                if (!forward)
+                    Line("continue;");
                 break;
             }
             case CfOp::LoopStart:
@@ -979,7 +997,7 @@ struct Emitter
             if (cf.IsEnd() && (linear || getenv("FM2_NO_REACHABLE_CF")))
                 break;
         }
-        if (!linear)
+        if (!linear && !forward)
         {
             indent--;
             Line("}");
