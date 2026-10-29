@@ -17,6 +17,12 @@ struct Settings
     bool skipIntro = false;              // straight to the title screen (no legal text or splash videos)
     bool xboxPrompts = false;            // keep the Xbox 360 button icons with a PlayStation pad
     bool hideShaderOverlay = true;       // no shader compiler box in the top left
+    bool raceMusic = false;              // the player's MP3s (Documents\fm2\music) while driving (audio/music.cpp)
+    uint32_t musicVolume = 40;           // percent
+    // Car sound mix: each car's exhaust and turbo/supercharger loudness in percent of the game's (0-400), as
+    // its audio tuning loads (kernel/zip_overlay.cpp).
+    bool carSoundMix = false;
+    uint32_t exhaustVolume = 100, turboVolume = 100;
     // Low performance mode: for old CPUs, turns off renderer changes that help fast PCs but cost
     // slow ones (staged draw constants: an FX-8350 lost time copying them).
     bool lowPerformance = false;

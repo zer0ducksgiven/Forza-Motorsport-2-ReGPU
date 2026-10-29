@@ -134,6 +134,7 @@ public sealed class Bridge
                     {
                         "user" => Paths.User,
                         "dlc" => Directory.CreateDirectory(Paths.Dlc).FullName,
+                        "music" => Directory.CreateDirectory(Path.Combine(Paths.User, "music")).FullName,
                         "shaders" => Paths.User,
                         "install" => Paths.Root,
                         "log" => Path.Combine(Paths.Root, "out"),

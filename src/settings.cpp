@@ -74,6 +74,16 @@ void Load()
             g_settings.skipIntro = value == "1";
         else if (key == "xbox_prompts")
             g_settings.xboxPrompts = value == "1";
+        else if (key == "race_music")
+            g_settings.raceMusic = value == "1";
+        else if (key == "music_volume")
+            g_settings.musicVolume = uint32_t(atoi(value.c_str()));
+        else if (key == "car_sound_mix")
+            g_settings.carSoundMix = value == "1";
+        else if (key == "exhaust_volume")
+            g_settings.exhaustVolume = uint32_t(atoi(value.c_str()));
+        else if (key == "turbo_volume")
+            g_settings.turboVolume = uint32_t(atoi(value.c_str()));
         else if (key == "hide_shader_overlay")
             g_settings.hideShaderOverlay = value == "1";
         else if (key == "low_performance")
@@ -139,6 +149,8 @@ void Load()
         g_settings.language = 1;
     if (const char* v = getenv("FM2_SKIP_INTRO"))
         g_settings.skipIntro = atoi(v) != 0;
+    if (const char* v = getenv("FM2_RACE_MUSIC"))
+        g_settings.raceMusic = atoi(v) != 0;
     if (const char* v = getenv("FM2_LOW_PERFORMANCE"))
         g_settings.lowPerformance = atoi(v) != 0;
     if (const char* v = getenv("FM2_WHEEL_STRENGTH"))
@@ -230,6 +242,11 @@ void SaveSettings()
     out << "skip_intro=" << (s.skipIntro ? 1 : 0) << "\n";
     out << "xbox_prompts=" << (s.xboxPrompts ? 1 : 0) << "\n";
     out << "hide_shader_overlay=" << (s.hideShaderOverlay ? 1 : 0) << "\n";
+    out << "race_music=" << (s.raceMusic ? 1 : 0) << "\n";
+    out << "music_volume=" << s.musicVolume << "\n";
+    out << "car_sound_mix=" << (s.carSoundMix ? 1 : 0) << "\n";
+    out << "exhaust_volume=" << s.exhaustVolume << "\n";
+    out << "turbo_volume=" << s.turboVolume << "\n";
     out << "low_performance=" << (s.lowPerformance ? 1 : 0) << "\n";
     out << "vertex_arena=" << (s.vertexArena ? 1 : 0) << "\n";
     out << "wheel_strength=" << s.wheelStrength << "\n";

@@ -66,13 +66,18 @@ public sealed class GameSettings
     public bool HideShaderOverlay { get; set; } = true;
     public bool LowPerformance { get; set; }
     public bool VertexArena { get; set; } = true; // debug: large vertex buffers kept in video memory
+    public bool RaceMusic { get; set; } = false; // the player's MP3s from Documents\fm2\music while driving
+    public int MusicVolume { get; set; } = 40;
+    public bool CarSoundMix { get; set; } // exhaust and turbo louder or quieter than the game has them
+    public int ExhaustVolume { get; set; } = 100;
+    public int TurboVolume { get; set; } = 100;
     public int WheelStrength { get; set; } = 50;
     public int WheelSpring { get; set; } = 50;
     public bool WheelReverse { get; set; }
     public int WheelRotation { get; set; }
     public int Language { get; set; } = 1;
 
-    static readonly string[] Known = ["profile", "resolution", "aspect", "fullscreen", "vsync", "max_fps", "msaa", "smaa", "anisotropy", "upscaler", "render_scale", "sharpness", "enhance", "skip_intro", "xbox_prompts", "hide_shader_overlay", "low_performance", "vertex_arena", "wheel_strength", "wheel_spring", "wheel_reverse", "wheel_rotation", "language", "settings_rev"];
+    static readonly string[] Known = ["profile", "resolution", "aspect", "fullscreen", "vsync", "max_fps", "msaa", "smaa", "anisotropy", "upscaler", "render_scale", "sharpness", "enhance", "skip_intro", "xbox_prompts", "hide_shader_overlay", "low_performance", "vertex_arena", "race_music", "music_volume", "car_sound_mix", "exhaust_volume", "turbo_volume", "wheel_strength", "wheel_spring", "wheel_reverse", "wheel_rotation", "language", "settings_rev"];
 
     public static GameSettings Load()
     {
@@ -103,6 +108,11 @@ public sealed class GameSettings
                 case "hide_shader_overlay": s.HideShaderOverlay = v == "1"; break;
                 case "low_performance": s.LowPerformance = v == "1"; break;
                 case "vertex_arena": s.VertexArena = v != "0"; break;
+                case "race_music": s.RaceMusic = v == "1"; break;
+                case "music_volume": s.MusicVolume = int.TryParse(v, out var mv) ? mv : 40; break;
+                case "car_sound_mix": s.CarSoundMix = v == "1"; break;
+                case "exhaust_volume": s.ExhaustVolume = int.TryParse(v, out var ev) ? ev : 100; break;
+                case "turbo_volume": s.TurboVolume = int.TryParse(v, out var tv) ? tv : 100; break;
                 case "wheel_strength": s.WheelStrength = int.TryParse(v, out var ws) ? ws : 50; break;
                 case "wheel_spring": s.WheelSpring = int.TryParse(v, out var wp) ? wp : 50; break;
                 case "wheel_reverse": s.WheelReverse = v == "1"; break;
@@ -122,6 +132,8 @@ public sealed class GameSettings
         sb.Append($"profile={(profile.Length > 0 ? profile : "Player")}\n");
         sb.Append($"resolution={Resolution}\naspect={Aspect}\nfullscreen={B(Fullscreen)}\nvsync={B(Vsync)}\n");
         sb.Append($"max_fps={Math.Clamp(MaxFps, 30, 360)}\nmsaa={Msaa}\nsmaa={Math.Clamp(Smaa, 0, 4)}\nanisotropy={Anisotropy}\nenhance={B(Enhance)}\nskip_intro={B(SkipIntro)}\nxbox_prompts={B(XboxPrompts)}\nhide_shader_overlay={B(HideShaderOverlay)}\nlow_performance={B(LowPerformance)}\nvertex_arena={B(VertexArena)}\nlanguage={Language}\nsettings_rev=1\n");
+        sb.Append($"race_music={B(RaceMusic)}\nmusic_volume={Math.Clamp(MusicVolume, 0, 100)}\n");
+        sb.Append($"car_sound_mix={B(CarSoundMix)}\nexhaust_volume={Math.Clamp(ExhaustVolume, 0, 400)}\nturbo_volume={Math.Clamp(TurboVolume, 0, 400)}\n");
         sb.Append($"wheel_strength={Math.Clamp(WheelStrength, 0, 100)}\nwheel_spring={Math.Clamp(WheelSpring, 0, 100)}\nwheel_reverse={B(WheelReverse)}\nwheel_rotation={Math.Clamp(WheelRotation, 0, 3600)}\n");
         var scale = Math.Clamp(RenderScale, 50, 100);
         var sharp = Math.Clamp(Sharpening, 0, 100);

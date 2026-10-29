@@ -75,6 +75,8 @@ bool g_depthThisFrame = false, g_depthLastFrame = false;
 bool RaceView() { return g_depthLastFrame && CameraAspectWidened(); }
 void DealerCarDraw(uint64_t vs, const float c[256][4], float squash[4][4], bool body); // hooks/dealer.cpp: the easter egg, per car draw
 
+bool MusicToast(std::wstring& title, std::wstring& artist, float& age); // audio/music.cpp
+
 namespace
 {
 constexpr UINT kWidth = 1280, kHeight = 720;
@@ -6666,6 +6668,150 @@ ID3D12Resource* PrepareOverlay()
     }, false);
 }
 
+// ---- Toast: the in-race music's "now playing" box (audio/music.cpp), bottom centre. Drawn with GDI into
+// a texture sized for the largest box (only the used part is uploaded and copied), at the output's scale
+// (sized for 720p). It rises in, stays, and drops away.
+constexpr UINT kToastMaxW = 2400, kToastMaxH = 320;
+struct Toast
+{
+    ComPtr<ID3D12Resource> texture;
+    D3D12_RESOURCE_STATES state = D3D12_RESOURCE_STATE_COPY_DEST;
+    std::wstring lastText;
+    UINT w = 0, h = 0;
+} g_toast;
+
+// Title and artist as an opaque box: an orange bar down the left, the title over the artist.
+void RenderToastPixels(const std::wstring& title, const std::wstring& artist, float scale, std::vector<uint32_t>& pixels, UINT& w, UINT& h)
+{
+    HDC dc = CreateCompatibleDC(nullptr);
+    HFONT big = CreateFontW(int(26 * scale), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+    HFONT little = CreateFontW(int(19 * scale), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+    SIZE a{}, b{};
+    HGDIOBJ oldFont = SelectObject(dc, big);
+    GetTextExtentPoint32W(dc, title.c_str(), int(title.size()), &a);
+    SelectObject(dc, little);
+    GetTextExtentPoint32W(dc, artist.c_str(), int(artist.size()), &b);
+    const int bar = std::max(3, int(5 * scale)), pad = int(16 * scale), gap = int(2 * scale);
+    w = std::min<UINT>(kToastMaxW, UINT(bar + pad * 2 + std::max(a.cx, b.cx)));
+    h = std::min<UINT>(kToastMaxH, UINT(int(10 * scale) * 2 + a.cy + (artist.empty() ? 0 : gap + b.cy)));
+    BITMAPINFO bi{};
+    bi.bmiHeader.biSize = sizeof(bi.bmiHeader);
+    bi.bmiHeader.biWidth = LONG(w);
+    bi.bmiHeader.biHeight = -LONG(h);
+    bi.bmiHeader.biPlanes = 1;
+    bi.bmiHeader.biBitCount = 32;
+    bi.bmiHeader.biCompression = BI_RGB;
+    void* bits = nullptr;
+    HBITMAP bitmap = CreateDIBSection(dc, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
+    HGDIOBJ oldBitmap = SelectObject(dc, bitmap);
+    RECT all{ 0, 0, LONG(w), LONG(h) }, accent{ 0, 0, bar, LONG(h) };
+    HBRUSH bg = CreateSolidBrush(RGB(14, 16, 22)), orange = CreateSolidBrush(RGB(255, 140, 0));
+    FillRect(dc, &all, bg);
+    FillRect(dc, &accent, orange);
+    SetBkMode(dc, TRANSPARENT);
+    const int x = bar + pad, y = int(10 * scale);
+    SelectObject(dc, big);
+    SetTextColor(dc, RGB(245, 245, 245));
+    TextOutW(dc, x, y, title.c_str(), int(title.size()));
+    SelectObject(dc, little);
+    SetTextColor(dc, RGB(170, 175, 185));
+    TextOutW(dc, x, y + a.cy + gap, artist.c_str(), int(artist.size()));
+    GdiFlush();
+    pixels.resize(size_t(w) * h);
+    const uint32_t* src = static_cast<const uint32_t*>(bits);
+    for (size_t i = 0; i < pixels.size(); i++)
+    {
+        const uint32_t p = src[i]; // 0x00RRGGBB
+        pixels[i] = 0xFF000000u | ((p & 0xFF) << 16) | (p & 0xFF00) | ((p >> 16) & 0xFF);
+    }
+    SelectObject(dc, oldFont);
+    SelectObject(dc, oldBitmap);
+    DeleteObject(big);
+    DeleteObject(little);
+    DeleteObject(bg);
+    DeleteObject(orange);
+    DeleteObject(bitmap);
+    DeleteDC(dc);
+}
+
+
+// The toast texture for this frame (uploaded through the frame's ring when its text changed) with its size and
+// how far up it has risen (0..1), or null.
+ID3D12Resource* PrepareToast(UINT& w, UINT& h, float& rise)
+{
+    std::wstring title, artist;
+    float age = 0.0f;
+    if (!MusicToast(title, artist, age))
+        return nullptr;
+    constexpr float kIn = 0.35f, kHold = 4.5f, kOut = 0.35f;
+    const float t = age < kIn ? age / kIn : age < kIn + kHold ? 1.0f : 1.0f - (age - kIn - kHold) / kOut;
+    if (t <= 0.0f)
+        return nullptr;
+    rise = 1.0f - (1.0f - t) * (1.0f - t); // eased
+    const float scale = std::max(1.0f, float(OutputHeight()) / 720.0f);
+    const std::wstring text = title + L"\n" + artist + L"\n" + std::to_wstring(int(scale * 100));
+    if (!g_toast.texture)
+    {
+        D3D12_HEAP_PROPERTIES hp{};
+        hp.Type = D3D12_HEAP_TYPE_DEFAULT;
+        D3D12_RESOURCE_DESC td{};
+        td.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        td.Width = kToastMaxW;
+        td.Height = kToastMaxH;
+        td.DepthOrArraySize = 1;
+        td.MipLevels = 1;
+        td.SampleDesc.Count = 1;
+        td.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        if (FAILED(g_r.device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &td, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                IID_PPV_ARGS(&g_toast.texture))))
+            return nullptr;
+        g_toast.state = D3D12_RESOURCE_STATE_COPY_DEST;
+    }
+    if (text != g_toast.lastText)
+    {
+        std::vector<uint32_t> pixels;
+        UINT tw = 0, th = 0;
+        RenderToastPixels(title, artist, scale, pixels, tw, th);
+        const UINT pitch = tw * 4, alignedPitch = (pitch + 255) & ~255u;
+        const UINT64 offset = RingAlloc(UINT64(alignedPitch) * th, 512);
+        if (offset == ~0ull)
+            return nullptr;
+        for (UINT y = 0; y < th; y++)
+            memcpy(Frame().ringCpu + offset + UINT64(y) * alignedPitch, pixels.data() + size_t(y) * tw, pitch);
+        ID3D12GraphicsCommandList* list = C().list->Real();
+        D3D12_RESOURCE_BARRIER b{};
+        b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        b.Transition.pResource = g_toast.texture.Get();
+        b.Transition.Subresource = 0;
+        if (g_toast.state != D3D12_RESOURCE_STATE_COPY_DEST)
+        {
+            b.Transition.StateBefore = g_toast.state;
+            b.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+            list->ResourceBarrier(1, &b);
+        }
+        D3D12_TEXTURE_COPY_LOCATION dst{}, src{};
+        dst.pResource = g_toast.texture.Get();
+        dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+        src.pResource = Frame().ring.Get();
+        src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+        src.PlacedFootprint.Offset = offset;
+        src.PlacedFootprint.Footprint = { DXGI_FORMAT_R8G8B8A8_UNORM, tw, th, 1, alignedPitch };
+        list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+        b.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+        b.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+        list->ResourceBarrier(1, &b);
+        g_toast.state = D3D12_RESOURCE_STATE_COPY_SOURCE;
+        g_toast.lastText = text;
+        g_toast.w = tw;
+        g_toast.h = th;
+    }
+    w = g_toast.w;
+    h = g_toast.h;
+    return g_toast.state == D3D12_RESOURCE_STATE_COPY_SOURCE ? g_toast.texture.Get() : nullptr;
+}
+
 // Presents the last frame again with the overlay on top, on a separate command list
 // (the frame's own list is mid-recording while the command processor waits).
 void HoldPresent()
@@ -9267,7 +9413,11 @@ void RendererOnSwapImpl(uint64_t frameNumber, uint32_t frontBuffer)
     if (fromResolve)
         if (ID3D12Resource* pillared = PillarFrontBuffer(shown))
             shown = pillared;
-    const bool presenting = fromResolve && PresenterRecordCopy(C().list->Real(), shown, overlay, kOverlayW, kOverlayH);
+    UINT toastW = 0, toastH = 0;
+    float toastRise = 0.0f;
+    ID3D12Resource* toast = fromResolve ? PrepareToast(toastW, toastH, toastRise) : nullptr;
+    const bool presenting =
+        fromResolve && PresenterRecordCopy(C().list->Real(), shown, overlay, kOverlayW, kOverlayH, toast, toastW, toastH, toastRise);
     {
         const uint64_t traceFrame = TraceFrame();
         if (traceFrame && g_r.frame + 1 == traceFrame)

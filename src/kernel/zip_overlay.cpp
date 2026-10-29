@@ -26,6 +26,7 @@
 #include "kernel/runtime.h"
 #include "kernel/vfs.h"
 #include "log.h"
+#include "settings.h"
 #include "zip.h"
 
 namespace fs = std::filesystem;
@@ -158,10 +159,67 @@ bool PatchTable(std::vector<uint8_t>& t, const char16_t* from, const char16_t* t
     return false;
 }
 
+// ---- built-in: louder exhaust --------------------------------------------------------------------------
+//
+// With the launcher's car sound mix on, each car's exhaust is scaled as its audio tuning zip opens: the
+// exhaust's loop volumes (HarmonicTuning: <ExhaustL>/<ExhaustR> Loop volume="...", apart from EngineA/B).
+// Above 1 still gets louder. The turbo is made louder in its samples instead (audio/car_sound.cpp): its
+// level here (DSPTuning's TurboVolume) is capped at full volume by the game.
+constexpr const char* kHarmonicZip = "media/audio/cars/engines/harmonictuning.zip";
+
+// The exhaust's scale (1 = the game's own; 1 with the mix off).
+float ExhaustScale()
+{
+    const Settings& s = GetSettings();
+    return s.carSoundMix ? std::clamp(s.exhaustVolume, 0u, 400u) / 100.0f : 1.0f;
+}
+
+// Every attr="number" in s[from, to) times `scale`; the count changed.
+int ScaleAttr(std::string& s, size_t from, size_t to, const std::string& attr, float scale)
+{
+    const std::string key = attr + "=\"";
+    int n = 0;
+    for (size_t at = s.find(key, from); at != s.npos && at < to; at = s.find(key, at))
+    {
+        const size_t v = at + key.size(), end = s.find('"', v);
+        if (end == s.npos)
+            break;
+        char text[32];
+        snprintf(text, sizeof(text), "%f", strtof(s.c_str() + v, nullptr) * scale);
+        s.replace(v, end - v, text);
+        to += strlen(text) - (end - v);
+        at = v;
+        n++;
+    }
+    return n;
+}
+
+bool ScaleCarSound(const std::string& zip, std::vector<uint8_t>& data)
+{
+    const float exhaust = ExhaustScale();
+    std::string s(data.begin(), data.end());
+    int n = 0;
+    if (zip == kHarmonicZip && exhaust != 1.0f)
+        for (const char* side : { "<ExhaustL", "<ExhaustR" })
+            for (size_t at = s.find(side); at != s.npos; at = s.find(side, at + 1))
+            {
+                const size_t end = s.find(std::string("</") + (side + 1), at);
+                if (end == s.npos)
+                    break;
+                n += ScaleAttr(s, at, end, " volume", exhaust);
+            }
+    if (!n)
+        return false;
+    data.assign(s.begin(), s.end());
+    return true;
+}
+
 // Built-in changes to one member: true if it was changed. `zip` is the zip's path under its root
 // ("media/ui.zip"), `member` the member's lowercase name.
 bool BuiltIn(const std::string& zip, const std::string& member, std::vector<uint8_t>& data)
 {
+    if (zip == kHarmonicZip)
+        return ScaleCarSound(zip, data);
     if (zip.size() >= 9 && zip.compare(zip.size() - 9, 9, "media.zip") == 0)
     {
         if (member == "ui/behaviors/components/p_comp/p_mai/p_mai_footer.lua")
@@ -424,7 +482,8 @@ bool Rewrite(const std::string& zipName, const std::vector<uint8_t>& zip, const 
 std::string Stamp(const fs::path& zip, const std::vector<ModFile>& mods)
 {
     std::error_code ec;
-    std::string s = "overlay 3 " + std::to_string(fs::file_size(zip, ec)) + " " + std::to_string(fs::last_write_time(zip, ec).time_since_epoch().count());
+    std::string s = "overlay 3 " + std::to_string(fs::file_size(zip, ec)) + " " + std::to_string(fs::last_write_time(zip, ec).time_since_epoch().count()) +
+                    " exhaust " + std::to_string(ExhaustScale());
     for (const ModFile& m : mods)
         s += "\n" + m.file.string() + " " + std::to_string(fs::file_size(m.file, ec)) + " " + std::to_string(fs::last_write_time(m.file, ec).time_since_epoch().count());
     return s;
@@ -441,20 +500,24 @@ fs::path ZipOverlay(const std::string& zip, const fs::path& host)
     if (off)
         return host;
     std::lock_guard lock(mutex);
-    const std::string key = Lower(host.string());
+    const float exhaust = ExhaustScale();
+    // the exhaust's scale can change while the game runs (the audio options): a zip opened again then is built again
+    const std::string key = Lower(host.string()) + " " + std::to_string(exhaust);
     if (auto it = done.find(key); it != done.end())
         return it->second;
     fs::path result = host;
     std::vector<ModFile> mods = DlcFiles(zip);
     for (ModFile& m : ModFiles(zip)) // the mods' own files win
         mods.push_back(std::move(m));
-    const bool builtIn = zip == "media/ui.zip" || zip == "media.zip";
+    const bool builtIn = zip == "media/ui.zip" || zip == "media.zip" || (zip == kHarmonicZip && exhaust != 1.0f);
     if (builtIn || !mods.empty())
     {
         std::error_code ec;
         const fs::path dir = UserDir() / "cache" / "overlay";
         std::string flat = Lower(host.parent_path().filename().string() + "_" + zip);
         std::replace(flat.begin(), flat.end(), '/', '_');
+        if (zip == kHarmonicZip) // one copy per scale: the game may still have another open
+            flat += "_" + std::to_string(int(exhaust * 100)) + ".zip";
         const fs::path patched = dir / flat, stampFile = dir / (flat + ".stamp");
         const std::string want = Stamp(host, mods);
         std::string have;

@@ -35,7 +35,9 @@ ID3D12CommandQueue* RenderQueue();
 // buffer; returns false when there is no window. Call PresenterPresent()
 // after executing the list.
 // overlay (COPY_SOURCE RGBA8, overlayW x overlayH) is copied over the top-left corner when given.
-bool PresenterRecordCopy(ID3D12GraphicsCommandList* list, ID3D12Resource* src, ID3D12Resource* overlay = nullptr, uint32_t overlayW = 0, uint32_t overlayH = 0);
+// toast: a box for the bottom centre (its used size), risen from below the image by `toastRise` (0..1).
+bool PresenterRecordCopy(ID3D12GraphicsCommandList* list, ID3D12Resource* src, ID3D12Resource* overlay = nullptr, uint32_t overlayW = 0, uint32_t overlayH = 0,
+                         ID3D12Resource* toast = nullptr, uint32_t toastW = 0, uint32_t toastH = 0, float toastRise = 0.0f);
 void PresenterPresent();
 // Called by the renderer: the presenter stops drawing its own frames.
 void PresenterUseRenderer();

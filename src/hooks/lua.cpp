@@ -82,13 +82,22 @@ std::string RandomEventsLuaSource(const char* text, uint32_t size);
 bool RoguelikeLuaNote(const char* text, uint32_t size); // hooks/roguelike.cpp
 std::string RoguelikeLuaSource(const char* text, uint32_t size);
 std::string RoguelikeLuaBytecode(const char* data, uint32_t size);
+bool MusicLuaNote(const char* text, uint32_t size); // audio/music.cpp
+std::string MusicLuaSource(const char* text, uint32_t size);
+bool CarSoundLuaNote(const char* text, uint32_t size); // audio/car_sound.cpp
+std::string CarSoundLuaSource(const char* text, uint32_t size);
 
-// A flow's Lua as the mods change it (Random Events, Roguelike Career), or empty when unchanged.
+// A flow's Lua as the mods change it (Random Events, Roguelike Career), with in-race music's notes and the car sound
+// mix's audio rows, or empty when unchanged.
 static std::string ModLuaSource(const char* text, uint32_t size)
 {
     std::string out = RandomEventsLuaSource(text, size);
     if (std::string rogue = out.empty() ? RoguelikeLuaSource(text, size) : RoguelikeLuaSource(out.data(), uint32_t(out.size())); !rogue.empty())
         out = std::move(rogue);
+    if (std::string music = out.empty() ? MusicLuaSource(text, size) : MusicLuaSource(out.data(), uint32_t(out.size())); !music.empty())
+        out = std::move(music);
+    if (std::string mix = out.empty() ? CarSoundLuaSource(text, size) : CarSoundLuaSource(out.data(), uint32_t(out.size())); !mix.empty())
+        out = std::move(mix);
     return out;
 }
 
@@ -200,7 +209,7 @@ PPC_FUNC_IMPL(__imp__sub_8254DDF8);
 PPC_FUNC(sub_8254DDF8)
 {
     SwapLayoutLabels(ctx.r4.u32, ctx.r5.u32, ctx.r6.u32);
-    if (ctx.r4.u32)
+    if (ctx.r4.u32 && !MusicLuaNote(GuestPtr<const char>(ctx.r4.u32), ctx.r5.u32) && !CarSoundLuaNote(GuestPtr<const char>(ctx.r4.u32), ctx.r5.u32))
         RoguelikeLuaNote(GuestPtr<const char>(ctx.r4.u32), ctx.r5.u32);
     RunBefore(ctx, base, __imp__sub_8254DDF8);
     Rewrite(ctx);
@@ -211,7 +220,7 @@ PPC_FUNC_IMPL(__imp__sub_8254DF80);
 PPC_FUNC(sub_8254DF80)
 {
     SwapLayoutLabels(ctx.r4.u32, ctx.r5.u32, ctx.r6.u32);
-    if (ctx.r4.u32)
+    if (ctx.r4.u32 && !MusicLuaNote(GuestPtr<const char>(ctx.r4.u32), ctx.r5.u32) && !CarSoundLuaNote(GuestPtr<const char>(ctx.r4.u32), ctx.r5.u32))
         RoguelikeLuaNote(GuestPtr<const char>(ctx.r4.u32), ctx.r5.u32);
     RunBefore(ctx, base, __imp__sub_8254DDF8); // the plain loader: this one also runs what it loads
     Rewrite(ctx);
