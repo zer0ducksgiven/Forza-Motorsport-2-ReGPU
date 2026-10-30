@@ -182,9 +182,6 @@ struct EnumeratorObject : KernelObject
     std::vector<ContentItem> items;
     size_t next = 0;
     uint32_t guest = 0; // XamCreateEnumeratorHandle: the request the title fills in (its extra size)
-    // XamUserCreateStatsEnumerator: the views asked for. XamEnumerate answers with them, empty.
-    bool stats = false;
-    std::vector<uint32_t> statViews;
 };
 
 std::mutex g_listenerMutex;
@@ -335,11 +332,7 @@ GUEST_EXPORT(XamUserCreateStatsEnumerator)
     for (uint32_t i = 0; i < specs && specPtr; i++)
         size += (0x18 + 4) * rows * LoadBE32(specPtr + i * 0x88 + 4);
     StoreBE32(ctx.r9.u32, size);
-    auto e = std::make_shared<EnumeratorObject>();
-    e->stats = true;
-    for (uint32_t i = 0; i < specs && specPtr; i++)
-        e->statViews.push_back(LoadBE32(specPtr + i * 0x88));
-    StoreBE32(ctx.r10.u32, CreateHandle(e));
+    StoreBE32(ctx.r10.u32, CreateHandle(std::make_shared<EnumeratorObject>()));
     Return(ctx, X_ERROR_SUCCESS);
 }
 
@@ -898,7 +891,6 @@ bool ReadPad(uint32_t user, PadState& s)
             s.rightTrigger = std::max(s.rightTrigger, w.gas);
             s.buttons |= w.buttons;
         }
-        MusicPad(s.buttons); // in-race music's D-pad controls (audio/music.cpp)
         static LiveSwitch autoStart("FM2_AUTOSTART");
         static const auto start = Clock::now();
         // FM2_INPUT_SCRIPT="7:START,10:A,14:RIGHT,...": press each button for
@@ -906,6 +898,7 @@ bool ReadPad(uint32_t user, PadState& s)
         static const std::vector<std::pair<double, uint16_t>> script = [] {
             std::vector<std::pair<double, uint16_t>> v;
             static const std::pair<const char*, uint16_t> names[] = { { "A", XINPUT_GAMEPAD_A }, { "B", XINPUT_GAMEPAD_B },
+        MusicPad(s.buttons); // in-race music's D-pad controls (audio/music.cpp)
                 { "X", XINPUT_GAMEPAD_X }, { "Y", XINPUT_GAMEPAD_Y }, { "START", XINPUT_GAMEPAD_START }, { "BACK", XINPUT_GAMEPAD_BACK },
                 { "UP", XINPUT_GAMEPAD_DPAD_UP }, { "DOWN", XINPUT_GAMEPAD_DPAD_DOWN }, { "LEFT", XINPUT_GAMEPAD_DPAD_LEFT },
                 { "RIGHT", XINPUT_GAMEPAD_DPAD_RIGHT }, { "LB", XINPUT_GAMEPAD_LEFT_SHOULDER }, { "RB", XINPUT_GAMEPAD_RIGHT_SHOULDER } };
@@ -1408,26 +1401,6 @@ GUEST_EXPORT(XamEnumerate)
     // (handle, flags, buffer, size, itemsReturned*, overlapped)
     auto e = std::dynamic_pointer_cast<EnumeratorObject>(GetHandle(ctx.r3.u32));
     uint32_t count = 0;
-    if (e && e->stats)
-    {
-        // A stats read: X_USER_STATS_READ_RESULTS { views, XUSER_STATS_VIEW* } and each view { id,
-        // total rows, rows (0), XUSER_STATS_ROW* (null) }. Left unwritten, the title read the
-        // buffer's old heap bytes as row counts and pointers and copied gigabytes over its own heap
-        // (the crash leaving Arcade under FM2_LIVE: sub_824FF3F0 copying XUSER_STATS_ROWs).
-        const uint32_t buffer = ctx.r5.u32, size = ctx.r6.u32, views = uint32_t(e->statViews.size());
-        if (buffer && size >= 8 + views * 0x10)
-        {
-            memset(GuestPtr(buffer), 0, 8 + views * 0x10);
-            StoreBE32(buffer, views);
-            StoreBE32(buffer + 4, views ? buffer + 8 : 0);
-            for (uint32_t i = 0; i < views; i++)
-                StoreBE32(buffer + 8 + i * 0x10, e->statViews[i]);
-        }
-        count = e->next++ == 0 ? 1 : 0;
-        StoreIfNonNull(ctx.r7.u32, count);
-        FinishUi(ctx, ctx.r8.u32, count ? X_ERROR_SUCCESS : X_ERROR_NO_MORE_FILES);
-        return;
-    }
     if (e)
     {
         const uint32_t buffer = ctx.r5.u32, capacity = ctx.r6.u32 / kContentDataSize;
