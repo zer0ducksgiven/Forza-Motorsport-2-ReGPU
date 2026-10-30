@@ -566,7 +566,8 @@ function renderProfiles() {
   if (p) for (const [k, v] of [["Last played", when(p.lastPlayed)], ["Photos", String(p.photos)], ["Size", size(p.bytes)], ["XUID", p.xuid]])
     info.append(el("div", "k", k), el("div", "v", v))
   for (const id of ["prof-backup", "prof-duplicate", "prof-rename", "prof-export", "prof-merge", "prof-delete"]) $(id).disabled = !p
-  for (const id of ["prof-duplicate", "prof-rename", "prof-merge", "prof-delete", "prof-import"]) if (running) $(id).disabled = true
+  for (const id of ["prof-duplicate", "prof-rename", "prof-merge", "prof-delete"]) if (running) $(id).disabled = true
+  for (const id of ["prof-import", "prof-import360"]) $(id).disabled = running
   $("prof-merge").disabled = !p || running || ps.length < 2
   $("prof-status").textContent = running ? "The game is running: close it to change profiles." : ""
 
@@ -628,6 +629,12 @@ $("prof-import").onclick = () => guarded(async () => {
   if (!r) return
   profiles = r.state; profileSel = r.name; renderProfiles()
   toast(`${r.name} imported.`, true)
+})
+$("prof-import360").onclick = () => guarded(async () => {
+  const r = await call("profiles.import360", {})
+  if (!r) return
+  profiles = r.state; profileSel = r.name; renderProfiles()
+  toast(`${r.name} imported from Xbox 360.`, true)
 })
 $("prof-merge").onclick = async () => {
   const others = profiles.profiles.filter((p) => p.name !== profileSel).map((p) => ({ value: p.name, name: `${p.name} (${p.photos} photo${p.photos === 1 ? "" : "s"})` }))

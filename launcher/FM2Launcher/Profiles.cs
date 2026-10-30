@@ -199,6 +199,53 @@ internal static class Profiles
         return name;
     }
 
+    /// <summary>Imports a profile save copied off an Xbox 360 (the ForzaProfile package from the console's
+    /// Content\&lt;profile&gt;\4D5307EA\00000001 folder). The save stays signed for the console profile, so the new
+    /// profile takes that profile's XUID from the package header; it's named after the gamertag unless a name is given.</summary>
+    public static string Import360(string package, string? asName)
+    {
+        NotRunning();
+        using var stfs = new Stfs(package);
+        if (stfs.TitleId != 0x4D5307EA || stfs.ContentType != 1)
+            throw new InvalidDataException("That isn't a Forza Motorsport 2 save from an Xbox 360.");
+        if (!stfs.Files().Any(e => !e.Directory && e.Path == "ForzaProfile"))
+            throw new InvalidDataException("That save has no ForzaProfile in it.");
+        var head = new byte[8];
+        using (var f = File.OpenRead(package)) { f.Position = 0x371; f.ReadExactly(head); }
+        var xuid = Convert.ToHexString(head);
+        if (xuid[0] != 'E') throw new InvalidDataException("The save doesn't say which Xbox profile it belongs to.");
+
+        string name;
+        if (!string.IsNullOrWhiteSpace(asName)) name = NewName(asName);
+        else
+        {
+            var tag = string.IsNullOrWhiteSpace(stfs.DisplayName) ? "Xbox 360" : stfs.DisplayName;
+            name = tag;
+            for (int i = 2; Directory.Exists(Path.Combine(Root, FolderName(NewNameOrSame(name)))); i++)
+                name = tag[..Math.Min(tag.Length, 12)] + " " + i;
+            name = NewName(name);
+        }
+        var target = Path.Combine(Root, FolderName(name));
+        var save = Path.Combine(target, "content", "00000001", "ForzaProfile");
+        Directory.CreateDirectory(save);
+        try
+        {
+            stfs.Extract(save);
+            File.Delete(Path.Combine(save, "journal"));
+            File.WriteAllText(Path.Combine(target, "content", "00000001", "ForzaProfile.title"), name, new UnicodeEncoding(false, false));
+            File.WriteAllText(Path.Combine(target, "xuid"), xuid + "\n");
+        }
+        catch
+        {
+            Directory.Delete(target, true);
+            throw;
+        }
+        return name;
+    }
+
+    static string NewNameOrSame(string name) =>
+        new string(name.Trim().Where(c => !char.IsControl(c) && c != '=').Take(15).ToArray());
+
     public static void Export(string name, string file)
     {
         var dir = Dir(name);

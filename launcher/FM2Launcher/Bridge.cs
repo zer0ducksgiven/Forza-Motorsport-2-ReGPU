@@ -178,6 +178,13 @@ public sealed class Bridge
                     var name = Profiles.Restore(files[0], a?["asName"]?.GetValue<string>());
                     return new { name, state = ProfilesState() };
                 }
+            case "profiles.import360":
+                {
+                    var files = await _window.ShowOpenFileAsync("Import an Xbox 360 save (ForzaProfile)", null, false, [("Xbox 360 save", ["*"])]);
+                    if (files is not { Length: > 0 }) return null;
+                    var name = Profiles.Import360(files[0], null);
+                    return new { name, state = ProfilesState() };
+                }
             case "profiles.export":
                 {
                     var name = Str(a, "name");
