@@ -256,8 +256,10 @@ constexpr UINT kFrames = 3;
 // menus alone then need well over 64 MB a frame, and draws past the end were dropped (black
 // bands and missing letters). FM2_RING_MB overrides. A frame that runs out asks for a bigger
 // ring (twice the size, up to kRingMax) and the next frame of that slot gets it, as ReGPU does:
-// one frame drops a few draws instead of every busy frame dropping them.
-UINT64 kRingSize = 64ull << 20;
+// one frame drops a few draws instead of every busy frame dropping them. With guest memory mapped it
+// starts at 128 MB, not 64: the frame that grew it still dropped textures and draws (wrong textures on a car
+// in the car list, report #36), and 64 kept running out (three frames, 384 MB of upload heap).
+UINT64 kRingSize = 128ull << 20;
 constexpr UINT64 kRingMax = 2048ull << 20;
 std::atomic<UINT64> g_ringWant{ 0 };
 UINT64 g_ringPeak = 0;
@@ -1567,7 +1569,7 @@ void Init()
     InitDepthBlit();
     g_r.readback = CreateBuffer(UINT64((OutputWidth() * 4 + 255) & ~255u) * OutputHeight(), D3D12_HEAP_TYPE_READBACK, D3D12_RESOURCE_STATE_COPY_DEST);
 
-    kRingSize = (getenv("FM2_RING_MB") ? std::clamp<UINT64>(UINT64(atoi(getenv("FM2_RING_MB"))), 16, 2048) : g_r.physical && !getenv("FM2_NO_DIRECT_FETCH") ? 64 : 384) << 20;
+    kRingSize = (getenv("FM2_RING_MB") ? std::clamp<UINT64>(UINT64(atoi(getenv("FM2_RING_MB"))), 16, 2048) : g_r.physical && !getenv("FM2_NO_DIRECT_FETCH") ? 128 : 384) << 20;
     Log("renderer: upload ring %llu MB per frame", (unsigned long long)(kRingSize >> 20));
     for (UINT i = 0; i < kFrames; i++)
     {
