@@ -224,7 +224,30 @@ void LoadTitle(const std::filesystem::path& xexPath)
         // turns the disc's default.xex into it (the same patch XenonRecomp applied).
         const std::filesystem::path xexp = TitleUpdateDir() / "default.xexp";
         if (!std::filesystem::exists(xexp))
-            Fatal("this build needs the title update: %s is missing (tools/stfs.py update <package> <folder>)", xexp.string().c_str());
+        {
+            // Players stuck on "No title update" sometimes had it elsewhere: in the install folder (the launcher
+            // copies Root\update across, but only when it starts the game) or in the other Documents folder
+            // (OneDrive's against %USERPROFILE%\Documents). Copied in whole, so its media.zip comes too.
+            std::vector<std::filesystem::path> others = { std::filesystem::absolute(xexPath).parent_path().parent_path() / "update" };
+            if (wchar_t profile[MAX_PATH]; GetEnvironmentVariableW(L"USERPROFILE", profile, MAX_PATH))
+            {
+                others.push_back(std::filesystem::path(profile) / "Documents" / "fm2" / "update");
+                others.push_back(std::filesystem::path(profile) / "OneDrive" / "Documents" / "fm2" / "update");
+            }
+            std::error_code ec;
+            for (const auto& dir : others)
+                if (!std::filesystem::equivalent(dir, TitleUpdateDir(), ec) && std::filesystem::exists(dir / "default.xexp", ec))
+                {
+                    std::filesystem::create_directories(TitleUpdateDir(), ec);
+                    std::filesystem::copy(dir, TitleUpdateDir(), std::filesystem::copy_options::recursive | std::filesystem::copy_options::skip_existing, ec);
+                    Log("loader: the title update was missing from %s; copied it from %s (%s)", TitleUpdateDir().string().c_str(), dir.string().c_str(),
+                        ec ? ec.message().c_str() : "ok");
+                    break;
+                }
+        }
+        if (!std::filesystem::exists(xexp))
+            Fatal("this build needs the title update: %s is missing. In the launcher, use Add title update... and pick your "
+                  "title update file (named like TU_16L61VA_...).", xexp.string().c_str());
         const std::vector<uint8_t> patch = ReadFile(xexp);
         std::vector<uint8_t> patched;
         const auto result = XexPatcher::apply(file.data(), file.size(), patch.data(), patch.size(), patched, false);

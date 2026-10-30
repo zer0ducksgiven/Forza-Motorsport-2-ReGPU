@@ -137,6 +137,26 @@ public sealed class Stfs : IDisposable
         return files;
     }
 
+    // The title update this build was made from (installer/setup_game.py REF_TITLE_UPDATE).
+    const string TitleUpdateSha256 = "b5fd1860c2fbab6e594baf7dd58cbfe867f51f65e41177e15e0b36da0f61aae5";
+
+    /// <summary>Unpacks the title update into Documents\fm2\update, as the installer does, for installs where that
+    /// step didn't happen (a setup that stopped part way, a game folder copied from elsewhere): the game won't start
+    /// without it.</summary>
+    public static void InstallTitleUpdate(string package, string dest)
+    {
+        string hash;
+        using (var f = File.OpenRead(package))
+            hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(f)).ToLowerInvariant();
+        if (hash != TitleUpdateSha256)
+            throw new InvalidDataException($"{Path.GetFileName(package)} isn't the title update this build needs (the file named like TU_16L61VA_...).");
+        using var s = new Stfs(package);
+        System.IO.Directory.CreateDirectory(dest);
+        s.Extract(dest);
+        if (!File.Exists(Path.Combine(dest, "default.xexp")))
+            throw new InvalidDataException("The title update unpacked without default.xexp.");
+    }
+
     /// <summary>Installs a package as the game reads DLC: unpacked to dir\name, with name.title and name.license.
     /// Returns the installed folder's name. <paramref name="mod"/> marks it as a mod (name.mod) for the launcher.</summary>
     public static string Install(string package, string dir, bool mod)
