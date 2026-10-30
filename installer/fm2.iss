@@ -114,12 +114,40 @@ begin
   DlcPage.Values[0] := ExpandConstant('{userdocs}\fm2\dlc');
 end;
 
+// The last line Python printed in the setup step (its error), or ''.
+function LastLogLine(Path: String): String;
+var
+  Lines: TArrayOfString;
+  I: Integer;
+begin
+  Result := '';
+  if LoadStringsFromFile(Path, Lines) then
+    for I := GetArrayLength(Lines) - 1 downto 0 do
+      if Trim(Lines[I]) <> '' then
+      begin
+        Result := Trim(Lines[I]);
+        exit;
+      end;
+end;
+
 function NextButtonClick(CurPageID: Integer): Boolean;
 var
   ResultCode: Integer;
   Iso, Tu: String;
+  Free, Total: Int64;
 begin
   Result := True;
+  // The game files built from the disc take 4.8 GB in the install folder; the installer's own
+  // check only counts its files. An install on a drive without room failed after copying them,
+  // leaving no game files and (built after them) no title update.
+  if (CurPageID = wpSelectDir) and GetSpaceOnDisk64(ExtractFileDrive(WizardDirValue), Free, Total) and
+    (Free < Int64(6) * 1024 * 1024 * 1024) then
+  begin
+    MsgBox('There is not enough free space on ' + ExtractFileDrive(WizardDirValue) + ' for the game files: they need 6 GB, ' +
+      IntToStr(Free div (1024 * 1024 * 1024)) + ' GB is free. Choose another folder or free some space.', mbError, MB_OK);
+    Result := False;
+    exit;
+  end;
   if (CurPageID = wpReady) and not DesktopRuntimeInstalled then
   begin
     DownloadPage.Clear;
@@ -176,7 +204,7 @@ end;
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   ResultCode: Integer;
-  Dlc, Params: String;
+  Dlc, Params, Log, Why: String;
 begin
   if CurStep = ssPostInstall then
   begin
@@ -188,8 +216,17 @@ begin
       Quoted(TuPage.Values[0]) + ' ' + Quoted(Dlc) + ' ' + Quoted(DocsDir);
     WizardForm.StatusLabel.Caption := 'Building the game files from your disc (a few minutes)...';
     WizardForm.ProgressGauge.Style := npbstMarquee;
-    if not Exec(ExpandConstant('{app}\py\python.exe'), Params, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) or (ResultCode <> 0) then
-      MsgBox('The game files could not be built (code ' + IntToStr(ResultCode) + '). Run the installer again or check the disc.', mbError, MB_OK);
+    // Its output in out\setup.log, so a failure says why.
+    ForceDirectories(ExpandConstant('{app}\out'));
+    Log := ExpandConstant('{app}\out\setup.log');
+    if not Exec(ExpandConstant('{cmd}'), '/c ""' + ExpandConstant('{app}\py\python.exe') + '" ' + Params + ' > "' + Log + '" 2>&1"', '',
+      SW_HIDE, ewWaitUntilTerminated, ResultCode) or (ResultCode <> 0) then
+    begin
+      Why := LastLogLine(Log);
+      if Why = '' then
+        Why := 'code ' + IntToStr(ResultCode);
+      MsgBox('The game files could not be built:' + #13#10#13#10 + Why + #13#10#13#10 + 'The details are in ' + Log + '.', mbError, MB_OK);
+    end;
     WizardForm.ProgressGauge.Style := npbstNormal;
   end;
 end;
