@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
+#include <cstdio>
 #include <cstring>
 #include <map>
 #include <unordered_map>
@@ -24,6 +25,7 @@
 #include <string>
 
 #include "kernel/imports.h"
+#include "kernel/leaderboards.h"
 #include "kernel/net.h"
 #include "log.h"
 #include "memory.h"
@@ -286,7 +288,7 @@ uint32_t Details(uint32_t buffer)
 }
 
 // XGI_XUSER_READ_STATS { title, XUID count, XUIDs*, spec count, specs*, results size, results* }:
-// no stats kept yet, so every view comes back with no rows.
+// those players' rows from the FM2 Live server (kernel/leaderboards.cpp).
 uint32_t ReadStats(uint32_t buffer)
 {
     const uint32_t specs = LoadBE32(buffer + 12), specPtr = LoadBE32(buffer + 16), size = LoadBE32(buffer + 20),
@@ -295,16 +297,10 @@ uint32_t ReadStats(uint32_t buffer)
         return X_E_INVALIDARG;
     // X_USER_STATS_READ_RESULTS { views, view* }, then X_USER_STATS_VIEW { id, total rows, rows, row* } each;
     // a spec is { view id, column count, u16 columns[64] } (0x88 bytes).
-    StoreBE32(out, specs);
-    StoreBE32(out + 4, out + 8);
-    for (uint32_t i = 0; i < specs; i++)
-    {
-        const uint32_t v = out + 8 + i * 0x10;
-        StoreBE32(v, LoadBE32(specPtr + i * 0x88));
-        StoreBE32(v + 4, 0);
-        StoreBE32(v + 8, 0);
-        StoreBE32(v + 12, 0);
-    }
+    std::vector<uint64_t> xuids;
+    for (uint32_t i = 0, n = LoadBE32(buffer + 4), p = LoadBE32(buffer + 8); i < n && p && i < 100; i++)
+        xuids.push_back(LoadBE64(p + i * 8));
+    LeaderboardsFill(out, size, LeaderboardSpecs(specPtr, specs), "xuids - 0", xuids);
     return X_ERROR_SUCCESS;
 }
 
@@ -496,8 +492,12 @@ bool OnlineXgiMessage(uint32_t message, uint32_t buffer, uint32_t size, uint32_t
     case 0x000B0060: // XSessionSearchByIds { user, count, ids*, size, header* at +0x10 }
         result = SearchNothing(LoadBE32(buffer + 0x10));
         return true;
-    case 0x000B001F: // XSessionModifySkill
     case 0x000B0025: // XSessionWriteStats
+        // { session, flags, XUID, view count, XSESSION_VIEW_PROPERTIES* }
+        LeaderboardsWrite(LoadBE64(buffer + 8), LoadBE32(buffer + 16), LoadBE32(buffer + 20));
+        result = X_ERROR_SUCCESS;
+        return true;
+    case 0x000B001F: // XSessionModifySkill
     case 0x000B0026: // XSessionFlushStats
     case 0x000B0020: // XUserResetStatsView
         result = X_ERROR_SUCCESS;

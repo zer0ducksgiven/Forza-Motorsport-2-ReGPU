@@ -1,0 +1,10 @@
+name = "fm2-live"
+main = "src/index.js"
+compatibility_date = "2025-06-01"
+
+# Leaderboards (and later sessions): one D1 database. Local while developing:
+# npx wrangler d1 execute fm2-live --local --file=schema.sql, then npx wrangler dev.
+[[d1_databases]]
+binding = "DB"
+database_name = "fm2-live"
+database_id = "local"

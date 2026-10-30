@@ -8,6 +8,7 @@
 #include <fstream>
 #include <map>
 #include <set>
+#include <string>
 #include <mutex>
 #include <vector>
 
@@ -15,6 +16,7 @@
 std::atomic<int64_t> g_inputEpochNs{ 0 };
 
 #include "gpu/renderer.h"
+#include "kernel/leaderboards.h"
 #include "input/wheel.h"
 #include "kernel/sessions.h"
 #include "kernel/wheel_ff.h"
@@ -182,9 +184,11 @@ struct EnumeratorObject : KernelObject
     std::vector<ContentItem> items;
     size_t next = 0;
     uint32_t guest = 0; // XamCreateEnumeratorHandle: the request the title fills in (its extra size)
-    // XamUserCreateStatsEnumerator: the views asked for. XamEnumerate answers with them, empty.
+    // XamUserCreateStatsEnumerator: the views asked for and the server's query for them (from the top,
+    // or around a player). XamEnumerate answers with the server's rows (kernel/leaderboards.cpp).
     bool stats = false;
-    std::vector<uint32_t> statViews;
+    std::vector<LeaderboardSpec> statSpecs;
+    std::string statQuery;
 };
 
 std::mutex g_listenerMutex;
@@ -337,8 +341,14 @@ GUEST_EXPORT(XamUserCreateStatsEnumerator)
     StoreBE32(ctx.r9.u32, size);
     auto e = std::make_shared<EnumeratorObject>();
     e->stats = true;
-    for (uint32_t i = 0; i < specs && specPtr; i++)
-        e->statViews.push_back(LoadBE32(specPtr + i * 0x88));
+    e->statSpecs = LeaderboardSpecs(specPtr, specs);
+    // type 0: around the XUID in the pivot; 1: from the rank in it; 2 (by rating): from the top
+    char query[64];
+    if (ctx.r4.u32 == 0)
+        snprintf(query, sizeof(query), "around %016llX %u", (unsigned long long)ctx.r5.u64, rows);
+    else
+        snprintf(query, sizeof(query), "rank %llu %u", ctx.r4.u32 == 1 ? (unsigned long long)ctx.r5.u64 : 1ull, rows);
+    e->statQuery = query;
     StoreBE32(ctx.r10.u32, CreateHandle(e));
     Return(ctx, X_ERROR_SUCCESS);
 }
@@ -1410,19 +1420,12 @@ GUEST_EXPORT(XamEnumerate)
     uint32_t count = 0;
     if (e && e->stats)
     {
-        // A stats read: X_USER_STATS_READ_RESULTS { views, XUSER_STATS_VIEW* } and each view { id,
-        // total rows, rows (0), XUSER_STATS_ROW* (null) }. Left unwritten, the title read the
-        // buffer's old heap bytes as row counts and pointers and copied gigabytes over its own heap
-        // (the crash leaving Arcade under FM2_LIVE: sub_824FF3F0 copying XUSER_STATS_ROWs).
-        const uint32_t buffer = ctx.r5.u32, size = ctx.r6.u32, views = uint32_t(e->statViews.size());
-        if (buffer && size >= 8 + views * 0x10)
-        {
-            memset(GuestPtr(buffer), 0, 8 + views * 0x10);
-            StoreBE32(buffer, views);
-            StoreBE32(buffer + 4, views ? buffer + 8 : 0);
-            for (uint32_t i = 0; i < views; i++)
-                StoreBE32(buffer + 8 + i * 0x10, e->statViews[i]);
-        }
+        // A stats read: the server's rows. Left unwritten, the title read the buffer's old heap bytes as
+        // row counts and pointers and copied gigabytes over its own heap (the crash leaving Arcade under
+        // FM2_LIVE: sub_824FF3F0 copying XUSER_STATS_ROWs).
+        const uint32_t buffer = ctx.r5.u32, size = ctx.r6.u32;
+        if (buffer && size >= 8 + e->statSpecs.size() * 0x10 && e->next == 0)
+            LeaderboardsFill(buffer, size, e->statSpecs, e->statQuery, {});
         count = e->next++ == 0 ? 1 : 0;
         StoreIfNonNull(ctx.r7.u32, count);
         FinishUi(ctx, ctx.r8.u32, count ? X_ERROR_SUCCESS : X_ERROR_NO_MORE_FILES);
