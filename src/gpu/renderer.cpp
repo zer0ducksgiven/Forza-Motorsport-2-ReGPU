@@ -343,6 +343,10 @@ struct ResolvedTexture
     uint64_t frame = ~0ull;                  // renderer frame of the last resolve into it
     uint64_t serial = 0;                     // stamp of the last resolve into it (g_resolveSerial)
     DXGI_FORMAT format = DXGI_FORMAT_R8G8B8A8_UNORM; // R32_FLOAT for depth resolves
+    // Depth resolves: the same image as the guest's D24S8 words read as 8888 (R stencil, G B A the depth's bytes,
+    // low to high), for fetches of it as 8888. The replay cameras' motion blur reads the stencil that way to leave
+    // the car out (report #37: given the depth, it smeared the car).
+    ComPtr<ID3D12Resource> bytes;
     bool swapped = false; // resolved with the copy swap bit: guest memory has red and blue exchanged
     // Guest memory under the image when it was resolved (our resolves don't write it): if the title
     // later puts something else there (a CPU-made texture), the resolve is stale (see ResolvedFor).
@@ -446,6 +450,8 @@ struct Renderer
     ComPtr<ID3D12PipelineState> colorBlit8, colorBlit16;  // colour -> 8888 / RGBA16F, scaled
     ComPtr<ID3D12PipelineState> boxBlit8, boxBlit16;      // a texture averaged down (SceneAtGameSize)
     ComPtr<ID3D12PipelineState> depthBlitMs, colorBlitMs8, colorBlitMs16; // the same from multisampled surfaces
+    ComPtr<ID3D12RootSignature> bytesRootSignature;        // depth and stencil SRVs + the blit constants
+    ComPtr<ID3D12PipelineState> depthBytesBlit, depthBytesBlitMs; // depth + stencil -> the D24S8 words as 8888
     // EDRAM surfaces: one host colour and one host depth target per EDRAM base
     // (RB_COLOR_INFO / RB_DEPTH_INFO bits 0-11), so passes that the title
     // places at different EDRAM offsets do not overwrite each other.
@@ -1291,6 +1297,60 @@ float4 psColor(float4 pos : SV_Position) : SV_Target
         pd.RTVFormats[0] = DXGI_FORMAT_R16G16B16A16_FLOAT;
         Check(d->CreateGraphicsPipelineState(&pd, IID_PPV_ARGS(&g_r.colorBlitMs16)), "CreateGraphicsPipelineState(colour blit ms 16)");
     }
+
+    // Depth resolves as the guest's D24S8 words read as 8888 (ResolvedTexture::bytes): depth (t0) and stencil (t1).
+    D3D12_DESCRIPTOR_RANGE bytesRange = range;
+    bytesRange.NumDescriptors = 2;
+    params[0].DescriptorTable.pDescriptorRanges = &bytesRange;
+    blob.Reset();
+    error.Reset();
+    if (FAILED(D3D12SerializeRootSignature(&rs, D3D_ROOT_SIGNATURE_VERSION_1, &blob, &error)))
+        Fatal("renderer: bytes blit root signature: %s", error ? static_cast<const char*>(error->GetBufferPointer()) : "?");
+    Check(d->CreateRootSignature(0, blob->GetBufferPointer(), blob->GetBufferSize(), IID_PPV_ARGS(&g_r.bytesRootSignature)),
+        "CreateRootSignature(bytes blit)");
+    // floatDepth (the swapRB slot): the guest buffer is D24FS8, its depth a 20e4 float.
+    const std::string bytesSource = std::string(g_msaa > 1 ? "#define SAMPLES " + std::to_string(g_msaa) + "\n" : "") + R"(
+#ifdef SAMPLES
+Texture2DMS<float, SAMPLES> depthTex : register(t0);
+Texture2DMS<uint2, SAMPLES> stencilTex : register(t1);
+#define LOAD(t, p) t.Load(p, 0)
+#else
+Texture2D<float> depthTex : register(t0);
+Texture2D<uint2> stencilTex : register(t1);
+#define LOAD(t, p) t.Load(int3(p, 0))
+#endif
+cbuffer Blit : register(b0) { float scale; uint floatDepth; uint clampDest; float destMin; float destMax; };
+float4 vs(uint id : SV_VertexID) : SV_Position
+{
+    float2 uv = float2((id << 1) & 2, id & 2);
+    return float4(uv * float2(2, -2) + float2(-1, 1), 0, 1);
+}
+uint Depth24(float d)
+{
+    d = saturate(d);
+    if (!floatDepth)
+        return uint(round(d * 16777215.0));
+    if (d < exp2(-14.0))
+        return min(uint(d * exp2(34.0)), 0xFFFFFu);
+    const int e = int(floor(log2(d)));
+    return (uint(e + 15) << 20) | min(uint((d / exp2(float(e)) - 1.0) * 1048576.0), 0xFFFFFu);
+}
+float4 ps(float4 pos : SV_Position) : SV_Target
+{
+    const int2 p = int2(pos.xy);
+    const uint d = Depth24(LOAD(depthTex, p)), s = LOAD(stencilTex, p).g;
+    return float4(s, d & 255, (d >> 8) & 255, d >> 16) / 255.0;
+}
+)";
+    ComPtr<ID3DBlob> bytesVs, bytesPs;
+    Check(D3DCompile(bytesSource.data(), bytesSource.size(), nullptr, nullptr, nullptr, "vs", "vs_5_0", 0, 0, &bytesVs, &error), "D3DCompile(bytes blit vs)");
+    Check(D3DCompile(bytesSource.data(), bytesSource.size(), nullptr, nullptr, nullptr, "ps", "ps_5_0", 0, 0, &bytesPs, &error), "D3DCompile(bytes blit ps)");
+    pd.pRootSignature = g_r.bytesRootSignature.Get();
+    pd.VS = { bytesVs->GetBufferPointer(), bytesVs->GetBufferSize() };
+    pd.PS = { bytesPs->GetBufferPointer(), bytesPs->GetBufferSize() };
+    pd.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+    Check(d->CreateGraphicsPipelineState(&pd, IID_PPV_ARGS(g_msaa > 1 ? &g_r.depthBytesBlitMs : &g_r.depthBytesBlit)),
+        "CreateGraphicsPipelineState(depth bytes blit)");
 }
 
 void InitPipelineLibrary(ID3D12Device* device);
@@ -4189,6 +4249,13 @@ ID3D12Resource* GetTextureLocked(const TextureFetch& fetch, DXGI_FORMAT& format,
         if (resolvedTexture->frame == g_r.frame && fetch.Width() >= kWidth)
             g_drawSamplesResolve = true;
         format = resolvedTexture->format;
+        // A depth resolve fetched as 8888 (k_8_8_8_8, format 6): its D24S8 words, stencil first.
+        static LiveSwitch noDepthBytes("FM2_NO_DEPTH_AS_8888"); // A/B: the depth itself, as before
+        if (format == DXGI_FORMAT_R32_FLOAT && fetch.Format() == 6 && resolvedTexture->bytes && !noDepthBytes)
+        {
+            format = DXGI_FORMAT_R8G8B8A8_UNORM;
+            return resolvedTexture->bytes.Get();
+        }
         // Bloom reads at game size: its downsample reads the scene (into a quarter-size viewport)
         // and its blur and composite read the 320x180 result, all with taps placed for game-size
         // texels. Scaled up with the output they sampled sharp copies the taps didn't blend: the
@@ -4796,6 +4863,7 @@ void EnsureResolved(ResolvedTexture& dest, uint32_t width, uint32_t height, uint
 {
     auto swapVariant = [](ResolvedTexture& a, ResolvedTexture& b) {
         std::swap(a.resource, b.resource);
+        std::swap(a.bytes, b.bytes);
         std::swap(a.width, b.width);
         std::swap(a.height, b.height);
         std::swap(a.hostWidth, b.hostWidth);
@@ -4931,6 +4999,55 @@ void BlitResolve(bool depth, uint32_t base, uint32_t width, uint32_t height, DXG
     C().list->RSSetViewports(1, &vp);
     C().list->RSSetScissorRects(1, &hostRect);
     C().list->DrawInstanced(3, 1, 0, 0);
+
+    // Depth: also the D24S8 words as 8888 (ResolvedTexture::bytes), while the depth buffer is readable.
+    ID3D12PipelineState* bytesPso = ms ? g_r.depthBytesBlitMs.Get() : g_r.depthBytesBlit.Get();
+    if (depth && bytesPso && f.descriptorsUsed + 2 <= kDescriptorsPerFrame)
+    {
+        if (!dest.bytes)
+        {
+            D3D12_HEAP_PROPERTIES hp{};
+            hp.Type = D3D12_HEAP_TYPE_DEFAULT;
+            D3D12_RESOURCE_DESC td{};
+            td.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+            td.Width = dest.hostWidth;
+            td.Height = dest.hostHeight;
+            td.DepthOrArraySize = 1;
+            td.MipLevels = 1;
+            td.SampleDesc.Count = 1;
+            td.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+            td.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+            Check(g_r.device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &td,
+                      D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, nullptr,
+                      IID_PPV_ARGS(&dest.bytes)),
+                "CreateCommittedResource(resolve bytes)");
+            CountCreate("resolve");
+        }
+        const UINT pair = f.descriptorBase + f.descriptorsUsed;
+        f.descriptorsUsed += 2;
+        g_r.device->CreateShaderResourceView(C().depth.Get(), &srv, Cpu(g_r.srvHeap.Get(), pair, g_r.srvStride));
+        D3D12_SHADER_RESOURCE_VIEW_DESC stencil = srv;
+        stencil.Format = DXGI_FORMAT_X32_TYPELESS_G8X24_UINT;
+        if (!ms)
+            stencil.Texture2D.PlaneSlice = 1;
+        g_r.device->CreateShaderResourceView(C().depth.Get(), &stencil, Cpu(g_r.srvHeap.Get(), pair + 1, g_r.srvStride));
+        C().list->CreateRenderTargetView(g_r.device, dest.bytes.Get(), rtv);
+        D3D12_RESOURCE_BARRIER t{};
+        t.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        t.Transition.pResource = dest.bytes.Get();
+        t.Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+        t.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        C().list->ResourceBarrier(1, &t);
+        C().list->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
+        C().list->SetGraphicsRootSignature(g_r.bytesRootSignature.Get());
+        C().list->SetPipelineState(bytesPso);
+        C().list->SetGraphicsRootDescriptorTable(0, Gpu(g_r.srvHeap.Get(), pair, g_r.srvStride));
+        const uint32_t bytesConstants[5] = { 0, (gpureg::Get(RB_DEPTH_INFO) >> 16) & 1, 0, 0, 0 };
+        C().list->SetGraphicsRoot32BitConstants(1, 5, bytesConstants, 0);
+        C().list->DrawInstanced(3, 1, 0, 0);
+        std::swap(t.Transition.StateBefore, t.Transition.StateAfter);
+        C().list->ResourceBarrier(1, &t);
+    }
 
     std::swap(b[0].Transition.StateBefore, b[0].Transition.StateAfter);
     std::swap(b[1].Transition.StateBefore, b[1].Transition.StateAfter);
