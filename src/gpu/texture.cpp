@@ -206,10 +206,13 @@ void DecodeTexel(uint32_t format, const uint8_t* t, uint8_t* out)
     }
     case k_4_4_4_4:
     {
+        // R in the low nibble, as 8888 has R in the low byte (Xenia loads it as RGBA4). With R and B
+        // the other way round, the Japanese/Chinese/Korean font atlas (a glyph per channel) drew the
+        // glyph from the wrong channel: "Optisn" for "Options" (report #30).
         const uint16_t c = uint16_t(t[0] | (t[1] << 8));
-        out[0] = uint8_t(((c >> 8) & 15) * 17);
+        out[0] = uint8_t((c & 15) * 17);
         out[1] = uint8_t(((c >> 4) & 15) * 17);
-        out[2] = uint8_t((c & 15) * 17);
+        out[2] = uint8_t(((c >> 8) & 15) * 17);
         out[3] = uint8_t(((c >> 12) & 15) * 17);
         break;
     }
