@@ -68,6 +68,7 @@ function keyName(vk) {
 }
 
 let devices = []        // from SDL: guid, name, kind, axes, buttons, hats, rest
+const settled = new Map() // guid -> each axis's rest once the device has reported (onState)
 let bindings = {}       // target -> ["<guid>/<source>", ...]
 let names = {}          // guid -> device name (remembered for devices not plugged in)
 let live = new Map()    // guid -> latest state
@@ -206,10 +207,21 @@ function onState(states) {
   live = new Map(states.map((s) => [s.guid, s]))
   const d = devices.find((x) => x.guid === shown), s = live.get(shown)
   if (d && s) {
+    // SDL gives 0 for every axis until the device's first report (a G29's pedals then read 32767 at rest),
+    // so the rest follows each axis until it reads something else or 3 s pass, as the game does
+    // (SettleRest, src/input/wheel.cpp).
+    // Kept by GUID: the device list is read again now and then, and its entries replaced.
+    if (!settled.has(d.guid)) settled.set(d.guid, { since: Date.now(), known: [], rest: [] })
+    const st = settled.get(d.guid)
+    s.axes.forEach((v, i) => {
+      if (st.known[i]) return
+      st.rest[i] = v
+      st.known[i] = v !== 0 || Date.now() - st.since > 3000
+    })
     s.axes.forEach((v, i) => {
       const row = $("ax" + i)
       if (!row) return
-      const rest = d.rest[i] || 0
+      const rest = st.rest[i] || 0
       // filled from the rest position (pedals) or the centre (steering and other centred axes)
       const from = Math.abs(rest) > 30000 ? rest : 0
       const a = (Math.min(from, v) + 32768) / 65535 * 100, b = (Math.max(from, v) + 32768) / 65535 * 100
