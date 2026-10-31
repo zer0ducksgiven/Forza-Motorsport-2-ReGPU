@@ -932,7 +932,7 @@ private:
     // Registration, keep-alive and hole punching.
     void LiveLoop()
     {
-        Clock::time_point nextHello{}, nextResolve{}, nextStun{};
+        Clock::time_point nextHello{}, nextResolve{}, nextStun{}, nextPing{};
         bool resolved = false;
         for (;;)
         {
@@ -952,7 +952,32 @@ private:
                 }
                 nextStun = now + std::chrono::seconds(pub.ip ? 25 : 2); // keeps the NAT mapping open too
             }
-            if (resolved && now >= nextHello && now >= helloPausedUntil_)
+            if (resolved && wsMode_ && now >= helloPausedUntil_)
+            {
+                // The Worker: HELLO to sign in and when our public address changes; otherwise a "ping" every 30
+                // seconds, which the live room answers without waking (a HELLO every 5 seconds kept it awake, and
+                // the free plan has a daily allowance of awake time)
+                Endpoint pub;
+                uint32_t id;
+                std::shared_ptr<WebSocketClient> ws;
+                {
+                    std::lock_guard lock(mutex_);
+                    pub = stunPublic_, id = liveId_, ws = ws_;
+                }
+                if (id ? pub != helloPublic_ : now >= nextHello)
+                {
+                    SendHello();
+                    helloPublic_ = pub;
+                    nextHello = now + std::chrono::seconds(1);
+                    nextPing = now + std::chrono::seconds(30);
+                }
+                else if (id && ws && now >= nextPing)
+                {
+                    ws->SendText("ping");
+                    nextPing = now + std::chrono::seconds(30);
+                }
+            }
+            else if (resolved && now >= nextHello && now >= helloPausedUntil_)
             {
                 SendHello();
                 std::lock_guard lock(mutex_);
@@ -1247,6 +1272,7 @@ private:
     Endpoint publicEp_;
     Clock::time_point lastWelcome_{};
     Clock::time_point helloPausedUntil_{}; // the server refused our name
+    Endpoint helloPublic_;                 // the public address our last HELLO sent (WebSocket mode)
     std::unordered_map<uint32_t, LivePeer> livePeers_;
     std::unordered_map<uint32_t, uint32_t> liveIdByVip_;
 };

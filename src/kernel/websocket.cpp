@@ -67,6 +67,11 @@ bool WebSocketClient::Send(const void* data, size_t size)
     return WinHttpWebSocketSend(socket_, WINHTTP_WEB_SOCKET_BINARY_MESSAGE_BUFFER_TYPE, const_cast<void*>(data), DWORD(size)) == NO_ERROR;
 }
 
+bool WebSocketClient::SendText(const std::string& text)
+{
+    return WinHttpWebSocketSend(socket_, WINHTTP_WEB_SOCKET_UTF8_MESSAGE_BUFFER_TYPE, const_cast<char*>(text.data()), DWORD(text.size())) == NO_ERROR;
+}
+
 bool WebSocketClient::Receive(std::vector<uint8_t>& message)
 {
     message.clear();

@@ -94,9 +94,20 @@ async function find(db, name) {
   return p ? `player ${p.xuid} ${p.seen} ${p.tag}\n` : "none\n";
 }
 
-const ROW = `SELECT xuid, name, CAST(rating AS TEXT) AS rating, ${COLUMNS.map((c) => `CAST(${c} AS TEXT) AS ${c}`).join(", ")},
+// D1's free plan counts every row a query reads, so a page doesn't count the rows above each of its rows (100
+// rows of a 1,000-player board read 100,000): a page's ranks are its offset plus its order, and only one player's
+// rank (around, xuids) is counted, once.
+const COLS = `xuid, name, CAST(rating AS TEXT) AS rating, ${COLUMNS.map((c) => `CAST(${c} AS TEXT) AS ${c}`).join(", ")}`;
+const PAGE = `SELECT ${COLS} FROM stats WHERE view = ?1 ORDER BY rating DESC, updated LIMIT ?2 OFFSET ?3`;
+const ONE = `SELECT ${COLS},
   (SELECT count(*) FROM stats o WHERE o.view = s.view AND (o.rating > s.rating OR (o.rating = s.rating AND o.updated < s.updated))) + 1 AS rank
-  FROM stats s`;
+  FROM stats s WHERE view = ?1 AND xuid = ?2`;
+
+async function page(db, view, count, first) {
+  const rows = (await db.prepare(PAGE).bind(view, count, first - 1).all()).results;
+  rows.forEach((r, i) => (r.rank = first + i));
+  return rows;
+}
 
 async function read(db, body) {
   const lines = body.split("\n").map((l) => l.trim());
@@ -109,16 +120,16 @@ async function read(db, body) {
     let rows = [];
     if (mode === "rank") {
       const first = Math.max(Number(arg) || 1, 1);
-      rows = (await db.prepare(`${ROW} WHERE view = ?1 ORDER BY s.rating DESC, s.updated LIMIT ?2 OFFSET ?3`).bind(view, count, first - 1).all()).results;
+      rows = await page(db, view, count, first);
     } else if (mode === "around" && XUID.test(arg)) {
-      const me = await db.prepare(`${ROW} WHERE view = ?1 AND xuid = ?2`).bind(view, arg).first();
+      const me = await db.prepare(ONE).bind(view, arg).first();
       // a page with the player in the middle (from the top when not on the board)
       const first = me ? Math.max(me.rank - Math.floor(count / 2), 1) : 1;
-      rows = (await db.prepare(`${ROW} WHERE view = ?1 ORDER BY s.rating DESC, s.updated LIMIT ?2 OFFSET ?3`).bind(view, count, first - 1).all()).results;
+      rows = await page(db, view, count, first);
     } else if (mode === "xuids") {
       const xuids = (lines[2] || "").split(" ").filter((x) => XUID.test(x)).slice(0, 100);
       for (const x of xuids) {
-        const r = await db.prepare(`${ROW} WHERE view = ?1 AND xuid = ?2`).bind(view, x).first();
+        const r = await db.prepare(ONE).bind(view, x).first();
         if (r) rows.push(r);
       }
     }

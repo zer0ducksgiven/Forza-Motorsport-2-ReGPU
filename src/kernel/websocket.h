@@ -14,6 +14,7 @@ public:
     static bool IsUrl(const char* text); // ws:// or wss://
     ~WebSocketClient();
     bool Send(const void* data, size_t size);
+    bool SendText(const std::string& text);
     // The next message (pieces of a fragmented one are joined); false once the connection is gone
     bool Receive(std::vector<uint8_t>& message);
     void Close(); // unblocks a Receive in another thread

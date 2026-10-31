@@ -23,6 +23,8 @@ export class LiveRoom {
   constructor(ctx, env) {
     this.ctx = ctx;
     this.db = env.DB;
+    // the game's keepalive (kernel/net.cpp): answered without waking the object, so it can sleep between messages
+    ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
     this.budgets = new Map(); // player id -> { tokens, time }: the relay budget (resets when the object sleeps)
   }
 
