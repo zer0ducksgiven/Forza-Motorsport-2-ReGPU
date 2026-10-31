@@ -183,6 +183,7 @@ struct EnumeratorObject : KernelObject
     EnumeratorObject() : KernelObject(Kind::Other) {}
     std::vector<ContentItem> items;
     size_t next = 0;
+    bool titleServers = false; // XamCreateEnumeratorHandle with message 0x58039: one server, 127.0.0.1
     uint32_t guest = 0; // XamCreateEnumeratorHandle: the request the title fills in (its extra size)
     // XamUserCreateStatsEnumerator: the views asked for and the server's query for them (from the top,
     // or around a player). XamEnumerate answers with the server's rows (kernel/leaderboards.cpp).
@@ -1395,6 +1396,9 @@ GUEST_EXPORT(XamCreateEnumeratorHandle)
     auto e = std::make_shared<EnumeratorObject>();
     const uint32_t extra = std::min<uint32_t>(ctx.r7.u32, 0x10000);
     e->guest = GuestAlloc(Heap::Virtual, 0x20 + extra);
+    e->titleServers = LiveTrace() && (ctx.r5.u32 == 0x58039 || ctx.r6.u32 == 0x58039);
+    if (LiveTrace())
+        Log("live: XamCreateEnumeratorHandle app %X open %X close %X extra %u items %u", ctx.r4.u32, ctx.r5.u32, ctx.r6.u32, ctx.r7.u32, ctx.r8.u32);
     memset(GuestPtr(e->guest), 0, 0x20 + extra);
     StoreIfNonNull(ctx.r10.u32, CreateHandle(e));
     Return(ctx, X_ERROR_SUCCESS);
@@ -1431,7 +1435,20 @@ GUEST_EXPORT(XamEnumerate)
         FinishUi(ctx, ctx.r8.u32, count ? X_ERROR_SUCCESS : X_ERROR_NO_MORE_FILES);
         return;
     }
-    if (e)
+    if (e && e->titleServers)
+    {
+        // XTITLE_SERVER_INFO: IN_ADDR, flags, char info[200]
+        const uint32_t buffer = ctx.r5.u32;
+        if (buffer && ctx.r6.u32 >= 208 && e->next++ == 0)
+        {
+            memset(GuestPtr(buffer), 0, 208);
+            StoreBE32(buffer, 0x7F000001);
+            strcpy(reinterpret_cast<char*>(GuestPtr(buffer + 8)), "xetv.b.fm2"); // the title looks for "xetv.b.*"
+            count = 1;
+        }
+        Log("live: title servers enumerated, %u returned (buffer %u bytes)", count, ctx.r6.u32);
+    }
+    else if (e)
     {
         const uint32_t buffer = ctx.r5.u32, capacity = ctx.r6.u32 / kContentDataSize;
         for (; count < capacity && e->next < e->items.size(); count++, e->next++)

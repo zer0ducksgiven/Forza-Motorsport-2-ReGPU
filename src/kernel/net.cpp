@@ -1151,6 +1151,87 @@ void WriteSet(uint32_t set, const std::vector<uint32_t>& handles)
 }
 }
 
+// --- TCP: the title server connection (auction house, gifting, ...) as a real host socket. The
+// title server is 127.0.0.1 to the game (kernel/imports_xam.cpp); FM2_TITLE_SERVER=host:port says
+// where it really is (default 127.0.0.1:3074, the local stand-in) ----------------------------
+namespace
+{
+constexpr uint32_t kTcpBase = 0x54430000; // 'TC' + index
+
+struct Tcp
+{
+    std::mutex m;
+    std::unordered_map<uint32_t, SOCKET> sockets;
+    uint32_t next = 1;
+    static Tcp& Get() { static Tcp t; return t; }
+};
+
+bool IsTcp(uint32_t handle)
+{
+    if ((handle & 0xFFFF0000) != kTcpBase)
+        return false;
+    Tcp& t = Tcp::Get();
+    std::lock_guard lock(t.m);
+    return t.sockets.count(handle) != 0;
+}
+
+SOCKET HostTcp(uint32_t handle)
+{
+    Tcp& t = Tcp::Get();
+    std::lock_guard lock(t.m);
+    auto it = t.sockets.find(handle);
+    return it == t.sockets.end() ? INVALID_SOCKET : it->second;
+}
+
+uint32_t CreateTcp()
+{
+    static const int started = [] { WSADATA wsa; return WSAStartup(MAKEWORD(2, 2), &wsa); }();
+    (void)started;
+    const SOCKET s = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (s == INVALID_SOCKET)
+        return 0;
+    Tcp& t = Tcp::Get();
+    std::lock_guard lock(t.m);
+    const uint32_t handle = kTcpBase | (t.next++ & 0xFFFF);
+    t.sockets[handle] = s;
+    return handle;
+}
+
+uint64_t TcpResult(int r)
+{
+    if (r == SOCKET_ERROR)
+        return Fail(uint32_t(WSAGetLastError()));
+    return uint64_t(uint32_t(r));
+}
+
+void TitleServerAddress(sockaddr_in& a)
+{
+    std::string host = "127.0.0.1";
+    uint16_t port = 3074;
+    if (const char* e = getenv("FM2_TITLE_SERVER"))
+    {
+        host = e;
+        if (const size_t colon = host.find(':'); colon != std::string::npos)
+            port = uint16_t(atoi(host.c_str() + colon + 1)), host.resize(colon);
+    }
+    a.sin_family = AF_INET;
+    a.sin_port = htons(port);
+    inet_pton(AF_INET, host.c_str(), &a.sin_addr);
+}
+
+void LogTcp(const char* what, uint32_t handle, const uint8_t* data, int n)
+{
+    std::string hex;
+    for (int i = 0; i < n && i < 64; i++)
+    {
+        char b[4];
+        snprintf(b, sizeof(b), "%02X", data[i]);
+        hex += b;
+    }
+    Log("net: tcp %08X %s %d bytes: %s", handle, what, n, hex.c_str());
+}
+}
+
 void NetSelfXnAddr(uint32_t xnaddr)
 {
     if (NetOn() && VNet::Get().Ready())
@@ -1275,7 +1356,7 @@ GUEST_EXPORT(NetDll_XNetServerToInAddr)
     Return(ctx, 0);
 }
 
-// --- Sockets: UDP ones on the virtual network; everything else is refused for now ------
+// --- Sockets: UDP ones on the virtual network, TCP ones (the title server) as host sockets ---
 
 GUEST_EXPORT(NetDll_socket)
 {
@@ -1283,6 +1364,13 @@ GUEST_EXPORT(NetDll_socket)
     if (NetOn() && ctx.r5.u32 == 2 && VNet::Get().Ready())
     {
         Return(ctx, VNet::Get().CreateSocket());
+        return;
+    }
+    if (NetOn() && ctx.r5.u32 == 1)
+    {
+        const uint32_t handle = CreateTcp();
+        Log("net: tcp socket %08X (lr %08X)", handle, uint32_t(ctx.lr));
+        Return(ctx, handle ? handle : Fail(kWsaENetDown));
         return;
     }
     if (NetOn())
@@ -1309,6 +1397,16 @@ GUEST_EXPORT(NetDll_bind)
 GUEST_EXPORT(NetDll_connect)
 {
     // (caller, socket, sockaddr*, length)
+    if (IsTcp(ctx.r4.u32))
+    {
+        sockaddr_in a{};
+        TitleServerAddress(a);
+        const int r = ::connect(HostTcp(ctx.r4.u32), reinterpret_cast<sockaddr*>(&a), sizeof(a));
+        Log("net: tcp %08X connect (the game asked for %08X:%u) -> %d (%d)", ctx.r4.u32, LoadBE32(ctx.r5.u32 + 4),
+            LoadBE16(ctx.r5.u32 + 2), r, r ? WSAGetLastError() : 0);
+        Return(ctx, TcpResult(r));
+        return;
+    }
     if (!Ours(ctx.r4.u32))
     {
         Return(ctx, Fail(kWsaENotSock));
@@ -1320,18 +1418,31 @@ GUEST_EXPORT(NetDll_connect)
 
 GUEST_EXPORT(NetDll_closesocket)
 {
+    if (IsTcp(ctx.r4.u32))
+    {
+        Log("net: tcp %08X closed", ctx.r4.u32);
+        Tcp& t = Tcp::Get();
+        std::lock_guard lock(t.m);
+        ::closesocket(t.sockets[ctx.r4.u32]);
+        t.sockets.erase(ctx.r4.u32);
+    }
     if (Ours(ctx.r4.u32))
         VNet::Get().Close(ctx.r4.u32);
     Return(ctx, 0);
 }
 
-GUEST_EXPORT(NetDll_shutdown) { Return(ctx, 0); }
-GUEST_EXPORT(NetDll_setsockopt) { Return(ctx, Ours(ctx.r4.u32) ? 0 : Fail(kWsaENotSock)); }
+GUEST_EXPORT(NetDll_shutdown)
+{
+    if (IsTcp(ctx.r4.u32))
+        ::shutdown(HostTcp(ctx.r4.u32), int(ctx.r5.u32));
+    Return(ctx, 0);
+}
+GUEST_EXPORT(NetDll_setsockopt) { Return(ctx, Ours(ctx.r4.u32) || IsTcp(ctx.r4.u32) ? 0 : Fail(kWsaENotSock)); }
 
 GUEST_EXPORT(NetDll_getsockopt)
 {
     // (caller, socket, level, name, value*, length*): every option reads as 0
-    if (!Ours(ctx.r4.u32))
+    if (!Ours(ctx.r4.u32) && !IsTcp(ctx.r4.u32))
     {
         Return(ctx, Fail(kWsaENotSock));
         return;
@@ -1359,6 +1470,15 @@ GUEST_EXPORT(NetDll_getsockname)
 GUEST_EXPORT(NetDll_ioctlsocket)
 {
     // (caller, socket, command, u_long*)
+    if (IsTcp(ctx.r4.u32))
+    {
+        u_long v = LoadBE32(ctx.r6.u32);
+        const int r = ::ioctlsocket(HostTcp(ctx.r4.u32), long(ctx.r5.u32), &v);
+        if (ctx.r5.u32 == 0x4004667F)
+            StoreBE32(ctx.r6.u32, uint32_t(v));
+        Return(ctx, TcpResult(r));
+        return;
+    }
     if (!Ours(ctx.r4.u32))
     {
         Return(ctx, Fail(kWsaENotSock));
@@ -1397,6 +1517,14 @@ GUEST_EXPORT(NetDll_sendto)
 GUEST_EXPORT(NetDll_send)
 {
     // (caller, socket, buffer, length, flags)
+    if (IsTcp(ctx.r4.u32))
+    {
+        const uint8_t* data = GuestPtr<uint8_t>(ctx.r5.u32);
+        const int r = ::send(HostTcp(ctx.r4.u32), reinterpret_cast<const char*>(data), int(ctx.r6.u32), 0);
+        LogTcp("sent", ctx.r4.u32, data, r);
+        Return(ctx, TcpResult(r));
+        return;
+    }
     if (!Ours(ctx.r4.u32))
     {
         Return(ctx, Fail(kWsaENotSock));
@@ -1418,6 +1546,15 @@ GUEST_EXPORT(NetDll_recvfrom)
 GUEST_EXPORT(NetDll_recv)
 {
     // (caller, socket, buffer, length, flags)
+    if (IsTcp(ctx.r4.u32))
+    {
+        uint8_t* data = GuestPtr<uint8_t>(ctx.r5.u32);
+        const int r = ::recv(HostTcp(ctx.r4.u32), reinterpret_cast<char*>(data), int(ctx.r6.u32), 0);
+        if (r != SOCKET_ERROR || WSAGetLastError() != WSAEWOULDBLOCK)
+            LogTcp("received", ctx.r4.u32, data, r);
+        Return(ctx, TcpResult(r));
+        return;
+    }
     Return(ctx, Ours(ctx.r4.u32) ? Receive(ctx, 0, 0) : Fail(kWsaENotSock));
 }
 
@@ -1428,14 +1565,52 @@ GUEST_EXPORT(NetDll_select)
     int64_t timeoutUs = -1;
     if (ctx.r8.u32)
         timeoutUs = int64_t(int32_t(LoadBE32(ctx.r8.u32))) * 1000000 + int32_t(LoadBE32(ctx.r8.u32 + 4));
-    const std::vector<uint32_t> writable = ReadSet(ctx.r6.u32);
-    if (!writable.empty())
+    // TCP sockets go to a host select (waiting up to 100 ms when there is nothing else to wait on)
+    std::vector<uint32_t> writable, readable, udpRead, failed;
+    std::vector<std::pair<uint32_t, SOCKET>> tcpRead, tcpWrite;
+    for (uint32_t h : ReadSet(ctx.r5.u32))
+        IsTcp(h) ? tcpRead.push_back({ h, HostTcp(h) }) : udpRead.push_back(h);
+    for (uint32_t h : ReadSet(ctx.r6.u32))
+        IsTcp(h) ? tcpWrite.push_back({ h, HostTcp(h) }) : writable.push_back(h);
+    if (!tcpRead.empty() || !tcpWrite.empty())
+    {
+        fd_set r, w, x;
+        FD_ZERO(&r);
+        FD_ZERO(&w);
+        FD_ZERO(&x);
+        for (auto [h, s] : tcpRead)
+            FD_SET(s, &r);
+        for (auto [h, s] : tcpWrite)
+        {
+            FD_SET(s, &w);
+            FD_SET(s, &x);
+        }
+        timeval wait{ 0, 0 };
+        if (udpRead.empty() && writable.empty() && timeoutUs != 0)
+            wait.tv_usec = long(timeoutUs < 0 ? 100000 : std::min<int64_t>(timeoutUs, 100000));
+        ::select(0, &r, &w, &x, &wait);
+        for (auto [h, s] : tcpRead)
+            if (FD_ISSET(s, &r))
+                readable.push_back(h);
+        for (auto [h, s] : tcpWrite)
+        {
+            if (FD_ISSET(s, &w))
+                writable.push_back(h);
+            if (FD_ISSET(s, &x))
+                failed.push_back(h);
+        }
+    }
+    if (!writable.empty() || !readable.empty() || !failed.empty())
         timeoutUs = 0;
-    const std::vector<uint32_t> readable = NetOn() ? VNet::Get().WaitReadable(ReadSet(ctx.r5.u32), timeoutUs) : std::vector<uint32_t>{};
+    if (NetOn() && !udpRead.empty())
+    {
+        const std::vector<uint32_t> udp = VNet::Get().WaitReadable(udpRead, timeoutUs);
+        readable.insert(readable.end(), udp.begin(), udp.end());
+    }
     WriteSet(ctx.r5.u32, readable);
     WriteSet(ctx.r6.u32, writable);
-    WriteSet(ctx.r7.u32, {});
-    Return(ctx, readable.size() + writable.size());
+    WriteSet(ctx.r7.u32, failed);
+    Return(ctx, readable.size() + writable.size() + failed.size());
 }
 
 GUEST_EXPORT(NetDll___WSAFDIsSet)

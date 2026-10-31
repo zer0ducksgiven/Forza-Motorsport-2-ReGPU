@@ -118,7 +118,22 @@ static void RunBefore(PPCContext& ctx, uint8_t* base, Loader load)
     if (!L || !buffer || !name)
         return;
     const bool source = size < 4 || memcmp(GuestPtr<const char>(buffer), "\x1bLua", 4) != 0;
-    const std::string code = RandomEventsLuaBefore(GuestPtr<const char>(name), source, GuestPtr<const char>(buffer), size);
+    std::string code = RandomEventsLuaBefore(GuestPtr<const char>(name), source, GuestPtr<const char>(buffer), size);
+    // FM2_GIVE_CARS=id,id,...: those cars go into the garage once, free, as the main menu loads (Random Events' prize
+    // purchase), then the profile is saved. For giving back cars a failed auction took.
+    static const char* give = getenv("FM2_GIVE_CARS");
+    if (code.empty() && give && *give && strstr(GuestPtr<const char>(name), "C_MYC_MainMenu.lua"))
+    {
+        code = "pcall(function() local p = ProfileManager.Main local c = p.Credits p.Credits = c + 10000000 ";
+        for (const char* id = give; *id;)
+        {
+            code += "pcall(function() Lobby.activePlayer.garage:BuyCar(" + std::to_string(atoi(id)) + ", 1) end) ";
+            id = strchr(id, ',') ? strchr(id, ',') + 1 : id + strlen(id);
+        }
+        code += "p.Credits = c ProfileManager.activePlayerProfile:Save() end)";
+        Log("lua: giving cars %s", give);
+        give = nullptr;
+    }
 #if FM2_TITLE_UPDATE
     if (code.empty())
         return;

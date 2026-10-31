@@ -37,6 +37,20 @@ longjmp_address = 0x82431d30
 # Leaf functions without .pdata entries whose jump tables XenonAnalyse's size
 # guess cut off. Each runs to the next .pdata function (minus padding/EH data).
 functions = [
+    # The Xbox Live title services library (XtsClient: auction house, gifting): C++ functions whose exception
+    # handler funclet XenonAnalyse took for the function's end, so the branch past it to the shared epilogue
+    # became "ERROR" + return without restoring r1 (the auction Create crash: sub_82789228 returned with its
+    # frame still pushed, and its caller wrote an iterator over a stack holder). Each runs to its epilogue's blr.
+    { address = 0x82789228, size = 0x480 },
+    { address = 0x8278A368, size = 0xCC },
+    { address = 0x82790DA0, size = 0xAC },
+    { address = 0x827A0770, size = 0x90 },
+    { address = 0x827A7378, size = 0x5C },
+    { address = 0x827B0A38, size = 0x6C },
+    { address = 0x827B0AF8, size = 0x5C },
+    { address = 0x827BD528, size = 0x484 },
+    { address = 0x827C4928, size = 0x484 },
+    { address = 0x827D19B0, size = 0x180 },
     # memset: its 1-3 byte tail (0x824145C0..) was split off into separate functions,
     # so lengths of 2 or 3 mod 4 lost their last bytes (Bink block types -> Arcade crash).
     { address = 0x8242e050, size = 0xA0 },
