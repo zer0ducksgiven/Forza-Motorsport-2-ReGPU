@@ -100,11 +100,53 @@ class Reader:
     def blob(self): return self.take(self.u32())
 
 
+# Auction status: 0 active, 1 expired (no bids), 2 sold, 3 cancelled. Bids: [{xuid, tag, amount, date}], the top one
+# last. Payments (credits to collect): [{id, xuid, reason, amount, collected}]; reason 1 outbid (a bid back), 2 sold.
+ACTIVE, EXPIRED, SOLD, CANCELLED = 0, 1, 2, 3
+
+
+def now():
+    return datetime.datetime.now(datetime.timezone.utc)
+
+
+def bid_record(b):
+    return player(b['xuid'], b['tag']) + s64(b['amount']) + when(datetime.datetime.fromisoformat(b['date']))
+
+
+def settle():
+    # Auctions past their closing time: sold to the top bidder (the seller is paid), or expired (the car goes back)
+    changed = False
+    for a in AUCTIONS:
+        if a.get('status', ACTIVE) == ACTIVE and a['closes'] <= now():
+            bids = a.get('bids', [])
+            a['status'] = SOLD if bids else EXPIRED
+            if bids:
+                pay(a, a['xuid'], 2, bids[-1]['amount'])
+            log('auction %d ended: %s' % (a['id'], 'sold to %s for %d CR' % (bids[-1]['tag'], bids[-1]['amount']) if bids else 'no bids'))
+            changed = True
+    if changed:
+        save()
+
+
+def pay(a, xuid, reason, amount):
+    ids = [p['id'] for x in AUCTIONS for p in x.get('payments', [])]
+    a.setdefault('payments', []).append(dict(id=max(ids + [0]) + 1, xuid=xuid, reason=reason, amount=amount, collected=False))
+
+
+def payment_record(a, p):
+    return s32(p['id']) + s32(p['reason']) + s64(p['amount']) + s32(a['id'])
+
+
+def winner(a):
+    return a['bids'][-1]['xuid'] if a.get('status') == SOLD and a.get('bids') else None
+
+
 def auction(a, snapshot=True):
-    now = datetime.datetime.now(datetime.timezone.utc)
+    bids = a.get('bids', [])
+    top = bid_record(bids[-1]) if bids else player(0, '-') + s64(0) + when(now())
     base = (s32(a['id']) + player(a['xuid'], a['tag']) + s64(a['opening']) + s64(a['buyout']) + when(a['closes']) +
-            bytes([a['featured']]) + s32(a.get('status', 0)) + u32(0) +  # IsFeatured, Status (0 active, 3 cancelled), nBids
-            player(0, '-') + s64(0) + when(now))              # TopBid: Bidder, Amount, Date
+            bytes([a['featured']]) + s32(a.get('status', ACTIVE)) + u32(len(bids)) +  # IsFeatured, Status, nBids
+            top)                                                                     # TopBid: Bidder, Amount, Date
     car = a['car'] + u32(len(a['stats'])) + u32(len(a['livery']))   # the car summary as Create sent it, cbStats, cbLiveryDetails
     return base + car + (u32(len(a['snapshot'])) + a['snapshot'] if snapshot else u32(0))
 
@@ -138,6 +180,45 @@ def results(cls, method, params, who):
         log('created auction %d: car %s, stats %d, livery %d, snapshot %d bytes, %d..%d CR' % (
             a['id'], car[:4].hex(), len(stats), len(livery), len(snapshot), opening, buyout))
         return s32(a['id'])
+    settle()
+    if method == b'PlaceBid':
+        a = by_id(r.u32())
+        amount = r.i64()
+        if not a or a.get('status', ACTIVE) != ACTIVE or a['xuid'] == who[0]:
+            return b''
+        bids = a.setdefault('bids', [])
+        if amount < a['opening'] or (bids and amount <= bids[-1]['amount']):
+            log('auction %d: bid %d CR from %s too low' % (a['id'], amount, who[1]))
+            return b''
+        with lock:
+            if bids:
+                pay(a, bids[-1]['xuid'], 1, bids[-1]['amount'])  # the outbid bidder's credits back
+            bids.append(dict(xuid=who[0], tag=who[1], amount=amount, date=now().isoformat()))
+            if a['buyout'] and amount >= a['buyout']:
+                a['status'] = SOLD
+                pay(a, a['xuid'], 2, amount)
+            save()
+        log('auction %d: %s bids %d CR%s' % (a['id'], who[1], amount, ' (buyout)' if a.get('status') == SOLD else ''))
+        return b''
+    if method == b'GetBidOn':
+        return auction_list([a for a in AUCTIONS if any(b['xuid'] == who[0] for b in a.get('bids', []))
+                             and not (winner(a) == who[0] and a.get('returned'))])
+    if method == b'GetBids':
+        a = by_id(r.u32())
+        bids = list(reversed(a.get('bids', []))) if a else []
+        return u32(len(bids)) + b''.join(bid_record(b) for b in bids) + u32(len(bids))
+    if method in (b'RetrievePaymentsForAuction', b'RetrievePendingPayments'):
+        only = r.u32() if method == b'RetrievePaymentsForAuction' else None
+        out = []
+        with lock:
+            for a in AUCTIONS:
+                for p in a.get('payments', []):
+                    if p['xuid'] == who[0] and not p['collected'] and (only is None or a['id'] == only):
+                        out.append(payment_record(a, p))
+                        if only is not None:
+                            p['collected'] = True
+            save()
+        return u32(len(out)) + b''.join(out) + u32(len(out))
     if method == b'SearchForAuction':
         return auction_list([a for a in AUCTIONS if a.get('status', 0) == 0])
     if method == b'GetSubmitted':
@@ -146,22 +227,25 @@ def results(cls, method, params, who):
         a = by_id(r.u32())
         if not a:
             return b''
+        bids = list(reversed(a.get('bids', [])))
         return (auction(a) + u32(len(a['stats'])) + a['stats'] + u32(len(a['livery'])) + a['livery'] +
-                u32(0) + u32(0))  # rgBids (none yet), nAvailableBids
+                u32(len(bids)) + b''.join(bid_record(b) for b in bids) + u32(len(bids)))  # rgBids, nAvailableBids
     if method == b'Cancel':
         a = by_id(r.u32())
-        if a and a['xuid'] == who[0] and a.get('status', 0) == 0:
+        if a and a['xuid'] == who[0] and a.get('status', 0) == 0 and not a.get('bids'):
             with lock:
                 a['status'] = 3
                 save()
             log('auction %d cancelled' % a['id'])
         return b''
     if method == b'RetrievePendingCars':
-        mine = [a for a in AUCTIONS if a['xuid'] == who[0] and a.get('status', 0) in (1, 3) and not a.get('returned')]
+        mine = [a for a in AUCTIONS if not a.get('returned') and (
+            (a['xuid'] == who[0] and a.get('status', 0) in (EXPIRED, CANCELLED)) or winner(a) == who[0])]
         return u32(len(mine)) + b''.join(auction_car(a) for a in mine) + u32(len(mine))
     if method == b'RetrieveCarForAuction':
         a = by_id(r.u32())
-        if not a or a['xuid'] != who[0] or a.get('status', 0) == 0:
+        if not a or a.get('returned') or not (
+                (a['xuid'] == who[0] and a.get('status', 0) in (EXPIRED, CANCELLED)) or winner(a) == who[0]):
             return b''
         with lock:
             a['returned'] = True
@@ -245,7 +329,11 @@ def client(c, a):
                     # WebRequestPayload; cbMaxAvailable its size
                     tx = params[:16].hex()
                     payload = bytes.fromhex(TRANSACTIONS.get(tx, ''))
-                    log('reconcile %s: %s' % (tx, '%d bytes' % len(payload) if payload else 'unknown'))
+                    log('reconcile %s: %s' % (tx, '%d bytes' % len(payload) if payload else 'unknown: answered as done'))
+                    if not payload:
+                        # One this server never saw (or lost): done, so the game stops waiting on it. A Create's
+                        # result is the auction id; 0 here.
+                        payload = struct.pack('>IIIQ', 0, 0, 0, 0) + s32(0)
                     res = u32(len(payload)) + payload + s32(len(payload))
                 else:
                     res = results(cls, method, params, who)

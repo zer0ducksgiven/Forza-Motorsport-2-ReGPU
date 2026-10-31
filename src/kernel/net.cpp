@@ -1351,8 +1351,12 @@ GUEST_EXPORT(NetDll_XNetRandom)
 
 GUEST_EXPORT(NetDll_XNetServerToInAddr)
 {
-    // (caller, IN_ADDR, service id, IN_ADDR*): title server addresses are plain IPs here
-    StoreIfNonNull(ctx.r6.u32, ctx.r4.u32);
+    // (caller, IN_ADDR, service id, IN_ADDR*): a new secure address each time, as Xbox Live gives. The XTS client keeps
+    // its connections by this address: given the same one again after a connection dropped, it found the dead
+    // connection still listed and called into freed memory (connect() sends every title server TCP connection to
+    // FM2_TITLE_SERVER, so the address only has to be unique).
+    static std::atomic<uint32_t> next{ 0 };
+    StoreIfNonNull(ctx.r6.u32, NetOn() ? 0x7F010000u | (++next & 0xFFFF) : ctx.r4.u32);
     Return(ctx, 0);
 }
 
