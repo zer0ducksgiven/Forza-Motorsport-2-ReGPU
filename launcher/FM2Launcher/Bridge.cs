@@ -66,6 +66,13 @@ public sealed class Bridge
                 if (Game.Running) throw new InvalidOperationException("The game is already running.");
                 Game.Launch();
                 return null;
+            case "tu.add":
+                {
+                    var files = await _window.ShowOpenFileAsync("Choose the title update (TU_16L61VA_...)", null, false, [("Title update", ["*"])]);
+                    if (files is not { Length: > 0 }) return State();
+                    Stfs.InstallTitleUpdate(files[0], Paths.Update);
+                    return State();
+                }
             case "shaders.delete":
                 ShaderCache.Delete();
                 return State();

@@ -180,7 +180,7 @@ function render() {
   chips.replaceChildren()
   const chip = (cls, text, tip) => { const c = el("span", "chip " + cls); c.append(el("span", "dot"), text); if (tip) c.dataset.tip = tip; chips.append(c) }
   chip(s.checks.game ? "ok" : "bad", s.checks.game ? "Game files" : "Game files missing", "The game built from your disc, in the install's game folder.")
-  chip(s.checks.update ? "ok" : "warn", s.checks.update ? "Title update" : "No title update", "The title update (needed for DLC), in Documents\\fm2\\update.")
+  chip(s.checks.update ? "ok" : "bad", s.checks.update ? "Title update" : "No title update", "The title update the game needs to start, in Documents\\fm2\\update.")
   chip(s.checks.running ? "warn" : "ok", s.checks.running ? "Game running" : "Not running")
   const zeroCopyTip = "Fast memory sharing between the game and your GPU (Direct3D 12 zero-copy). The game found it could not use it, so it copies data every frame: lower performance and hitches. Updating Windows and your GPU driver usually fixes it (Windows 11 23H2 or newer with a 2024 or newer driver works best)."
   if (s.system && !s.system.zeroCopy) chip("warn", "Reduced performance", zeroCopyTip)
@@ -223,11 +223,13 @@ function render() {
   const item = (ok, text) => { const d = el("div", "check-item " + (ok ? "ok" : "bad")); d.append(el("span", "dot"), text); cl.append(d) }
   item(s.checks.exe, s.checks.exe ? "fm2.exe found" : "fm2.exe is missing from this install")
   item(s.checks.game, s.checks.game ? "Game files ready" : "Game files missing: run the installer again")
+  item(s.checks.update, s.checks.update ? "Title update installed" : "No title update: the game can't start without it. Add it below.")
+  $("tu-add").hidden = s.checks.update
   item(s.shaders.exists, s.shaders.exists ? `Shaders compiled (${s.shaders.shaders.toLocaleString()})` : "First start compiles shaders (a few minutes)")
   if (s.system && !s.system.zeroCopy)
     item(false, `Your PC may get reduced performance and hitches: the game can't share memory with your GPU. Update Windows and your GPU driver (you have ${s.system.os}${s.system.driver ? ", driver " + s.system.driver : ""})`)
   if (s.dlc.length) item(true, `${s.dlc.filter((d) => d.enabled).length} of ${s.dlc.length} DLC packs on`)
-  $("launch").disabled = !s.checks.exe || !s.checks.game || s.checks.running
+  $("launch").disabled = !s.checks.exe || !s.checks.game || !s.checks.update || s.checks.running
   $("launch").textContent = s.checks.running ? "Running" : "Play"
 
   // settings page
@@ -435,6 +437,11 @@ $("display").onclick = (e) => { const b = e.target.closest("button"); if (b) cha
 for (const k of ["vsync", "skipIntro", "xboxPrompts", "hideShaderOverlay", "lowPerformance", "vertexArena", "raceMusic", "carSoundMix"]) $(k).onclick = () => change({ [k]: !state.settings[k] })
 
 // ---- actions
+
+$("tu-add").onclick = () => guarded(async () => {
+  state = await call("tu.add")
+  render()
+})
 
 $("launch").onclick = () => guarded(async () => {
   const status = $("status")

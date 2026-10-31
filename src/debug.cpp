@@ -281,6 +281,36 @@ std::string Handle(const std::string& line)
             out += (out.empty() ? "\"" : ",\"") + Escape(l) + "\"";
         return Ok("\"lines\":[" + out + "]");
     }
+    // find <hex bytes> [hex start] [hex end]: guest addresses (4-byte aligned) where those bytes are found, up to 16
+    if (cmd == "find")
+    {
+        std::string hex, s, e;
+        in >> hex >> s >> e;
+        std::string pat;
+        for (size_t i = 0; i + 1 < hex.size(); i += 2)
+            pat += char(strtoul(hex.substr(i, 2).c_str(), nullptr, 16));
+        const uint64_t from = s.empty() ? 0 : strtoull(s.c_str(), nullptr, 16), to = e.empty() ? 0xA0000000ull : strtoull(e.c_str(), nullptr, 16);
+        std::string out;
+        int found = 0;
+        for (uint64_t a = from & ~0xFFFull; a < to && found < 16 && !pat.empty();)
+        {
+            MEMORY_BASIC_INFORMATION mi{};
+            if (!VirtualQuery(g_base + a, &mi, sizeof(mi)))
+                break;
+            const uint64_t base = static_cast<uint8_t*>(mi.BaseAddress) - g_base, end = std::min<uint64_t>(base + mi.RegionSize, to);
+            if (mi.State == MEM_COMMIT && !(mi.Protect & (PAGE_NOACCESS | PAGE_GUARD)))
+                for (uint64_t p = std::max(a, base); p + pat.size() <= end && found < 16; p += 4)
+                    if (memcmp(g_base + p, pat.data(), pat.size()) == 0)
+                    {
+                        char b[16];
+                        snprintf(b, sizeof(b), "%s\"%llX\"", found ? "," : "", (unsigned long long)p);
+                        out += b;
+                        found++;
+                    }
+            a = std::max(end, a + 0x1000);
+        }
+        return Ok("\"found\":[" + out + "]");
+    }
     // peek <hex address> <bytes>   poke <hex address> <hex bytes>   (guest addresses, raw big-endian memory)
     if (cmd == "peek" || cmd == "poke")
     {

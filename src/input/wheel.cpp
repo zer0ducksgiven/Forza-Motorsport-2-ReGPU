@@ -79,8 +79,29 @@ struct Device
     uint16_t vid = 0, pid = 0;
     int axes = 0, buttons = 0, hats = 0;
     std::vector<int16_t> rest, logged; // each axis at rest (from SDL) and as last logged
-    std::vector<bool> down;
+    std::vector<bool> down, restKnown; // restKnown: the axis has reported a value, so rest is real
+    uint64_t opened = 0;
 };
+
+// SDL reports every axis as 0 until the device's first report arrives (a G29's released pedals
+// then read 32767, a second after it opens), so an open-time rest of 0 made released pedals look
+// pressed. Rest follows each axis until it reports something, or for three seconds.
+void SettleRest(Device& dev)
+{
+    for (int i = 0; i < dev.axes; i++)
+    {
+        if (dev.restKnown[i])
+            continue;
+        const int16_t v = SDL_GetJoystickAxis(dev.joystick, i);
+        dev.rest[i] = v;
+        if (v != 0 || SDL_GetTicks() - dev.opened > 3000)
+        {
+            dev.restKnown[i] = true;
+            dev.logged[i] = v;
+            Log("wheel: %s axis %d rests at %d", dev.name.c_str(), i, v);
+        }
+    }
+}
 
 // A pedal: an axis on the wheel or the pedals, pressed away from where it rests.
 struct Axis
@@ -325,7 +346,10 @@ float Value(Driver& d, const Source& s, bool centred)
 void ReadInput(Driver& d)
 {
     for (Device& dev : d.devices)
+    {
+        SettleRest(dev);
         LogMoves(dev);
+    }
     WheelInput in;
     if (d.wheel >= 0)
     {
@@ -473,6 +497,8 @@ void Added(Driver& d, SDL_JoystickID id)
         if (!SDL_GetJoystickAxisInitialState(dev.joystick, i, &dev.rest[i]))
             dev.rest[i] = SDL_GetJoystickAxis(dev.joystick, i);
     dev.logged = dev.rest;
+    dev.opened = SDL_GetTicks();
+    dev.restKnown.assign(std::max(dev.axes, 0), false);
     dev.down.assign(std::max(dev.buttons, 0), false);
     const bool haptic = SDL_IsJoystickHaptic(dev.joystick);
     std::string rests;
