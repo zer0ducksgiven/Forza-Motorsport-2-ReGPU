@@ -266,9 +266,11 @@ function drawRows() {
       const info = sourceText(src)
       const chip = el("span", "chip-b" + (isPseudo(info.guid) || devices.some((d) => sameDevice(d.guid, info.guid)) ? "" : " missing"))
       chip.append(el("span", "", info.what), el("span", "dev", deviceName(info.guid)))
-      if (t.key === "steer") {
-        const rev = el("button", "rev" + (info.reversed ? " on" : ""), "reverse")
-        rev.dataset.tip = "Turns the steering the other way, if left is right."
+      // Every wheel, pedal or stick axis: steering the other way, or a pedal that reads as fully pressed at rest.
+      if (src.split("/")[1][0] === "a" && info.guid !== "pad") {
+        const rev = el("button", "rev" + (info.reversed ? " on" : ""), "invert")
+        rev.dataset.tip = t.key === "steer" ? "Turns the steering the other way, if left is right." :
+          "Flips this axis: for a pedal that reads as fully pressed when you're not touching it."
         rev.onclick = () => { all[all.indexOf(src)] = info.reversed ? src.slice(0, -1) : src + "-"; save() }
         chip.append(rev)
       }

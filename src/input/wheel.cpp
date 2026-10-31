@@ -223,7 +223,7 @@ void LogMoves(Device& dev)
 
 // Bindings (Documents\fm2\wheel_bindings.ini, from the launcher's Bindings window): for each pad input,
 // the wheel, pedal, shifter or button box inputs that drive it, as "<SDL GUID>/<source>" joined by
-// commas. A source is an axis (a5; a0- reversed), a button (b12) or a hat direction (h0u, h0d, h0l,
+// commas. A source is an axis (a5; a0- reversed, or inverted for a pedal), a button (b12) or a hat direction (h0u, h0d, h0l,
 // h0r). Pad inputs without a binding keep the defaults (steering on the wheel's axis 0, the detected
 // pedals, the T598 or generic button layout). Read when the wheel thread starts.
 enum Target { kSteer, kThrottle, kBrake, kA, kB, kX, kY, kLB, kRB, kBack, kStart, kLS, kRS, kUp, kDown, kLeft, kRight, kTargets };
@@ -340,7 +340,9 @@ float Value(Driver& d, const Source& s, bool centred)
     const int v = SDL_GetJoystickAxis(dev->joystick, s.index);
     if (centred)
         return std::clamp(v / 32767.0f, -1.0f, 1.0f) * (s.reverse ? -1.0f : 1.0f);
-    return std::clamp(std::abs(v - dev->rest[s.index]) / 65535.0f, 0.0f, 1.0f);
+    // Reversed (the launcher's invert, for pedals that read as fully pressed at rest): pressed is the other end.
+    const float pressed = std::clamp(std::abs(v - dev->rest[s.index]) / 65535.0f, 0.0f, 1.0f);
+    return s.reverse ? 1.0f - pressed : pressed;
 }
 
 void ReadInput(Driver& d)
