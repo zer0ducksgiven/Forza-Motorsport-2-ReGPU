@@ -13,6 +13,7 @@ public static class ForzaPlus2
     static string Off => Path.Combine(Paths.User, "mods", "_" + Name);
     static string Dir => Directory.Exists(On) ? On : Off;
     static string Settings => Path.Combine(Dir, "forzaplus2.ini");
+    public static bool Enabled => Directory.Exists(On) && File.Exists(Path.Combine(On, "game", "Media", "DB", "gamedb.slt"));
     public static readonly string[] Modes = ["Normal", "Hard", "Sandbox", "Vanilla"];
 
     public static object State()

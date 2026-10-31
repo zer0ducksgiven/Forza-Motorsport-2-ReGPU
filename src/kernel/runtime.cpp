@@ -106,13 +106,15 @@ void RuntimeInit(const std::filesystem::path& gameDir)
     std::filesystem::create_directories(g_contentDir, ec);
     std::filesystem::create_directories(DlcDir(), ec);
     Log("runtime: profile %s, saves in %s", GetSettings().profile.c_str(), g_contentDir.string().c_str());
-    // No FM2 Live with cheats or Rogue Mode on: their credits, cars and levels would reach the auction house, gifts
-    // and leaderboards. The launcher says so and won't switch online on; this covers settings.ini edited by hand.
-    if (getenv("FM2_LIVE") && (CheatsOn() || RogueModeOn()))
+    // No FM2 Live with cheats, Rogue Mode or Forza Plus 2 on: their credits, cars, levels and changed car database
+    // would reach the auction house, gifts and leaderboards. The launcher says so and won't switch online on; this
+    // covers settings.ini edited by hand. Forza Plus 2 is on while its mod folder has no leading underscore.
+    const bool forzaPlus = std::filesystem::is_directory(UserDir() / "mods" / "ForzaPlus2", ec);
+    if (getenv("FM2_LIVE") && (CheatsOn() || RogueModeOn() || forzaPlus))
     {
         for (const char* name : {"FM2_LIVE", "FM2_SERVER", "FM2_TITLE_SERVER", "FM2_STATS_URL"})
             _putenv_s(name, "");
-        Log("runtime: FM2 Live off: %s", CheatsOn() ? "this profile has cheats on" : "Rogue Mode is on");
+        Log("runtime: FM2 Live off: %s", CheatsOn() ? "this profile has cheats on" : RogueModeOn() ? "Rogue Mode is on" : "Forza Plus 2 is on");
     }
     PresenterInit();
     GpuInit();

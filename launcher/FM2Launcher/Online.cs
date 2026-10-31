@@ -1,7 +1,7 @@
 namespace FM2Launcher;
 
 /// <summary>FM2 Live (Settings): online play through the FM2 Live server, settings.ini's online_server. Never with
-/// cheats on the playing profile or Rogue Mode on: their credits, cars and levels would reach the auction house,
+/// cheats on the playing profile, Rogue Mode or Forza Plus 2 on: their credits, cars and levels would reach the auction house,
 /// gifts and leaderboards. The game checks the same when it starts (src/kernel/runtime.cpp).</summary>
 static class Online
 {
@@ -13,6 +13,7 @@ static class Online
         var profile = GameSettings.Load().Profile;
         if (Cheats.Load(Profiles.FolderName(profile)).Any) return $"Off while {profile} has cheats on (Profiles tab).";
         if (CareerMod.Roguelike.IsEnabled) return "Off while Rogue Mode is on.";
+        if (ForzaPlus2.Enabled) return "Off while Forza Plus 2 is on.";
         return null;
     }
 
