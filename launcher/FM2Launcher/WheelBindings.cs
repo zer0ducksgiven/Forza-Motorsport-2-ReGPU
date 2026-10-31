@@ -44,6 +44,7 @@ public static class WheelBindings
 
     static bool Valid(string s)
     {
+        if (s == "default/d-") return true; // throttle or brake: the game's own pedal, inverted
         int slash = s.IndexOf('/');
         if (slash <= 0 || slash + 2 > s.Length) return false;
         return s[slash + 1] switch

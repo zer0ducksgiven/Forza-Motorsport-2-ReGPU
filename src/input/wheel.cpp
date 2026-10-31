@@ -224,7 +224,9 @@ void LogMoves(Device& dev)
 // Bindings (Documents\fm2\wheel_bindings.ini, from the launcher's Bindings window): for each pad input,
 // the wheel, pedal, shifter or button box inputs that drive it, as "<SDL GUID>/<source>" joined by
 // commas. A source is an axis (a5; a0- reversed, or inverted for a pedal), a button (b12) or a hat direction (h0u, h0d, h0l,
-// h0r). Pad inputs without a binding keep the defaults (steering on the wheel's axis 0, the detected
+// h0r). "default/d-" on throttle or brake is the pedal the game picks itself, inverted: the launcher's invert
+// for a pedal left on the default that reads as fully pressed at rest (a G29 whose rest was taken wrong).
+// Pad inputs without a binding keep the defaults (steering on the wheel's axis 0, the detected
 // pedals, the T598 or generic button layout). Read when the wheel thread starts.
 enum Target { kSteer, kThrottle, kBrake, kA, kB, kX, kY, kLB, kRB, kBack, kStart, kLS, kRS, kUp, kDown, kLeft, kRight, kTargets };
 constexpr const char* kTargetNames[kTargets] = { "steer", "throttle", "brake", "a", "b", "x", "y", "lb", "rb", "back", "start", "ls", "rs",
@@ -236,7 +238,7 @@ constexpr uint16_t kTargetButtons[kTargets] = { 0, 0, 0, XINPUT_GAMEPAD_A, XINPU
 struct Source
 {
     std::string guid;
-    char kind = 0; // 'a' axis, 'b' button, 'h' hat
+    char kind = 0; // 'a' axis, 'b' button, 'h' hat, 'd' the default pedal (inverted)
     int index = 0;
     bool reverse = false;
     uint8_t hat = 0; // SDL_HAT_* for a hat
@@ -282,7 +284,14 @@ void LoadBindings()
                 continue;
             src.kind = item[slash + 1];
             src.index = atoi(item.c_str() + slash + 2);
-            if (src.kind == 'a')
+            if (src.kind == 'd')
+            {
+                if (t != kThrottle && t != kBrake)
+                    continue;
+                src.index = t;
+                src.reverse = true;
+            }
+            else if (src.kind == 'a')
                 src.reverse = item.back() == '-';
             else if (src.kind == 'h')
             {
@@ -328,6 +337,12 @@ const Device* DeviceOf(Driver& d, const std::string& guid)
 // a button or hat direction 0 or 1.
 float Value(Driver& d, const Source& s, bool centred)
 {
+    if (s.kind == 'd')
+    {
+        Axis gas, brake;
+        PedalAxes(d, gas, brake);
+        return 1.0f - Pedal(d, s.index == kThrottle ? gas : brake) / 255.0f;
+    }
     const Device* dev = DeviceOf(d, s.guid);
     if (!dev)
         return 0;

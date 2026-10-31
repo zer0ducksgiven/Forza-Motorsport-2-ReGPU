@@ -40,7 +40,9 @@ const PAD_BUTTONS = ["A", "B", "X", "Y", "LB", "RB", "LT", "RT", "Back", "Start"
   "D-pad up", "D-pad down", "D-pad left", "D-pad right"]
 const PAD_AXES = ["Left stick X", "Left stick Y", "Right stick X", "Right stick Y"]
 const MOUSE = { 0: 1, 2: 2, 1: 4, 3: 5, 4: 6 } // event.button to its virtual key
-const isPseudo = (guid) => guid === "keyboard" || guid === "pad"
+const isPseudo = (guid) => guid === "keyboard" || guid === "pad" || guid === "default"
+// The game's own pedal for throttle or brake, inverted (the game reads it, src/input/wheel.cpp).
+const DEFAULT_INVERTED = "default/d-"
 // The same device, the name's CRC in its SDL GUID (hex digits 4-7) aside: launchers before 0.9.8 named some
 // wheels differently from the game, so bindings saved then carry another CRC (report #21).
 const sameDevice = (a, b) => a === b || (a.length === 32 && b.length === 32 && a.slice(0, 4) === b.slice(0, 4) && a.slice(8) === b.slice(8))
@@ -138,6 +140,7 @@ function hideTip() {
 // ---- devices
 
 function deviceName(guid) {
+  if (guid === "default") return "Inverted"
   if (guid === "keyboard") return KEYBOARD.name
   if (guid === "pad") return PAD.name
   const d = devices.find((x) => sameDevice(x.guid, guid))
@@ -229,7 +232,8 @@ function sourceText(src) {
   const [guid, s] = src.split("/")
   const kind = s[0], rest = s.slice(1)
   let what
-  if (kind === "k") what = keyName(parseInt(rest))
+  if (kind === "d") what = "Game's pedal"
+  else if (kind === "k") what = keyName(parseInt(rest))
   else if (guid === "pad") what = kind === "a" ? PAD_AXES[parseInt(rest)] || "Axis " + parseInt(rest) : PAD_BUTTONS[parseInt(rest)] || "Button " + rest
   else if (kind === "a") what = "Axis " + parseInt(rest)
   else if (kind === "b") what = "Button " + rest
@@ -292,6 +296,18 @@ function drawRows() {
     clear.disabled = !list.length
     clear.onclick = () => { bindings[t.key] = []; save() }
     acts.append(bind, add, clear)
+    // Throttle and brake on the game's pedal (no axis of their own): invert that pedal, for one that reads as
+    // fully pressed when untouched. A bound pedal has its own invert on its chip.
+    if ((t.key === "throttle" || t.key === "brake") && !list.some((s) => s.split("/")[1][0] === "a" && !s.startsWith("pad/"))) {
+      const on = list.includes(DEFAULT_INVERTED)
+      const inv = el("button", "ghost small" + (on ? " on" : ""), on ? "Inverted" : "Invert")
+      inv.dataset.tip = "Flips the pedal the game picked: for one that reads as fully pressed when you're not touching it."
+      inv.onclick = () => {
+        bindings[t.key] = on ? all.filter((s) => s !== DEFAULT_INVERTED) : [...all, DEFAULT_INVERTED]
+        save()
+      }
+      acts.prepend(inv)
+    }
     row.append(label, chips, acts)
     root.append(row)
   }
@@ -336,6 +352,8 @@ function bind(src) {
     for (const k of Object.keys(bindings)) if (k !== listen.key) bindings[k] = bindings[k].filter((x) => x !== src)
   const list = bindings[listen.key] = listen.add ? bindings[listen.key] || [] : []
   if (!list.includes(src)) list.push(src)
+  // A pedal of its own replaces the inverted game pedal (its chip has its own invert).
+  if (src.split("/")[1][0] === "a" && list.includes(DEFAULT_INVERTED)) list.splice(list.indexOf(DEFAULT_INVERTED), 1)
   listen = null
   save()
 }
