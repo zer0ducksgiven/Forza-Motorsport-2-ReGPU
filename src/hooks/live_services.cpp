@@ -10,9 +10,11 @@
 
 #include <windows.h>
 
+#include "kernel/friends.h"
 #include "kernel/imports.h"
 #include "kernel/runtime.h"
 #include "kernel/thread.h"
+#include "memory.h"
 
 #if FM2_TITLE_UPDATE
 // Title update addresses, pasted together so tools/xexremap.py leaves them be (functions the disc doesn't have)
@@ -50,6 +52,62 @@ PPC_FUNC(TU_SUB(82302CE0))
     ctx.r3.u64 = ctx.r4.u64; // the Lua value to set
     ctx.r4.u64 = 0;
     __imp__sub_822A0028(ctx, base);
+}
+
+// The friends list (Lobby.activePlayer:HasFriends / GetFriendsList, which Gift a Car sends to) is our own list
+// (kernel/friends.cpp), not Xbox Live's. The player's friends object keeps it as a std::list at +76 built from
+// XONLINE_FRIENDs (196 bytes) at +68 by sub_82503448(this, count) when its enumeration completes; +64 is
+// "ready". The parser is handed our friends instead, and the getter sub_825037C8(this, list*, wait) has it
+// rebuilt when they change.
+PPC_FUNC_IMPL(TU_IMP(8226EB08));
+PPC_FUNC_IMPL(TU_IMP(82503448));
+PPC_FUNC(TU_SUB(82503448))
+{
+    if (!getenv("FM2_LIVE"))
+    {
+        TU_IMP(82503448)(ctx, base);
+        return;
+    }
+    constexpr uint32_t kRecord = 196, kMax = 100;
+    static const uint32_t buffer = GuestAlloc(Heap::Virtual, kRecord * kMax);
+    const std::vector<LiveFriend> friends = FriendsList();
+    const uint32_t count = std::min<uint32_t>(uint32_t(friends.size()), kMax);
+    memset(base + buffer, 0, kRecord * kMax);
+    for (uint32_t i = 0; i < count; i++)
+    {
+        uint8_t* r = base + buffer + i * kRecord;
+        for (int b = 0; b < 8; b++)
+            r[b] = uint8_t(friends[i].xuid >> (56 - 8 * b));
+        strncpy(reinterpret_cast<char*>(r + 8), friends[i].name.c_str(), 15); // szGamertag[16]
+    }
+    const uint32_t self = ctx.r3.u32;
+    uint32_t& records = *reinterpret_cast<uint32_t*>(base + self + 68);
+    const uint32_t theirs = records; // the game's own buffer (it frees it), put back after
+    PPCContext call = ctx;
+    call.r3.u64 = self + 76;
+    TU_IMP(8226EB08)(call, base); // empty the list
+    records = __builtin_bswap32(buffer);
+    ctx.r4.u64 = count;
+    TU_IMP(82503448)(ctx, base);
+    records = theirs;
+    Log("live: friends list: %u", count);
+}
+
+PPC_FUNC_IMPL(TU_IMP(825037C8));
+PPC_FUNC(TU_SUB(825037C8))
+{
+    if (getenv("FM2_LIVE") && base[ctx.r3.u32 + 49] == 0)
+    {
+        static uint32_t seen = 0, object = 0;
+        if (seen != FriendsVersion() || object != ctx.r3.u32)
+        {
+            seen = FriendsVersion(), object = ctx.r3.u32;
+            PPCContext call = ctx;
+            call.r4.u64 = 0;
+            TU_SUB(82503448)(call, base);
+        }
+    }
+    TU_IMP(825037C8)(ctx, base);
 }
 #endif
 

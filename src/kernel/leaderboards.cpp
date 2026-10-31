@@ -151,6 +151,8 @@ std::vector<View> Parse(const std::string& text)
 }
 }
 
+std::string LiveServerPost(const wchar_t* path, const std::string& body) { return Post(path, body); }
+
 std::vector<LeaderboardSpec> LeaderboardSpecs(uint32_t specPtr, uint32_t count)
 {
     std::vector<LeaderboardSpec> specs;

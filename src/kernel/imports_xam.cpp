@@ -16,6 +16,7 @@
 std::atomic<int64_t> g_inputEpochNs{ 0 };
 
 #include "gpu/renderer.h"
+#include "kernel/friends.h"
 #include "kernel/leaderboards.h"
 #include "input/wheel.h"
 #include "kernel/sessions.h"
@@ -488,7 +489,13 @@ GUEST_EXPORT(XamShowSigninUI)
         }
     Return(ctx, X_ERROR_SUCCESS);
 }
-GUEST_EXPORT(XamShowFriendsUI) { Return(ctx, X_ERROR_SUCCESS); }
+// Under FM2_LIVE, adding a friend by profile name (kernel/friends.cpp): Gift a Car's "add a friend now?"
+GUEST_EXPORT(XamShowFriendsUI)
+{
+    if (LiveTrace())
+        FriendsAddFromUi();
+    Return(ctx, X_ERROR_SUCCESS);
+}
 GUEST_EXPORT(XamShowGamerCardUIForXUID) { Return(ctx, X_ERROR_SUCCESS); }
 GUEST_EXPORT(XamShowDirtyDiscErrorUI)
 {

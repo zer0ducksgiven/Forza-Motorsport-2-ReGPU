@@ -9,6 +9,7 @@
 //                     ids on one line, then (xuids) the XUIDs on one line. Answers per view "view <id> <total>",
 //                     then "row <xuid> <rank> <rating> <car> <assists> <datetime> <time> <mode> <pi> <gamertag>"
 //                     ("-" for a column never written).
+// POST /players/find  a gamertag (profile name; any case) -> "player <xuid hex> <gamertag>", or "none"
 
 import { xtsSocket } from "./xts.js";
 export { LiveRoom } from "./live_room.js";
@@ -29,6 +30,7 @@ export default {
     try {
       if (url.pathname === "/stats/write") return text(await write(env.DB, body));
       if (url.pathname === "/stats/read") return text(await read(env.DB, body));
+      if (url.pathname === "/players/find") return text(await find(env.DB, body.trim().slice(0, 15)));
     } catch (e) {
       return text(`error ${e.message}\n`, 400);
     }
@@ -76,6 +78,11 @@ async function write(db, body) {
   }
   if (statements.length) await db.batch(statements);
   return `ok ${statements.length}\n`;
+}
+
+async function find(db, name) {
+  const p = name && (await db.prepare("SELECT xuid, tag FROM players WHERE tag = ?1 COLLATE NOCASE ORDER BY seen DESC").bind(name).first());
+  return p ? `player ${p.xuid} ${p.tag}\n` : "none\n";
 }
 
 const ROW = `SELECT xuid, name, CAST(rating AS TEXT) AS rating, ${COLUMNS.map((c) => `CAST(${c} AS TEXT) AS ${c}`).join(", ")},

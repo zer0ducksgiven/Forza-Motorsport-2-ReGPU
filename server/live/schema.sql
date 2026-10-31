@@ -45,3 +45,8 @@ CREATE TABLE IF NOT EXISTS gifts (
     created INTEGER NOT NULL, retrieved INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS gifts_recipient ON gifts (recipient_xuid, retrieved);
+
+-- Players by gamertag (profile name), from their title services sign-in: Gift a Car's "add a friend" looks
+-- names up here (POST /players/find).
+CREATE TABLE IF NOT EXISTS players (xuid TEXT PRIMARY KEY, tag TEXT NOT NULL, seen INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS players_tag ON players (tag COLLATE NOCASE);
