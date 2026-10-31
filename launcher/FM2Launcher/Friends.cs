@@ -13,7 +13,7 @@ static class Friends
     public static string Server()
     {
         if (Online.Blocked() is not null) return "";
-        var server = GameSettings.Value("online_server").Trim().TrimEnd('/');
+        var server = Online.Server.TrimEnd('/');
         if (server.Length > 0 && !server.Contains("://")) server = "https://" + server;
         return server;
     }

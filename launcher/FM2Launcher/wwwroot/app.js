@@ -795,5 +795,7 @@ async function sharingNotice() {
   if (!stay) document.querySelector("[data-tab=report]").click()
 }
 
-refresh().then(() => guarded(sharingNotice)).then(() => checkUpdates(true))
+refresh().then(() => guarded(sharingNotice)).then(() => checkUpdates(true)).then(() => {
+  if (update && update.available) toast(`Version ${update.latest} is available: install it from the Updates tab.`, true)
+})
 setInterval(() => { if (!document.hidden && $("confirm").hidden && !["SELECT", "INPUT"].includes(document.activeElement.tagName)) refresh() }, 5000)

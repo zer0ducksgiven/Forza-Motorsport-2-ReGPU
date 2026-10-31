@@ -54,7 +54,7 @@ void Load()
         if (key == "profile" && !value.empty())
             g_settings.profile = value.substr(0, 15);
         else if (key == "online_server")
-            g_settings.onlineServer = value;
+            g_settings.onlineServer = value == "off" ? "" : value;
         else if (key == "resolution")
             sscanf(value.c_str(), "%ux%u", &g_settings.width, &g_settings.height);
         else if (key == "aspect")
@@ -253,8 +253,7 @@ void SaveSettings()
     std::ofstream out(Path());
     out << "# Forza Motorsport 2 (fm2) settings; the launcher edits this file.\n";
     out << "profile=" << s.profile << "\n";
-    if (!s.onlineServer.empty())
-        out << "online_server=" << s.onlineServer << "\n";
+    out << "online_server=" << (s.onlineServer.empty() ? "off" : s.onlineServer) << "\n";
     out << "resolution=" << s.width << "x" << s.height << "\n";
     out << "aspect=" << (s.aspectW ? std::to_string(s.aspectW) + ":" + std::to_string(s.aspectH) : std::string("auto")) << "\n";
     out << "fullscreen=" << (s.fullscreen ? 1 : 0) << "\n";

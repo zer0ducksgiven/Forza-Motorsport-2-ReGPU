@@ -16,12 +16,16 @@ static class Online
         return null;
     }
 
-    public static bool Enabled => GameSettings.Value("online_server").Trim().Length > 0;
+    /// <summary>The server, or "" when off. On by default: no online_server line means the default server;
+    /// "off" (written when the player switches it off) keeps it off.</summary>
+    public static string Server => GameSettings.Value("online_server").Trim() switch { "" => DefaultServer, "off" => "", var s => s };
+
+    public static bool Enabled => Server.Length > 0;
 
     public static void SetEnabled(bool on)
     {
         if (on && Blocked() is { } why) throw new InvalidOperationException(why);
-        GameSettings.SetValue("online_server", on ? DefaultServer : "");
+        GameSettings.SetValue("online_server", on ? DefaultServer : "off");
     }
 
     public static object State() => new { enabled = Enabled, blocked = Blocked() };
