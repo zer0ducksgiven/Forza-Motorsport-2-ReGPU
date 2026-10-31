@@ -7,7 +7,7 @@ compatibility_date = "2025-06-01"
 [[d1_databases]]
 binding = "DB"
 database_name = "fm2-live"
-database_id = "local"
+database_id = "4b54189d-a8af-49d4-a1c0-385ed61f6419"
 
 # FM2 Live sessions (src/live_room.js): one Durable Object holds the players' WebSockets. SQLite-backed, which the
 # free plan allows.
