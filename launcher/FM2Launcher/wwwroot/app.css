@@ -246,6 +246,7 @@ textarea { resize: vertical; min-height: 120px; }
 .item.pick.on { border-color: var(--accent); }
 .badge-on { font-size: 10.5px; font-weight: 600; color: var(--ok); border: 1px solid #1f5a39; border-radius: 99px; padding: 0 6px; margin-left: 6px; vertical-align: 1px; }
 .panel-head .badge-on { margin-left: 0; }
+.badge-live { font-size: 10.5px; font-weight: 600; color: #5aa8ff; border: 1px solid #1f3f66; border-radius: 99px; padding: 0 6px; margin-left: 6px; vertical-align: 1px; }
 .panel-head.sub { margin-top: 14px; }
 /* A page whose panels are as tall as their content (no scroll box in each): the page scrolls if it must. */
 .page.flow { overflow-y: auto; align-items: start; }

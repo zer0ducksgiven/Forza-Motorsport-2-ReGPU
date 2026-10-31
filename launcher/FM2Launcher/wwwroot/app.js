@@ -623,6 +623,8 @@ function renderProfiles() {
     const main = el("div", "main")
     const title = el("div", "title", p.name)
     if (p.active) title.append(el("span", "badge-on", "Playing"))
+    // Signed in to FM2 Live when it starts: online on, and not blocked (cheats or Rogue Mode on this profile).
+    if (p.active && state.online && state.online.enabled && !state.online.blocked) title.append(el("span", "badge-live", "FM2 Live"))
     main.append(title, el("div", "meta", `${p.photos} photo${p.photos === 1 ? "" : "s"} · ${size(p.bytes)} · ${p.lastPlayed ? new Date(p.lastPlayed).toLocaleDateString() : "never played"}`))
     it.append(main)
     it.onclick = () => {
