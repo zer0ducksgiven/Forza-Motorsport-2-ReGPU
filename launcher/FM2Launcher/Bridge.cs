@@ -144,6 +144,17 @@ public sealed class Bridge
                     return null;
                 }
             case "profiles.list": return ProfilesState();
+            // the top bar's friends list (Friends.cs); the server calls run off the window's thread
+            case "friends.list": return await Task.Run(Friends.State);
+            case "friends.add":
+                {
+                    var name = Str(a, "name");
+                    await Task.Run(() => Friends.Add(name));
+                    return await Task.Run(Friends.State);
+                }
+            case "friends.remove":
+                Friends.Remove(Str(a, "name"));
+                return await Task.Run(Friends.State);
             case "profiles.use":
                 Profiles.SetActive(Str(a, "name"));
                 return ProfilesState();

@@ -59,7 +59,14 @@ std::vector<LiveFriend> FriendsList()
     return Load();
 }
 
-uint32_t FriendsVersion() { return g_version.load(); }
+// The file's time is in it too: the launcher's friends list adds to the file while the game runs
+uint32_t FriendsVersion()
+{
+    std::error_code ec;
+    const auto written = std::filesystem::last_write_time(FriendsPath(), ec);
+    const uint32_t stamp = ec ? 0 : uint32_t(written.time_since_epoch().count() / 10000000);
+    return g_version.load() * 2654435761u + stamp;
+}
 
 void FriendsAddFromUi()
 {

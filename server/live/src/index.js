@@ -11,6 +11,7 @@
 //                     ("-" for a column never written).
 // POST /players/find  a gamertag (profile name; any case) -> "player <xuid hex> <seen ms> <gamertag>", or "none"
 // POST /players/check "<gamertag>" then "<xuid hex>" -> "free", "yours" or "taken" (names are one player's)
+// POST /players/online XUIDs, one a line -> the ones signed in to FM2 Live now, one a line
 
 import { checkName, findName } from "./names.js";
 import { xtsSocket } from "./xts.js";
@@ -28,6 +29,8 @@ export default {
     if (url.pathname === "/live") // sessions: one Durable Object for everyone
       return env.LIVE.get(env.LIVE.idFromName("live")).fetch(request);
     if (request.method !== "POST") return text("FM2 Live\n");
+    if (url.pathname === "/players/online") // the live room knows who's connected
+      return env.LIVE.get(env.LIVE.idFromName("live")).fetch(new Request("https://live/online", { method: "POST", body: request.body }));
     const body = (await request.text()).slice(0, 64 * 1024);
     try {
       if (url.pathname === "/stats/write") return text(await write(env.DB, body));

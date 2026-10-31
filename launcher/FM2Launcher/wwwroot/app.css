@@ -38,7 +38,34 @@ button:disabled { opacity: .45; cursor: default; }
 .top { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; padding: 12px 22px 4px; gap: 16px; }
 .brand { display: flex; align-items: center; gap: 12px; cursor: pointer; justify-self: start; }
 .brand:hover .logo { color: #fff; text-decoration: underline; text-decoration-color: var(--accent); text-underline-offset: 4px; }
-.discord { justify-self: end; border-color: #5865f2; color: #c9ceff; }
+.top-right { justify-self: end; display: flex; align-items: center; gap: 8px; }
+.discord { border-color: #5865f2; color: #c9ceff; }
+/* friends list (top bar) */
+.friends-wrap { position: relative; }
+.friends-btn { display: flex; align-items: center; gap: 5px; padding: 4px 9px; color: var(--muted); }
+.friends-btn:hover, .friends-btn[aria-expanded="true"] { color: var(--text); }
+.friends-count { font-size: 12px; font-weight: 600; color: var(--ok); }
+.friends-pop { position: absolute; right: 0; top: calc(100% + 6px); width: 250px; z-index: 50; background: var(--panel);
+  border: 1px solid var(--line); border-radius: var(--radius); box-shadow: 0 10px 30px #0009; padding: 10px; }
+.friends-head { display: flex; justify-content: space-between; align-items: baseline; font-weight: 600; margin-bottom: 6px; }
+.friends-profile { color: var(--muted); font-size: 12px; font-weight: 400; }
+.friends-list { max-height: 260px; overflow-y: auto; margin: 0 -4px; }
+.friend { display: flex; align-items: center; gap: 8px; padding: 5px 4px; border-radius: 6px; }
+.friend:hover { background: var(--panel-2); }
+.friend .dot { width: 8px; height: 8px; border-radius: 50%; background: #4a505c; flex: none; }
+.friend.on .dot { background: var(--ok); }
+.friend .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.friend .state { color: var(--muted); font-size: 12px; }
+.friend.on .state { color: var(--ok); }
+.friend .remove { background: none; color: var(--muted); padding: 0 4px; visibility: hidden; font-size: 15px; line-height: 1; }
+.friend:hover .remove { visibility: visible; }
+.friend .remove:hover { color: #ffb0ad; }
+.friends-empty { color: var(--muted); font-size: 12.5px; padding: 6px 4px; }
+.friends-add { display: flex; gap: 6px; margin-top: 8px; }
+.friends-add input { flex: 1; min-width: 0; padding: 5px 8px; font-size: 12.5px; }
+.friends-note { color: var(--muted); font-size: 12px; margin-top: 6px; min-height: 0; }
+.friends-note:empty { display: none; }
+.friends-note.bad { color: #ffb0ad; }
 .discord:hover:not(:disabled) { background: #5865f2; border-color: #5865f2; color: #fff; }
 .mark { width: 38px; height: 38px; border-radius: 8px; }
 .logo { font: 800 17px/1.1 "Segoe UI Black", "Segoe UI", sans-serif; letter-spacing: 1.2px; white-space: nowrap; }

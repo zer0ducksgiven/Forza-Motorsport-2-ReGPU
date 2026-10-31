@@ -23,7 +23,24 @@
       <button data-tab="report">Report</button>
       <button data-tab="updates">Updates <span class="dot-badge" id="update-badge" hidden></span></button>
     </nav>
-    <button class="ghost small discord" id="discord" data-tip="Join the FM2 ReGPU Discord server.">Discord</button>
+    <div class="top-right">
+      <div class="friends-wrap">
+        <button class="ghost small friends-btn" id="friends-btn" aria-label="Friends" aria-expanded="false">
+          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><circle cx="9" cy="8" r="3.4" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M2.8 19.5c.6-3.3 3.1-5.3 6.2-5.3s5.6 2 6.2 5.3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle cx="16.6" cy="9" r="2.6" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M17.2 14.3c2.3.3 3.8 1.9 4.2 4.4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+          <span class="friends-count" id="friends-count" hidden></span>
+        </button>
+        <div class="friends-pop" id="friends-pop" hidden>
+          <div class="friends-head"><span>Friends</span><span class="friends-profile" id="friends-profile"></span></div>
+          <div class="friends-list" id="friends-list"></div>
+          <form class="friends-add" id="friends-add">
+            <input id="friends-name" maxlength="15" placeholder="Add by profile name" autocomplete="off" spellcheck="false">
+            <button class="ghost small" type="submit">Add</button>
+          </form>
+          <div class="friends-note" id="friends-note"></div>
+        </div>
+      </div>
+      <button class="ghost small discord" id="discord" data-tip="Join the FM2 ReGPU Discord server.">Discord</button>
+    </div>
     <div class="chips" id="chips"></div>
   </header>
 
@@ -257,7 +274,7 @@
 
     <div class="stack">
       <section class="panel whole">
-      <div class="panel-head"><h2>Rogue Mode <span class="badge">beta</span></h2></div>
+      <div class="panel-head"><h2>Rogue Mode <span class="badge">test</span></h2></div>
       <p class="hint">Career as a run: start with a random Class D car, win races for parts and the odd car, and every podium raises the run's level and its races' difficulty. Two finishes of 4th or worse in a row in one car lose that car; lose your last and the run starts again. No prize money: selling cars is the only income.</p>
       <p class="hint note">Start it on a new profile (Profiles tab): Career turns away a profile that already has one. It replaces Random Events while it's on.</p>
       <div class="list" id="rogue"></div>

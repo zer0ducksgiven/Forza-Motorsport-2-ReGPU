@@ -475,6 +475,60 @@ $("pfp-install").onclick = () => guarded(async () => {
   }
 })
 $("discord").onclick = () => guarded(() => call("discord"))
+
+// ---- friends list (top bar): the playing profile's friends and who's on FM2 Live now (Friends.cs). The same
+// list Gift a Car sends to in the game.
+
+let friendsTimer = 0
+function renderFriends(st, note, bad) {
+  const on = st.friends.filter((f) => f.online).length
+  $("friends-count").hidden = on === 0
+  $("friends-count").textContent = on
+  $("friends-profile").textContent = st.profile
+  const list = $("friends-list")
+  list.replaceChildren()
+  if (!st.friends.length)
+    list.append(el("div", "friends-empty", st.server ? "No friends yet. Add one by their profile name." : "Online play is off."))
+  for (const f of st.friends) {
+    const row = el("div", "friend" + (f.online ? " on" : ""))
+    const x = el("button", "remove", "×")
+    x.setAttribute("aria-label", `Remove ${f.name}`)
+    x.onclick = () => friendsCall("friends.remove", { name: f.name })
+    row.append(el("span", "dot"), el("span", "name", f.name), el("span", "state", f.online ? "Online" : "Offline"), x)
+    list.append(row)
+  }
+  $("friends-add").hidden = !st.server
+  const n = $("friends-note")
+  n.textContent = note || (st.server && !st.reachable && st.friends.length ? "Can't reach FM2 Live: everyone shows offline." : "")
+  n.classList.toggle("bad", !!bad)
+}
+async function friendsCall(cmd, args, note) {
+  try { renderFriends(await call(cmd, args), note) }
+  catch (e) { try { renderFriends(await call("friends.list"), e.message, true) } catch { } }
+}
+function friendsOpen(open) {
+  $("friends-pop").hidden = !open
+  $("friends-btn").setAttribute("aria-expanded", open)
+  clearInterval(friendsTimer)
+  if (open) {
+    friendsCall("friends.list")
+    friendsTimer = setInterval(() => friendsCall("friends.list"), 20000)
+    $("friends-name").focus()
+  }
+}
+$("friends-btn").onclick = () => friendsOpen($("friends-pop").hidden)
+document.addEventListener("mousedown", (e) => { if (!$("friends-pop").hidden && !e.target.closest(".friends-wrap")) friendsOpen(false) })
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("friends-pop").hidden) friendsOpen(false) })
+$("friends-add").onsubmit = async (e) => {
+  e.preventDefault()
+  const name = $("friends-name").value.trim()
+  if (!name) return
+  await friendsCall("friends.add", { name }, `${name} added.`)
+  if (!$("friends-note").classList.contains("bad")) $("friends-name").value = ""
+}
+// the online count on the icon, kept roughly current while the launcher is open
+call("friends.list").then((st) => renderFriends(st)).catch(() => {})
+setInterval(() => { if ($("friends-pop").hidden) call("friends.list").then((st) => renderFriends(st)).catch(() => {}) }, 60000)
 for (const b of document.querySelectorAll("[data-open]")) b.onclick = () => guarded(() => call("open", b.dataset.open))
 // The Controls tab changes the force feedback settings: pick them up when coming back here.
 // Not while a dropdown is open or a change is still being saved: on Linux closing a dropdown's pop-up focuses the

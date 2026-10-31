@@ -27,6 +27,12 @@ export class LiveRoom {
   }
 
   async fetch(request) {
+    // POST /online: of the XUIDs sent (one a line), the ones signed in now (the launcher's friends list)
+    if (request.method === "POST" && new URL(request.url).pathname === "/online") {
+      const wanted = new Set((await request.text()).slice(0, 8192).split("\n").map((l) => l.trim().toUpperCase()));
+      const on = new Set(this.players().map((p) => p.a.xuid.toUpperCase()).filter((x) => wanted.has(x)));
+      return new Response([...on].map((x) => x + "\n").join(""));
+    }
     if (request.headers.get("Upgrade") !== "websocket")
       return new Response("FM2 Live\n");
     const [client, server] = Object.values(new WebSocketPair());
@@ -186,10 +192,16 @@ export class LiveRoom {
       this.send(ws, ERROR, errorBody(2, `server speaks protocol ${VERSION}, client ${version}`));
       return;
     }
-    // the name is one player's (src/names.js)
-    if (this.db && name && !(await claimName(this.db, xuid, name).catch(() => true))) {
-      this.send(ws, ERROR, errorBody(3, `The name ${name} is already taken on FM2 Live`));
-      return;
+    // the name is one player's (src/names.js). HELLO is the keepalive too (every 5 seconds), so the name is
+    // claimed when the connection or the name is new and then hourly, not on every one.
+    const claim = `${xuid}:${name.toLowerCase()}`;
+    if (this.db && name && (me.claim !== claim || Date.now() - (me.claimedAt || 0) > 3600 * 1000)) {
+      if (!(await claimName(this.db, xuid, name).catch(() => true))) {
+        this.send(ws, ERROR, errorBody(3, `The name ${name} is already taken on FM2 Live`));
+        return;
+      }
+      me.claim = claim;
+      me.claimedAt = Date.now();
     }
     if (!me.id || me.token !== token) {
       const used = new Set(this.players().map((p) => p.a.id));
