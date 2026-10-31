@@ -34,8 +34,11 @@ def token(name):
     if os.environ.get(env):  # scripts and testing against wrangler dev
         return os.environ[env]
     try:
-        with open(os.path.join(DIR, name), encoding='utf-8') as f:
-            return f.read().strip()
+        with open(os.path.join(DIR, name), 'rb') as f:
+            raw = f.read()
+        # PowerShell's > writes UTF-16 with a byte order mark
+        text = raw.decode('utf-16') if raw[:2] in (b'\xff\xfe', b'\xfe\xff') else raw.decode('utf-8-sig', 'replace')
+        return text.strip()
     except OSError:
         return ''
 
