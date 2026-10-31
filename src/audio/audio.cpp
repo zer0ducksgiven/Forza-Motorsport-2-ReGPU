@@ -76,12 +76,15 @@ struct Output : IXAudio2VoiceCallback
             Log("audio: could not create the output voice; sound is discarded");
             return;
         }
-        // A stereo device: XAudio2's own 5.1 downmix keeps the fronts at full level, but Wine's (FAudio) scales
-        // every channel to about a third, so the game was far quieter than other apps and the stereo music
-        // voice (GitHub #20). Give the voice the Windows mix so both sound the same.
+        // Wine / Proton on a stereo device: Windows' XAudio2 downmixes 5.1 with the fronts at full level, but
+        // Wine's (FAudio) scales every channel to about a third, so the game was far quieter than other apps
+        // and the stereo music voice (GitHub #20). There, give the voice the Windows mix. Windows is left as is.
+        const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+        const bool wine = ntdll && GetProcAddress(ntdll, "wine_get_version");
         XAUDIO2_VOICE_DETAILS md{};
         master->GetVoiceDetails(&md);
-        if (md.InputChannels == 2)
+        const bool remix = wine && md.InputChannels == 2;
+        if (remix)
         {
             const float h = 0.7071f;
             // Rows L, R; columns FL FR C LFE BL BR.
@@ -89,7 +92,7 @@ struct Output : IXAudio2VoiceCallback
             voice->SetOutputMatrix(nullptr, kChannels, 2, m);
         }
         ok = true;
-        Log("audio: output 5.1 float at %u Hz%s", kRate, md.InputChannels == 2 ? ", mixed to stereo" : "");
+        Log("audio: output 5.1 float at %u Hz%s", kRate, remix ? ", mixed to stereo (Wine)" : "");
     }
 
     // One title frame: planar big-endian floats to interleaved host floats.
