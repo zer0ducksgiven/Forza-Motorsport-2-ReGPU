@@ -9,7 +9,9 @@ namespace FM2Launcher;
 /// Without it the game copies vertex data every frame: slower, the reason behind most "lower fps" reports.</summary>
 internal static class SystemCheck
 {
-    public sealed record Result(bool ZeroCopy, string Os, string Gpu, string Driver);
+    // Integrated: the GPU shares the system's memory (an iGPU or APU, the Steam Deck): first-run settings render
+    // below the output and upscale (GameSettings.Load).
+    public sealed record Result(bool ZeroCopy, string Os, string Gpu, string Driver, bool Integrated = false);
 
     static readonly Lazy<Result> result = new(Probe);
     public static Result Get() => result.Value;
@@ -63,18 +65,47 @@ internal static class SystemCheck
                 }
             }
             catch { }
-        return new Result(zeroCopy, os, gpu, driver);
+        // An Intel GPU (i915 / xe), or an amdgpu card with 1 GB or less of its own memory (APUs report their
+        // carve-out there: the Steam Deck 1 GB).
+        bool integrated = driver.StartsWith("i915") || driver.StartsWith("xe");
+        try
+        {
+            foreach (var dir in Directory.GetDirectories("/sys/class/drm", "card?"))
+            {
+                var vram = Path.Combine(dir, "device", "mem_info_vram_total");
+                if (File.Exists(vram) && long.TryParse(File.ReadAllText(vram).Trim(), out var bytes) && bytes > 0)
+                {
+                    integrated = bytes <= (1L << 30);
+                    break;
+                }
+            }
+        }
+        catch { }
+        return new Result(zeroCopy, os, gpu, driver, integrated);
+    }
+
+    // ID3D12Device::CheckFeatureSupport (vtable slot 13) with D3D12_FEATURE_ARCHITECTURE: UMA is set for a GPU
+    // that shares the system's memory.
+    [StructLayout(LayoutKind.Sequential)]
+    struct FeatureArchitecture { public uint NodeIndex; public int TileBasedRenderer, Uma, CacheCoherentUma; }
+
+    static unsafe bool IsUma(IntPtr device)
+    {
+        var check = (delegate* unmanaged[Stdcall]<IntPtr, int, void*, uint, int>)(*(IntPtr**)device)[13];
+        var data = new FeatureArchitecture();
+        return check(device, 1 /* D3D12_FEATURE_ARCHITECTURE */, &data, (uint)sizeof(FeatureArchitecture)) >= 0 && data.Uma != 0;
     }
 
     [System.Runtime.Versioning.SupportedOSPlatform("windows")]
     static Result ProbeWindows()
     {
-        bool zeroCopy = false;
+        bool zeroCopy = false, integrated = false;
         try
         {
             var iid = IID_ID3D12Device;
             if (D3D12CreateDevice(IntPtr.Zero, D3D_FEATURE_LEVEL_12_0, ref iid, out var device) >= 0 && device != IntPtr.Zero)
             {
+                integrated = IsUma(device); // the default adapter, the one the game uses
                 foreach (var id in new[] { IID_ID3D12Device13, IID_ID3D12Device3 })
                 {
                     var iid13 = id;
@@ -127,6 +158,6 @@ internal static class SystemCheck
             }
         }
         catch { }
-        return new Result(zeroCopy, os, gpu, driver);
+        return new Result(zeroCopy, os, gpu, driver, integrated);
     }
 }

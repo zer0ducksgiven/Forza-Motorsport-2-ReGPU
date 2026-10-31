@@ -121,6 +121,14 @@ public sealed class GameSettings
             }
         if (old)
             s.HideShaderOverlay = true;
+        // First run on an integrated GPU (an iGPU or APU, the Steam Deck): render at 77% and upscale with FSR 1,
+        // lightly sharpened. Those GPUs are limited by the pixels drawn (Iris Xe 42 fps at 720p in 0.9.11). Only
+        // when there is no settings file yet: a player's own choices stay.
+        if (read.Count == 0 && SystemCheck.Get().Integrated)
+        {
+            s.RenderScale = 77;
+            s.Sharpening = 25;
+        }
         return s;
     }
 
