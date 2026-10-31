@@ -76,8 +76,20 @@ struct Output : IXAudio2VoiceCallback
             Log("audio: could not create the output voice; sound is discarded");
             return;
         }
+        // A stereo device: XAudio2's own 5.1 downmix keeps the fronts at full level, but Wine's (FAudio) scales
+        // every channel to about a third, so the game was far quieter than other apps and the stereo music
+        // voice (GitHub #20). Give the voice the Windows mix so both sound the same.
+        XAUDIO2_VOICE_DETAILS md{};
+        master->GetVoiceDetails(&md);
+        if (md.InputChannels == 2)
+        {
+            const float h = 0.7071f;
+            // Rows L, R; columns FL FR C LFE BL BR.
+            const float m[12] = { 1, 0, h, 0, h, 0, 0, 1, h, 0, 0, h };
+            voice->SetOutputMatrix(nullptr, kChannels, 2, m);
+        }
         ok = true;
-        Log("audio: output 5.1 float at %u Hz", kRate);
+        Log("audio: output 5.1 float at %u Hz%s", kRate, md.InputChannels == 2 ? ", mixed to stereo" : "");
     }
 
     // One title frame: planar big-endian floats to interleaved host floats.
