@@ -1,3 +1,4 @@
+import { claimName } from "./names.js";
 // FM2's Xbox Live title services (Microsoft's XtsClient: the auction house) over a WebSocket: the port tunnels the
 // game's title server TCP connection here (src/kernel/net.cpp, FM2_TITLE_SERVER=wss://.../xts), each binary
 // message a piece of the byte stream. server/live/xts_server.py is the same server for running locally over TCP;
@@ -137,9 +138,11 @@ class Session {
       this.who.xuid = hex(body.subarray(45, 53)).toUpperCase();
       const tag = new TextDecoder("latin1").decode(body.subarray(53)).match(/[\x20-\x7e]{2,15}/);
       this.who.tag = tag ? tag[0] : "?";
-      if (tag) // the player directory, for adding friends by name
-        await this.db.prepare("INSERT INTO players (xuid, tag, seen) VALUES (?1, ?2, ?3) ON CONFLICT (xuid) DO UPDATE SET tag = excluded.tag, seen = excluded.seen")
-          .bind(this.who.xuid, this.who.tag, Date.now()).run().catch(() => {});
+      // the name is one player's (src/names.js): someone else signing in with it gets no title services
+      if (tag && !(await claimName(this.db, this.who.xuid, this.who.tag).catch(() => true))) {
+        this.socket.close(4001, "name taken");
+        return b.length;
+      }
       return 154;
     }
     if (type === 3) { // topology request: one record per service id, all here

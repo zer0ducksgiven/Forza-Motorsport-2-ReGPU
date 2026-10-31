@@ -76,6 +76,7 @@ bool RaceView() { return g_depthLastFrame && CameraAspectWidened(); }
 void DealerCarDraw(uint64_t vs, const float c[256][4], float squash[4][4], bool body); // hooks/dealer.cpp: the easter egg, per car draw
 
 bool MusicToast(std::wstring& title, std::wstring& artist, float& age); // audio/music.cpp
+bool LiveNotice(std::wstring& title, std::wstring& line, float& age);   // kernel/net.cpp
 
 namespace
 {
@@ -6743,7 +6744,7 @@ ID3D12Resource* PrepareToast(UINT& w, UINT& h, float& rise)
 {
     std::wstring title, artist;
     float age = 0.0f;
-    if (!MusicToast(title, artist, age))
+    if (!LiveNotice(title, artist, age) && !MusicToast(title, artist, age))
         return nullptr;
     constexpr float kIn = 0.35f, kHold = 4.5f, kOut = 0.35f;
     const float t = age < kIn ? age / kIn : age < kIn + kHold ? 1.0f : 1.0f - (age - kIn - kHold) / kOut;

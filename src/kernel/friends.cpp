@@ -5,6 +5,7 @@
 #include "kernel/friends.h"
 
 #include <atomic>
+#include <ctime>
 #include <cstdlib>
 #include <fstream>
 #include <mutex>
@@ -38,6 +39,18 @@ std::vector<LiveFriend> Load()
 }
 
 bool SameName(const std::string& a, const std::string& b) { return _stricmp(a.c_str(), b.c_str()) == 0; }
+
+// "31 Oct 2026" for a time in ms since 1970
+std::wstring Day(long long ms)
+{
+    const time_t t = time_t(ms / 1000);
+    tm local{};
+    if (ms <= 0 || localtime_s(&local, &t) != 0)
+        return L"a while ago";
+    wchar_t text[32];
+    wcsftime(text, 32, L"%#d %b %Y", &local);
+    return text;
+}
 }
 
 std::vector<LiveFriend> FriendsList()
@@ -71,13 +84,22 @@ void FriendsAddFromUi()
             description = L"That's you. Type another player's profile name.";
             continue;
         }
-        // "player <xuid hex> <name>" or "none"
+        // "player <xuid hex> <last seen, ms since 1970> <name>" or "none"; a name is one player's
         std::istringstream reply(LiveServerPost(L"/players/find", name));
         std::string word, xuid, found;
-        if (!(reply >> word >> xuid) || !std::getline(reply >> std::ws, found) || word != "player" || xuid.size() != 16)
+        long long seen = 0;
+        if (!(reply >> word >> xuid >> seen) || !std::getline(reply >> std::ws, found) || word != "player" || xuid.size() != 16)
         {
             Log("friends: no player called %s", name.c_str());
             description = L"No player called \"" + typed + L"\" has been on FM2 Live. Check the name and try again.";
+            continue;
+        }
+        // Who it is before adding them: OK adds, Cancel goes back to the name
+        std::wstring confirm(found.begin(), found.end());
+        const std::wstring shown = confirm;
+        if (!PresenterAskText(L"Add a friend", L"Add " + shown + L" (last on FM2 Live " + Day(seen) + L")? OK adds them.", confirm, 15))
+        {
+            description = L"Type the profile name of another FM2 Live player.";
             continue;
         }
         std::lock_guard lock(g_mutex);

@@ -73,6 +73,18 @@ constexpr uint32_t kBroadcast = 0xFFFFFFFF;
 // and a type byte.
 constexpr uint32_t kLiveMagic = 0x524C5631;
 constexpr uint32_t kStunCookie = 0x2112A442;
+
+// A message from FM2 Live for the toast at the bottom of the screen (gpu/renderer.cpp, through LiveNotice)
+std::mutex g_noticeMutex;
+std::wstring g_noticeTitle, g_noticeLine;
+std::chrono::steady_clock::time_point g_noticeSince{};
+
+void ShowLiveNotice(const std::wstring& title, const std::wstring& line)
+{
+    std::lock_guard lock(g_noticeMutex);
+    g_noticeTitle = title, g_noticeLine = line;
+    g_noticeSince = std::chrono::steady_clock::now();
+}
 constexpr uint16_t kLiveVersion = 1, kLiveDefaultPort = 21100;
 enum LiveType : uint8_t
 {
@@ -940,7 +952,7 @@ private:
                 }
                 nextStun = now + std::chrono::seconds(pub.ip ? 25 : 2); // keeps the NAT mapping open too
             }
-            if (resolved && now >= nextHello)
+            if (resolved && now >= nextHello && now >= helloPausedUntil_)
             {
                 SendHello();
                 std::lock_guard lock(mutex_);
@@ -1016,6 +1028,13 @@ private:
                 Log("net: server error %u: %.*s", p[0], int(size), reinterpret_cast<const char*>(p + 3));
             if (p[0] == 1)
                 SendHello(); // "not registered": the server restarted
+            if (p[0] == 3) // the profile's name is someone else's (server/live/src/names.js): asked again in a minute
+            {
+                helloPausedUntil_ = Clock::now() + std::chrono::seconds(60);
+                ShowLiveNotice(L"Your name is taken on FM2 Live",
+                               L"Another player has " + std::wstring(GetSettings().profile.begin(), GetSettings().profile.end()) +
+                                   L". Rename your profile in the launcher to play online.");
+            }
             return;
         }
         case kForward:
@@ -1227,11 +1246,13 @@ private:
     uint16_t liveEpoch_ = 0;
     Endpoint publicEp_;
     Clock::time_point lastWelcome_{};
+    Clock::time_point helloPausedUntil_{}; // the server refused our name
     std::unordered_map<uint32_t, LivePeer> livePeers_;
     std::unordered_map<uint32_t, uint32_t> liveIdByVip_;
 };
 
 bool NetOn() { return LiveTrace(); }
+
 
 bool Ours(uint32_t handle)
 {
@@ -1919,4 +1940,17 @@ GUEST_EXPORT(NetDll_WSAEventSelect)
     }
     const uint32_t error = VNet::Get().EventSelect(ctx.r4.u32, ctx.r5.u32, ctx.r6.u32);
     Return(ctx, error ? Fail(error) : 0);
+}
+
+// For gpu/renderer.cpp: FM2 Live's message while its toast is up (seconds since it showed in `age`), or false
+bool LiveNotice(std::wstring& title, std::wstring& line, float& age)
+{
+    std::lock_guard lock(g_noticeMutex);
+    if (g_noticeSince == std::chrono::steady_clock::time_point{})
+        return false;
+    age = std::chrono::duration<float>(std::chrono::steady_clock::now() - g_noticeSince).count();
+    if (age > 6.0f)
+        return false;
+    title = g_noticeTitle, line = g_noticeLine;
+    return true;
 }

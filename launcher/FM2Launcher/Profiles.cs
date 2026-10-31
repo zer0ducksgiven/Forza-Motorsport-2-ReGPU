@@ -48,6 +48,26 @@ internal static class Profiles
     }
 
     /// <summary>Checks a new profile name: what settings.ini and the game accept (15 characters, not empty, not taken).</summary>
+    static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(5) };
+
+    /// <summary>With online_server set, a profile's name must be free on FM2 Live (a name is one player's there,
+    /// server/live/src/names.js). Not reaching the server doesn't stop it: the game says so when it signs in.</summary>
+    static void OnlineNameFree(string name, string xuid)
+    {
+        var server = GameSettings.Value("online_server").TrimEnd('/');
+        if (server.Length == 0) return;
+        if (!server.Contains("://")) server = "https://" + server;
+        string reply;
+        try
+        {
+            var r = Http.PostAsync(server + "/players/check", new StringContent($"{name}\n{xuid}")).GetAwaiter().GetResult();
+            reply = r.IsSuccessStatusCode ? r.Content.ReadAsStringAsync().GetAwaiter().GetResult().Trim() : "";
+        }
+        catch { return; }
+        if (reply == "taken")
+            throw new ArgumentException($"{name} is already taken on FM2 Live by another player. Pick another name to play online.");
+    }
+
     static string NewName(string name)
     {
         name = new string((name ?? "").Trim().Where(c => !char.IsControl(c) && c != '=').Take(15).ToArray());
@@ -95,6 +115,7 @@ internal static class Profiles
     public static string Create(string name)
     {
         name = NewName(name);
+        OnlineNameFree(name, XuidOf(FolderName(name)));
         Directory.CreateDirectory(Path.Combine(Root, FolderName(name)));
         return name;
     }
@@ -105,6 +126,7 @@ internal static class Profiles
         var from = Dir(name);
         newName = NewName(newName);
         PinXuid(from);
+        OnlineNameFree(newName, XuidOf(Path.GetFileName(from)));
         CopyDir(from, Path.Combine(Root, FolderName(newName)));
         return newName;
     }
@@ -115,6 +137,7 @@ internal static class Profiles
         var from = Dir(name);
         newName = NewName(newName);
         PinXuid(from);
+        OnlineNameFree(newName, XuidOf(Path.GetFileName(from)));
         Directory.Move(from, Path.Combine(Root, FolderName(newName)));
         var s = GameSettings.Load();
         if (string.Equals(FolderName(s.Profile), Path.GetFileName(from), StringComparison.OrdinalIgnoreCase))

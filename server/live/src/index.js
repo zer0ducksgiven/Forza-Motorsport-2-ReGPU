@@ -9,8 +9,10 @@
 //                     ids on one line, then (xuids) the XUIDs on one line. Answers per view "view <id> <total>",
 //                     then "row <xuid> <rank> <rating> <car> <assists> <datetime> <time> <mode> <pi> <gamertag>"
 //                     ("-" for a column never written).
-// POST /players/find  a gamertag (profile name; any case) -> "player <xuid hex> <gamertag>", or "none"
+// POST /players/find  a gamertag (profile name; any case) -> "player <xuid hex> <seen ms> <gamertag>", or "none"
+// POST /players/check "<gamertag>" then "<xuid hex>" -> "free", "yours" or "taken" (names are one player's)
 
+import { checkName, findName } from "./names.js";
 import { xtsSocket } from "./xts.js";
 export { LiveRoom } from "./live_room.js";
 
@@ -31,6 +33,10 @@ export default {
       if (url.pathname === "/stats/write") return text(await write(env.DB, body));
       if (url.pathname === "/stats/read") return text(await read(env.DB, body));
       if (url.pathname === "/players/find") return text(await find(env.DB, body.trim().slice(0, 15)));
+      if (url.pathname === "/players/check") {
+        const [tag, xuid] = body.split("\n").map((l) => l.trim());
+        return text(`${await checkName(env.DB, (tag || "").slice(0, 15), xuid)}\n`);
+      }
     } catch (e) {
       return text(`error ${e.message}\n`, 400);
     }
@@ -81,8 +87,8 @@ async function write(db, body) {
 }
 
 async function find(db, name) {
-  const p = name && (await db.prepare("SELECT xuid, tag FROM players WHERE tag = ?1 COLLATE NOCASE ORDER BY seen DESC").bind(name).first());
-  return p ? `player ${p.xuid} ${p.tag}\n` : "none\n";
+  const p = name && (await findName(db, name));
+  return p ? `player ${p.xuid} ${p.seen} ${p.tag}\n` : "none\n";
 }
 
 const ROW = `SELECT xuid, name, CAST(rating AS TEXT) AS rating, ${COLUMNS.map((c) => `CAST(${c} AS TEXT) AS ${c}`).join(", ")},

@@ -1,3 +1,4 @@
+import { claimName } from "./names.js";
 // FM2 Live sessions on Cloudflare: tools/online/fm2_live_server.py as a Durable Object. Players connect a WebSocket
 // to GET /live (the port's kernel/net.cpp with FM2_SERVER=wss://.../live); each message is one packet of that
 // server's protocol ('RLV1', type, body). The race traffic doesn't come here: players send it to each other over
@@ -21,6 +22,7 @@ const RELAY_BYTES_PER_SECOND = 32 * 1024; // the fallback relay, per player
 export class LiveRoom {
   constructor(ctx, env) {
     this.ctx = ctx;
+    this.db = env.DB;
     this.budgets = new Map(); // player id -> { tokens, time }: the relay budget (resets when the object sleeps)
   }
 
@@ -182,6 +184,11 @@ export class LiveRoom {
     }
     if (version !== VERSION) {
       this.send(ws, ERROR, errorBody(2, `server speaks protocol ${VERSION}, client ${version}`));
+      return;
+    }
+    // the name is one player's (src/names.js)
+    if (this.db && name && !(await claimName(this.db, xuid, name).catch(() => true))) {
+      this.send(ws, ERROR, errorBody(3, `The name ${name} is already taken on FM2 Live`));
       return;
     }
     if (!me.id || me.token !== token) {

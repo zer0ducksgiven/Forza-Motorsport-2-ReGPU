@@ -147,6 +147,9 @@ public sealed class GameSettings
 
     static string B(bool b) => b ? "1" : "0";
 
+    /// <summary>A setting the launcher has no field for (online_server), or "".</summary>
+    public static string Value(string key) => Read().LastOrDefault(kv => kv.Key == key).Value ?? "";
+
     static List<KeyValuePair<string, string>> Read()
     {
         var list = new List<KeyValuePair<string, string>>();

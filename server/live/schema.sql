@@ -46,7 +46,7 @@ CREATE TABLE IF NOT EXISTS gifts (
 );
 CREATE INDEX IF NOT EXISTS gifts_recipient ON gifts (recipient_xuid, retrieved);
 
--- Players by gamertag (profile name), from their title services sign-in: Gift a Car's "add a friend" looks
--- names up here (POST /players/find).
-CREATE TABLE IF NOT EXISTS players (xuid TEXT PRIMARY KEY, tag TEXT NOT NULL, seen INTEGER NOT NULL);
-CREATE INDEX IF NOT EXISTS players_tag ON players (tag COLLATE NOCASE);
+-- Gamertags (profile names), one player each (src/names.js): claimed at sign-in, looked up by Gift a Car's
+-- "add a friend" (POST /players/find). name is the tag in lower case.
+CREATE TABLE IF NOT EXISTS names (name TEXT PRIMARY KEY, xuid TEXT NOT NULL, tag TEXT NOT NULL, seen INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS names_xuid ON names (xuid);
