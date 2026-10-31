@@ -50,3 +50,9 @@ CREATE INDEX IF NOT EXISTS gifts_recipient ON gifts (recipient_xuid, retrieved);
 -- "add a friend" (POST /players/find). name is the tag in lower case.
 CREATE TABLE IF NOT EXISTS names (name TEXT PRIMARY KEY, xuid TEXT NOT NULL, tag TEXT NOT NULL, seen INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS names_xuid ON names (xuid);
+
+-- FM2 Live's activity log for the FM2 Reports Desk (src/activity.js): kept 30 days.
+CREATE TABLE IF NOT EXISTS activity (
+    id INTEGER PRIMARY KEY, at INTEGER NOT NULL, kind TEXT NOT NULL, xuid TEXT NOT NULL, tag TEXT NOT NULL, detail TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS activity_at ON activity (at);

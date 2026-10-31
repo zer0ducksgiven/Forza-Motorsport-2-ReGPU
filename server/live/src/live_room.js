@@ -1,3 +1,4 @@
+import { logActivity } from "./activity.js";
 import { claimName } from "./names.js";
 // FM2 Live sessions on Cloudflare: tools/online/fm2_live_server.py as a Durable Object. Players connect a WebSocket
 // to GET /live (the port's kernel/net.cpp with FM2_SERVER=wss://.../live); each message is one packet of that
@@ -35,6 +36,12 @@ export class LiveRoom {
       const on = new Set(this.players().map((p) => p.a.xuid.toUpperCase()).filter((x) => wanted.has(x)));
       return new Response([...on].map((x) => x + "\n").join(""));
     }
+    // GET /status: who's signed in and the sessions they've published (the Desk, through /admin/status)
+    if (new URL(request.url).pathname === "/status") {
+      const players = this.players().map((p) => ({ name: p.a.name, xuid: p.a.xuid.toUpperCase(), room: p.a.room, status: p.a.status || "" }));
+      const sessions = (await this.ctx.storage.list({ prefix: "match:" })).size;
+      return Response.json({ players, sessions });
+    }
     if (request.headers.get("Upgrade") !== "websocket")
       return new Response("FM2 Live\n");
     const [client, server] = Object.values(new WebSocketPair());
@@ -63,6 +70,11 @@ export class LiveRoom {
     const me = ws.deserializeAttachment();
     if (me && me.id)
       await this.ctx.storage.delete([`extra:${me.id}`, `match:${me.id}`]);
+    if (me && me.claim && this.db && !me.gone) {
+      me.gone = true;
+      try { ws.serializeAttachment(me); } catch (e) {}
+      await logActivity(this.db, "signed out", me.xuid, me.name);
+    }
     try { ws.close(1000, "bye"); } catch (e) {}
   }
 
@@ -202,6 +214,8 @@ export class LiveRoom {
         this.send(ws, ERROR, errorBody(3, `The name ${name} is already taken on FM2 Live`));
         return;
       }
+      if (me.claim !== claim)
+        await logActivity(this.db, "signed in", xuid, name);
       me.claim = claim;
       me.claimedAt = Date.now();
     }

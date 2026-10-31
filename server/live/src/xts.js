@@ -1,3 +1,4 @@
+import { TITLE_ACTIVITY, logActivity } from "./activity.js";
 import { claimName } from "./names.js";
 // FM2's Xbox Live title services (Microsoft's XtsClient: the auction house) over a WebSocket: the port tunnels the
 // game's title server TCP connection here (src/kernel/net.cpp, FM2_TITLE_SERVER=wss://.../xts), each binary
@@ -188,6 +189,12 @@ class Session {
       results = cls.startsWith("Xts.Titles.Forza2.WebServices.Gifting")
         ? await gifting(this.db, method, new Reader(params), this.who)
         : await calls(this.db, method, new Reader(params), this.who);
+      const act = TITLE_ACTIVITY[method];
+      if (act && !(act[1] === "params" && results.every((b) => b === 0))) { // the Desk's activity log (not a collect that found nothing)
+        const from = act[1] === "result" ? results : params;
+        const id = from.length >= 4 ? new DataView(from.buffer, from.byteOffset).getInt32(0) : 0;
+        await logActivity(this.db, act[0], this.who.xuid, this.who.tag, id ? `#${id}` : "");
+      }
     }
     // reply body: u32 status, u32 code, u32 message length, u64 cache duration, results (zero padded)
     const body = new Writer().u32(0).u32(0).u32(0).i64(36000000000).bytes(results).bytes(new Uint8Array(256)).done();

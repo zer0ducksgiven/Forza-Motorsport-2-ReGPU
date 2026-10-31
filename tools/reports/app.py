@@ -8,6 +8,7 @@ Only listens on 127.0.0.1. The same API is handy from scripts:
        (issues from both the reports repo and the FM2 repo; source says which an issue is in)
   GET  /api/logs                              GET /api/log?path=logs/...   (text and summary)
   GET  /api/stats                             hardware across installs (newest log of each)
+  GET  /api/live                              FM2 Live: who's online, auctions, activity, Cloudflare usage (live.py)
   POST /api/issue/<n>?source=reports|fm2  {"state": "open"|"closed", "reason"?, "addLabel"?, "removeLabel"?, "comment"?}
   POST /api/log/delete {"path": "logs/..."}
 
@@ -23,6 +24,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import live  # noqa: E402
 import reports  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -153,6 +155,8 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == '/api/log':
                 text = reports.log_text(q.get('path', ''))
                 return self.send(200, {'path': q['path'], 'text': text, 'summary': reports.log_summary(text)})
+            if u.path == '/api/live':
+                return self.send(200, {'status': live.status(), 'usage': live.usage()})
             if u.path == '/api/stats':
                 return self.send(200, {k: v for k, v in stats().items() if k != 'old'})
             return self.send(404, {'error': 'Not found.'})

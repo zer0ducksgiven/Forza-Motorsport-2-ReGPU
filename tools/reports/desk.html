@@ -101,6 +101,29 @@ table.grid tr.click:hover td { background: #141820; }
 button.danger { border-color: #5a2a20; color: #f19a83; }
 button.danger:hover { border-color: var(--accent); background: #2a1719; }
 .yes { color: var(--good); } .no { color: var(--accent); }
+/* FM2 Live */
+.nav-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--warn); margin-left: 4px; vertical-align: middle; }
+.nav-dot.bad { background: var(--accent); }
+.nav-dot[hidden], .banner[hidden] { display: none; }
+.live-head { display: flex; align-items: baseline; gap: 12px; }
+h3 .sub { text-transform: none; letter-spacing: 0; font-weight: 400; }
+.usage { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px; margin-bottom: 14px; }
+.meter { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 9px 11px; }
+.meter .k { color: var(--muted); font-size: 11.5px; }
+.meter .v { font-weight: 600; margin: 2px 0 6px; font-variant-numeric: tabular-nums; }
+.meter .track { height: 6px; background: #232935; border-radius: 3px; overflow: hidden; }
+.meter .track i { display: block; height: 100%; background: var(--good); border-radius: 3px; }
+.meter.warn .track i { background: var(--warn); }
+.meter.bad .track i { background: var(--accent); }
+.meter.bad .v { color: #ffb3bb; }
+.note { color: var(--muted); font-size: 12px; margin: -6px 0 12px; }
+.live-cols { display: flex; gap: 22px; align-items: flex-start; flex-wrap: wrap; }
+.live-cols section { min-width: 200px; }
+.live-cols .grow { flex: 1; min-width: 360px; }
+.player { display: flex; gap: 8px; align-items: center; padding: 4px 0; }
+.player::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--good); flex: none; }
+.player .m { color: var(--muted); font-size: 12px; }
+#live-activity td:first-child { color: var(--muted); white-space: nowrap; width: 1%; font-variant-numeric: tabular-nums; }
 .toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: #2a1719; border: 1px solid #5a2a20; padding: 8px 14px; border-radius: 8px; display: none; }
 .toast.good { background: #173a28; border-color: #205a3c; }
 
@@ -118,6 +141,7 @@ button.danger:hover { border-color: var(--accent); background: #2a1719; }
     <button data-view="issues" class="on">Issues</button>
     <button data-view="logs">Logs</button>
     <button data-view="hardware">Hardware</button>
+    <button data-view="live">FM2 Live <span class="nav-dot" id="live-dot" hidden></span></button>
   </nav>
   <div class="spacer"></div>
   <span class="status" id="status"></span>
@@ -152,6 +176,18 @@ button.danger:hover { border-color: var(--accent); background: #2a1719; }
   <div class="bars" id="hw-bars"></div>
   <div class="hw-filters" id="hw-filters"></div>
   <table class="grid" id="hw-table"></table>
+</main>
+
+<main class="view wide" id="view-live">
+  <div class="live-head"><h2>FM2 Live</h2><span class="meta" id="live-when"></span></div>
+  <div class="banner" id="live-warn" hidden></div>
+  <h3>Cloudflare free plan today <span class="sub" id="live-day"></span></h3>
+  <div class="usage" id="live-usage"></div>
+  <div class="summary" id="live-stats"></div>
+  <div class="live-cols">
+    <section><h3>Online now</h3><div id="live-online"></div></section>
+    <section class="grow"><h3>Activity</h3><table class="grid" id="live-activity"></table></section>
+  </div>
 </main>
 
 <div class="toast" id="toast"></div>
@@ -190,14 +226,16 @@ $("nav").onclick = (e) => {
   const b = e.target.closest("button")
   if (!b) return
   for (const x of $("nav").children) x.classList.toggle("on", x === b)
-  for (const v of ["issues", "logs", "hardware"]) $("view-" + v).classList.toggle("on", v === b.dataset.view)
+  for (const v of ["issues", "logs", "hardware", "live"]) $("view-" + v).classList.toggle("on", v === b.dataset.view)
   if (b.dataset.view === "logs" && !logs.length) loadLogs()
   if (b.dataset.view === "hardware") loadHardware()
+  if (b.dataset.view === "live") loadLive()
 }
 $("refresh").onclick = () => {
   const v = document.querySelector("#nav .on").dataset.view
   if (v === "issues") loadIssues()
   else if (v === "logs") loadLogs()
+  else if (v === "live") loadLive()
   else loadHardware()
 }
 
@@ -506,6 +544,56 @@ $("hw-table").onclick = (e) => {
   const tr = e.target.closest("tr[data-install]")
   if (tr) jumpToInstall(tr.dataset.install)
 }
+
+// ---- FM2 Live: the Worker's status and activity, and Cloudflare's free-plan usage (app.py /api/live, live.py).
+// Checked every minute whatever the view, so the tab's dot shows a busy day: amber from 60% of an allowance,
+// red from 85% (or when the day's pace would run one out before midnight UTC).
+const num = (n) => Math.round(n).toLocaleString()
+const ago = (ms) => {
+  const s = Math.max(0, (Date.now() - ms) / 1000)
+  return s < 60 ? "just now" : s < 3600 ? `${Math.floor(s / 60)} min ago` : s < 86400 ? `${Math.floor(s / 3600)} h ago` : new Date(ms).toLocaleDateString()
+}
+async function loadLive(quiet) {
+  let d
+  try { d = await api("/api/live") } catch (e) { if (!quiet) toast(e.message); return }
+  const st = d.status, us = d.usage
+  let level = 0
+  const warn = []
+  if (us.metrics) {
+    $("live-day").textContent = `(${Math.round(us.dayFraction * 100)}% of the UTC day gone)`
+    $("live-usage").innerHTML = us.metrics.map((m) => {
+      const pace = us.dayFraction > 0.1 ? m.percent / us.dayFraction : 0 // where today ends at this rate
+      const cls = m.percent >= 85 || pace >= 100 ? "bad" : m.percent >= 60 || pace >= 80 ? "warn" : ""
+      level = Math.max(level, cls === "bad" ? 2 : cls ? 1 : 0)
+      if (cls) warn.push(`${m.label}: ${m.percent}% used${pace >= 80 ? `, on pace for ${Math.round(pace)}%` : ""}`)
+      return `<div class="meter ${cls}"><div class="k">${esc(m.label)}</div><div class="v">${num(m.used)} / ${num(m.limit)} (${m.percent}%)</div><div class="track"><i style="width:${Math.min(100, m.percent)}%"></i></div></div>`
+    }).join("") + (us.errors.length ? `<div class="note">${us.errors.map(esc).join("<br>")}</div>` : "")
+  } else $("live-usage").innerHTML = `<div class="note">${esc(us.error)}</div>`
+  if (!st.error) {
+    $("live-when").textContent = "updated " + ago(st.at)
+    const t = st.today || {}
+    $("live-stats").innerHTML = [
+      ["Online now", st.online.length], ["Players today", st.playersToday], ["Live auctions", st.auctionsLive],
+      ["Gifts waiting", st.giftsPending], ["Sessions open", st.sessions], ["Names on FM2 Live", st.playersKnown],
+      ["Auctions listed today", t["listed an auction"] || 0], ["Bids today", t["bid on an auction"] || 0], ["Gifts sent today", t["sent a car gift"] || 0],
+    ].map(([k, v]) => `<div class="stat"><div class="k">${k}</div><div class="v">${num(v)}</div></div>`).join("")
+    $("live-online").innerHTML = st.online.length
+      ? st.online.map((p) => `<div class="player"><span>${esc(p.name)}</span><span class="m">${esc(p.status || p.room || "")}</span></div>`).join("")
+      : `<div class="note">Nobody right now.</div>`
+    $("live-activity").innerHTML = st.activity.map((a) =>
+      `<tr><td title="${esc(new Date(a.at).toLocaleString())}">${ago(a.at)}</td><td>${esc(a.tag)} ${esc(a.kind)} ${esc(a.detail)}</td></tr>`).join("")
+      || `<tr><td></td><td class="note">Nothing yet.</td></tr>`
+  } else {
+    $("live-stats").innerHTML = `<div class="note">${esc(st.error)}</div>`
+    $("live-online").innerHTML = $("live-activity").innerHTML = ""
+  }
+  $("live-warn").hidden = !warn.length
+  $("live-warn").textContent = warn.length ? "Close to the free plan's daily limit: " + warn.join("; ") + ". It resets at midnight UTC; nothing is charged, requests just fail until then." : ""
+  $("live-dot").hidden = level === 0
+  $("live-dot").className = "nav-dot" + (level === 2 ? " bad" : "")
+}
+setInterval(() => loadLive(true), 60000)
+loadLive(true)
 
 loadIssues()
 </script>

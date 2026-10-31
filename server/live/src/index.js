@@ -13,6 +13,7 @@
 // POST /players/check "<gamertag>" then "<xuid hex>" -> "free", "yours" or "taken" (names are one player's)
 // POST /players/online XUIDs, one a line -> the ones signed in to FM2 Live now, one a line
 
+import { authorised, logActivity, status } from "./activity.js";
 import { checkName, findName } from "./names.js";
 import { xtsSocket } from "./xts.js";
 export { LiveRoom } from "./live_room.js";
@@ -28,6 +29,8 @@ export default {
       return xtsSocket(request, env);
     if (url.pathname === "/live") // sessions: one Durable Object for everyone
       return env.LIVE.get(env.LIVE.idFromName("live")).fetch(request);
+    if (url.pathname === "/admin/status") // the FM2 Reports Desk
+      return authorised(request, env) ? Response.json(await status(env)) : text("not allowed\n", 403);
     if (request.method !== "POST") return text("FM2 Live\n");
     if (url.pathname === "/players/online") // the live room knows who's connected
       return env.LIVE.get(env.LIVE.idFromName("live")).fetch(new Request("https://live/online", { method: "POST", body: request.body }));
@@ -85,7 +88,10 @@ async function write(db, body) {
         .bind(id, xuid, name, values.rating, ...COLUMNS.map((c) => values[c] ?? null), now)
     );
   }
-  if (statements.length) await db.batch(statements);
+  if (statements.length) {
+    await db.batch(statements);
+    await logActivity(db, "posted a leaderboard result", xuid, name, `${statements.length} board${statements.length > 1 ? "s" : ""}`);
+  }
   return `ok ${statements.length}\n`;
 }
 
