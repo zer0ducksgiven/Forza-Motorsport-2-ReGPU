@@ -18,6 +18,15 @@ static class Friends
         return server;
     }
 
+    /// <summary>Whether the FM2 Live server answers (its root says "FM2 Live"); false when online play is off.</summary>
+    public static async Task<bool> Ping()
+    {
+        var server = Server();
+        if (server.Length == 0) return false;
+        try { return (await Http.GetStringAsync(server + "/")).StartsWith("FM2 Live"); }
+        catch { return false; }
+    }
+
     /// <summary>A POST to the server: its reply, or null when it can't be reached.</summary>
     public static string? Post(string path, string body)
     {

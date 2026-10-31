@@ -184,6 +184,11 @@ function render() {
   chip(s.checks.running ? "warn" : "ok", s.checks.running ? "Game running" : "Not running")
   const zeroCopyTip = "Fast memory sharing between the game and your GPU (Direct3D 12 zero-copy). The game found it could not use it, so it copies data every frame: lower performance and hitches. Updating Windows and your GPU driver usually fixes it (Windows 11 23H2 or newer with a 2024 or newer driver works best)."
   if (s.system && !s.system.zeroCopy) chip("warn", "Reduced performance", zeroCopyTip)
+  if (s.online && s.online.enabled && !s.online.blocked) {
+    const tip = "The FM2 Live server: online sessions, the auction house and leaderboards."
+    if (liveUp === null) chip("warn", "FM2 Live: checking", tip)
+    else chip(liveUp ? "ok" : "bad", liveUp ? "FM2 Live online" : "FM2 Live unreachable", tip)
+  }
 
   // play and graphics pages
   fill($("resolution"), o.resolutions.map((r) => ({ value: r, name: r.replace("x", " × ") })), set.resolution)
@@ -560,6 +565,14 @@ window.addEventListener("focus", () => {
   guarded(async () => { state = await call("state"); render() })
 })
 
+// The FM2 Live server light (header chips): null until the first answer, then checked every minute.
+let liveUp = null
+async function pingLive() {
+  try { liveUp = await call("online.ping") } catch { liveUp = false }
+  if (state) render()
+}
+setInterval(pingLive, 60000)
+
 async function checkUpdates(quiet) {
   try {
     update = await call("update.check")
@@ -797,7 +810,7 @@ async function sharingNotice() {
   if (!stay) document.querySelector("[data-tab=report]").click()
 }
 
-refresh().then(() => guarded(sharingNotice)).then(() => checkUpdates(true)).then(() => {
+refresh().then(pingLive).then(() => guarded(sharingNotice)).then(() => checkUpdates(true)).then(() => {
   if (update && update.available) toast(`Version ${update.latest} is available: install it from the Updates tab.`, true)
 })
 setInterval(() => { if (!document.hidden && $("confirm").hidden && !["SELECT", "INPUT"].includes(document.activeElement.tagName)) refresh() }, 5000)

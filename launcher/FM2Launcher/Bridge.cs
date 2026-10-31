@@ -108,6 +108,8 @@ public sealed class Bridge
                     Dlc.SetEnabled(CareerMod.Roguelike.Id, on);
                     return State();
                 }
+            case "online.ping":
+                return await Friends.Ping();
             case "online.toggle":
                 Online.SetEnabled(a!.GetValue<bool>());
                 return State();
