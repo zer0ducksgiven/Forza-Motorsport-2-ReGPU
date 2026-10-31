@@ -114,7 +114,9 @@ PPC_FUNC(TU_SUB(825037C8))
 // Xbox Live user storage (XStorage), which the auction connector keeps its transaction journal in: kept as
 // files in the profile folder. Upload sub_823E40A0(user, path, size, buffer, overlapped) and
 // download sub_823E3DC0(user, path, size, buffer, results size, results*, overlapped) -> 0, or an error
-// with the thread's last error 0x8015C004 (XONLINE_E_STORAGE_FILE_NOT_FOUND).
+// with the thread's last error 0x8015C004 (XONLINE_E_STORAGE_FILE_NOT_FOUND). With an overlapped they complete it
+// and return ERROR_IO_PENDING: a career race's leaderboard ghost uploads that way, and the "Posting times to
+// scoreboards" screen waited for it forever.
 namespace
 {
 // The file: profiles\<name>\live_storage\<path>, the path being a UTF-16 string. The auction connector passes one
@@ -156,6 +158,12 @@ PPC_FUNC(sub_823E40A0)
         fclose(f);
     }
     Log("live storage: upload '%s' %u bytes", file.filename().string().c_str(), size);
+    if (const uint32_t overlapped = ctx.r7.u32)
+    {
+        CompleteOverlapped(overlapped, X_ERROR_SUCCESS);
+        Return(ctx, X_ERROR_IO_PENDING);
+        return;
+    }
     ctx.r3.u64 = 0;
 }
 
@@ -168,7 +176,7 @@ PPC_FUNC(sub_823E3DC0)
         return;
     }
     const std::filesystem::path file = StorageFile(ctx.r4.u32);
-    const uint32_t size = ctx.r5.u32, buffer = ctx.r6.u32, results = ctx.r8.u32;
+    const uint32_t size = ctx.r5.u32, buffer = ctx.r6.u32, results = ctx.r8.u32, overlapped = ctx.r9.u32;
     std::vector<uint8_t> data;
     if (FILE* f = _wfopen(file.c_str(), L"rb"))
     {
@@ -182,6 +190,12 @@ PPC_FUNC(sub_823E3DC0)
         Log("live storage: download '%s': not found", file.filename().string().c_str());
         if (GuestThread* t = CurrentGuestThread())
             StoreBE32(t->kthread + kthread::LastError, 0x8015C004);
+        if (overlapped)
+        {
+            CompleteOverlapped(overlapped, X_ERROR_FUNCTION_FAILED, 0x8015C004);
+            Return(ctx, X_ERROR_IO_PENDING);
+            return;
+        }
         ctx.r3.u64 = 0x8015C004;
         return;
     }
@@ -193,5 +207,11 @@ PPC_FUNC(sub_823E3DC0)
         StoreBE32(results, uint32_t(data.size()));
     }
     Log("live storage: download '%s' %u bytes", file.filename().string().c_str(), n);
+    if (overlapped)
+    {
+        CompleteOverlapped(overlapped, X_ERROR_SUCCESS, 0, n);
+        Return(ctx, X_ERROR_IO_PENDING);
+        return;
+    }
     ctx.r3.u64 = 0;
 }
