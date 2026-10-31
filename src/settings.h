@@ -38,6 +38,10 @@ struct Settings
     bool wheelReverse = false;
     uint32_t wheelRotation = 0;
     uint32_t language = 1;               // the console language the game sees (XGetLanguage: 1 English, 3 German, ...)
+    // Online (FM2 Live, server/live): the server's base URL, https://... Set, the game signs in to Xbox Live there:
+    // sessions over wss://.../live, the auction house over wss://.../xts, leaderboards at https://.../stats.
+    // FM2_LIVE, FM2_SERVER, FM2_TITLE_SERVER and FM2_STATS_URL override it for testing.
+    std::string onlineServer;
     uint32_t msaa = 1;                   // anti-aliasing samples per pixel: 1 (off), 2, 4 or 8
     // SMAA 1x on the whole frame as it is shown (after MSAA, before FSR 1): 0 off, 1 low, 2 medium,
     // 3 high, 4 ultra (the SMAA presets).

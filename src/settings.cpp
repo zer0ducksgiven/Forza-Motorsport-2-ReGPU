@@ -53,6 +53,8 @@ void Load()
         const std::string key = line.substr(0, eq), value = line.substr(eq + 1);
         if (key == "profile" && !value.empty())
             g_settings.profile = value.substr(0, 15);
+        else if (key == "online_server")
+            g_settings.onlineServer = value;
         else if (key == "resolution")
             sscanf(value.c_str(), "%ux%u", &g_settings.width, &g_settings.height);
         else if (key == "aspect")
@@ -112,6 +114,24 @@ void Load()
             g_settings.quality = uint32_t(atoi(value.c_str()));
         else if (key == "sharpness")
             g_settings.sharpness = float(atof(value.c_str()));
+    }
+    // Online: the server's URL turns on Live (kernel/net.cpp, title_relay.cpp, leaderboards.cpp read these),
+    // unless the environment already says
+    if (!g_settings.onlineServer.empty() && !getenv("FM2_LIVE"))
+    {
+        std::string base = g_settings.onlineServer;
+        while (!base.empty() && base.back() == '/')
+            base.pop_back();
+        const bool secure = base.rfind("https://", 0) == 0;
+        const std::string host = base.substr(base.find("://") == std::string::npos ? 0 : base.find("://") + 3);
+        const std::string ws = (secure ? "wss://" : "ws://") + host;
+        _putenv_s("FM2_LIVE", "1");
+        if (!getenv("FM2_SERVER"))
+            _putenv_s("FM2_SERVER", (ws + "/live").c_str());
+        if (!getenv("FM2_TITLE_SERVER"))
+            _putenv_s("FM2_TITLE_SERVER", (ws + "/xts").c_str());
+        if (!getenv("FM2_STATS_URL"))
+            _putenv_s("FM2_STATS_URL", base.find("://") == std::string::npos ? ("https://" + base).c_str() : base.c_str());
     }
     // Overrides for testing.
     if (const char* v = getenv("FM2_PROFILE"))
@@ -233,6 +253,8 @@ void SaveSettings()
     std::ofstream out(Path());
     out << "# Forza Motorsport 2 (fm2) settings; the launcher edits this file.\n";
     out << "profile=" << s.profile << "\n";
+    if (!s.onlineServer.empty())
+        out << "online_server=" << s.onlineServer << "\n";
     out << "resolution=" << s.width << "x" << s.height << "\n";
     out << "aspect=" << (s.aspectW ? std::to_string(s.aspectW) + ":" + std::to_string(s.aspectH) : std::string("auto")) << "\n";
     out << "fullscreen=" << (s.fullscreen ? 1 : 0) << "\n";
