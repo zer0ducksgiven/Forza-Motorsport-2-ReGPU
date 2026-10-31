@@ -101,6 +101,9 @@ public sealed class Bridge
                     Dlc.SetEnabled(CareerMod.Roguelike.Id, on);
                     return State();
                 }
+            case "online.toggle":
+                Online.SetEnabled(a!.GetValue<bool>());
+                return State();
             case "pfp.install":
                 {
                     var picked = await _window.ShowOpenFolderAsync("Choose the unzipped Forza Plus 2 folder (the one with \"Main Game Changes\" in it)", null, false);
@@ -348,6 +351,7 @@ public sealed class Bridge
             dlc = Dlc.List(),
             mods = Dlc.Mods().Where(p => p.Id != CareerMod.Roguelike.Id),
             rogue = new { available = CareerMod.Available, enabled = CareerMod.Roguelike.IsEnabled },
+            online = Online.State(),
         };
     }
 }

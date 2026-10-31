@@ -337,6 +337,7 @@ public sealed class Cheats
     public long GiveCredits { get; set; }
     public bool MaxLevel { get; set; }
     public bool AllCars { get; set; }
+    public bool Any => InfiniteCredits || GiveCredits > 0 || MaxLevel || AllCars;
 
     static string File_(string folder) => Path.Combine(Profiles.Root, folder, "cheats.ini");
 

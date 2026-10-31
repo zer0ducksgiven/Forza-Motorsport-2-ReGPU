@@ -150,6 +150,16 @@ public sealed class GameSettings
     /// <summary>A setting the launcher has no field for (online_server), or "".</summary>
     public static string Value(string key) => Read().LastOrDefault(kv => kv.Key == key).Value ?? "";
 
+    /// <summary>Sets a setting the launcher has no field for; "" removes it.</summary>
+    public static void SetValue(string key, string value)
+    {
+        var lines = File.Exists(Paths.SettingsFile) ? File.ReadAllLines(Paths.SettingsFile).ToList() : [];
+        lines.RemoveAll(l => l.IndexOf('=') is > 0 and var eq && l[..eq].Trim() == key);
+        if (value.Length > 0) lines.Add($"{key}={value}");
+        Directory.CreateDirectory(Paths.User);
+        File.WriteAllText(Paths.SettingsFile, string.Join("\n", lines) + "\n");
+    }
+
     static List<KeyValuePair<string, string>> Read()
     {
         var list = new List<KeyValuePair<string, string>>();

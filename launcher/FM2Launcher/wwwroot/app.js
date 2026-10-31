@@ -279,6 +279,21 @@ function render() {
   }
   $("mods-add").disabled = s.checks.running
 
+  const on = s.online, ol = $("online")
+  ol.replaceChildren()
+  {
+    const live = on.enabled && !on.blocked
+    const it = el("div", "item" + (live ? "" : " off"))
+    const main = el("div", "main")
+    main.append(el("div", "title", "FM2 Live"), el("div", "meta", on.blocked || (on.enabled ? "On: the game signs in to FM2 Live" : "Off: offline play only")))
+    const sw = el("button", "switch" + (live ? " on" : ""))
+    sw.dataset.tip = on.blocked || (on.enabled ? "On. Click to play offline." : "Off. Click to play online.")
+    sw.disabled = s.checks.running || !!on.blocked
+    sw.onclick = () => guarded(async () => { state = await call("online.toggle", !on.enabled); render() })
+    it.append(main, sw)
+    ol.append(it)
+  }
+
   const rg = s.rogue, rl = $("rogue")
   rl.replaceChildren()
   if (!rg.available) rl.append(el("div", "empty", "Needs the game files and the launcher's career folder."))
@@ -488,7 +503,7 @@ function renderFriends(st, note, bad) {
   const list = $("friends-list")
   list.replaceChildren()
   if (!st.friends.length)
-    list.append(el("div", "friends-empty", st.server ? "No friends yet. Add one by their profile name." : "Online play is off."))
+    list.append(el("div", "friends-empty", st.server ? "No friends yet. Add one by their profile name." : st.blocked ? "FM2 Live: " + st.blocked : "Online play is off: switch FM2 Live on in Settings."))
   for (const f of st.friends) {
     const row = el("div", "friend" + (f.online ? " on" : ""))
     const x = el("button", "remove", "×")

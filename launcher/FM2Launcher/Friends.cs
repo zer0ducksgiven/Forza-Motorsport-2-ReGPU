@@ -9,9 +9,10 @@ static class Friends
 {
     static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(5) };
 
-    /// <summary>The FM2 Live server's base URL from settings.ini, or "" when online play is off.</summary>
+    /// <summary>The FM2 Live server's base URL from settings.ini, or "" when online play is off (Online.cs).</summary>
     public static string Server()
     {
+        if (Online.Blocked() is not null) return "";
         var server = GameSettings.Value("online_server").Trim().TrimEnd('/');
         if (server.Length > 0 && !server.Contains("://")) server = "https://" + server;
         return server;
@@ -64,6 +65,7 @@ static class Friends
         {
             profile = GameSettings.Load().Profile,
             server = Server().Length > 0,
+            blocked = Online.Blocked(),
             reachable = reply != null,
             friends = list.Select(f => new { name = f.Name, online = on.Contains(f.Xuid) })
                 .OrderBy(f => !f.online).ThenBy(f => f.name, StringComparer.OrdinalIgnoreCase),
@@ -75,7 +77,7 @@ static class Friends
     {
         name = name.Trim();
         if (name.Length == 0) throw new ArgumentException("Type a profile name.");
-        if (Server().Length == 0) throw new InvalidOperationException("Online play is off: set the FM2 Live server first.");
+        if (Server().Length == 0) throw new InvalidOperationException(Online.Blocked() ?? "Online play is off: switch FM2 Live on in Settings first.");
         if (string.Equals(name, GameSettings.Load().Profile, StringComparison.OrdinalIgnoreCase))
             throw new ArgumentException("That's you. Type another player's profile name.");
         // "player <xuid hex> <last seen> <name>" or "none"

@@ -433,6 +433,9 @@ bool Replace(std::string& text, std::string_view from, std::string_view to)
 }
 }
 
+// Rogue Mode is switched on (FM2 Live stays off then: kernel/runtime.cpp).
+bool RogueModeOn() { return Installed(); }
+
 // For hooks/random_events.cpp, as a career race's result is written: one more race in the run.
 void RoguelikeRaceFinished(uint32_t eventId)
 {

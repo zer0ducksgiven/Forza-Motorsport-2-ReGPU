@@ -82,6 +82,13 @@ void SpendOnce(const char* key)
 }
 }
 
+// Any cheat switched on for this profile (FM2 Live stays off then: kernel/runtime.cpp).
+bool CheatsOn()
+{
+    const Cheats& c = Get();
+    return c.infiniteCredits || c.giveCredits || c.maxLevel || c.arcadeAllCars;
+}
+
 PPC_FUNC_IMPL(__imp__sub_8222E3F0);
 // SetCredits(profile, credits): the game writes credits it read with the gift added, so the gift is
 // saved from here on.
