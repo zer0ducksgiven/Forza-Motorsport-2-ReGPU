@@ -1,4 +1,5 @@
-// FM2 Live: the port's stand-in for Xbox Live's leaderboards (src/kernel/leaderboards.cpp is the client).
+// FM2 Live: the port's stand-in for Xbox Live: leaderboards (src/kernel/leaderboards.cpp is the client), and
+// GET /xts as a WebSocket: the title services (the auction house; src/xts.js, the port's kernel/net.cpp the client).
 // Plain text in and out, a line each, so the C++ side needs no JSON:
 //
 // POST /stats/write   "<xuid hex> <gamertag>" then one line per view: "<view> rating=<n> car=<n> ..."
@@ -8,6 +9,8 @@
 //                     then "row <xuid> <rank> <rating> <car> <assists> <datetime> <time> <mode> <pi> <gamertag>"
 //                     ("-" for a column never written).
 
+import { xtsSocket } from "./xts.js";
+
 const COLUMNS = ["car", "assists", "datetime", "time", "mode", "pi"];
 const INTEGER = /^-?\d{1,20}$/;
 const XUID = /^[0-9A-F]{16}$/;
@@ -15,6 +18,8 @@ const XUID = /^[0-9A-F]{16}$/;
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
+    if (url.pathname === "/xts" && request.headers.get("Upgrade") === "websocket")
+      return xtsSocket(request, env);
     if (request.method !== "POST") return text("FM2 Live\n");
     const body = (await request.text()).slice(0, 64 * 1024);
     try {

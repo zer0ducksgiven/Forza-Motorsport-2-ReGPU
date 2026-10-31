@@ -1151,9 +1151,12 @@ void WriteSet(uint32_t set, const std::vector<uint32_t>& handles)
 }
 }
 
+bool TitleRelayAddress(sockaddr_in& address); // kernel/title_relay.cpp
+
 // --- TCP: the title server connection (auction house, gifting, ...) as a real host socket. The
 // title server is 127.0.0.1 to the game (kernel/imports_xam.cpp); FM2_TITLE_SERVER=host:port says
-// where it really is (default 127.0.0.1:3074, the local stand-in) ----------------------------
+// where it really is: host:port (default 127.0.0.1:3074, server/live/xts_server.py), or a ws:// or wss:// URL
+// (the Worker, through kernel/title_relay.cpp) -------------------------------------------------------
 namespace
 {
 constexpr uint32_t kTcpBase = 0x54430000; // 'TC' + index
@@ -1206,6 +1209,8 @@ uint64_t TcpResult(int r)
 
 void TitleServerAddress(sockaddr_in& a)
 {
+    if (TitleRelayAddress(a)) // FM2_TITLE_SERVER=ws(s)://...: through kernel/title_relay.cpp
+        return;
     std::string host = "127.0.0.1";
     uint16_t port = 3074;
     if (const char* e = getenv("FM2_TITLE_SERVER"))
