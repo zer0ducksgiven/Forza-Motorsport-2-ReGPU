@@ -202,7 +202,7 @@ def results(cls, method, params, who):
         return b''
     if method == b'GetBidOn':
         return auction_list([a for a in AUCTIONS if any(b['xuid'] == who[0] for b in a.get('bids', []))
-                             and not (winner(a) == who[0] and a.get('returned'))])
+                             and not (winner(a) == who[0] and a.get('won_collected'))])
     if method == b'GetBids':
         a = by_id(r.u32())
         bids = list(reversed(a.get('bids', []))) if a else []
@@ -222,7 +222,10 @@ def results(cls, method, params, who):
     if method == b'SearchForAuction':
         return auction_list([a for a in AUCTIONS if a.get('status', 0) == 0])
     if method == b'GetSubmitted':
-        return auction_list([a for a in AUCTIONS if a['xuid'] == who[0] and not a.get('returned')])
+        # the seller's auctions until they're done with: active, money to collect, or their car to take back
+        return auction_list([a for a in AUCTIONS if a['xuid'] == who[0] and (
+            a.get('status', ACTIVE) == ACTIVE or not a.get('returned') and a.get('status') != SOLD or
+            any(p['xuid'] == who[0] and not p['collected'] for p in a.get('payments', [])))])
     if method == b'GetDetailsAndBids':
         a = by_id(r.u32())
         if not a:
@@ -239,16 +242,17 @@ def results(cls, method, params, who):
             log('auction %d cancelled' % a['id'])
         return b''
     if method == b'RetrievePendingCars':
-        mine = [a for a in AUCTIONS if not a.get('returned') and (
-            (a['xuid'] == who[0] and a.get('status', 0) in (EXPIRED, CANCELLED)) or winner(a) == who[0])]
+        mine = [a for a in AUCTIONS if (a['xuid'] == who[0] and a.get('status', 0) in (EXPIRED, CANCELLED) and not a.get('returned'))
+                or (winner(a) == who[0] and not a.get('won_collected'))]
         return u32(len(mine)) + b''.join(auction_car(a) for a in mine) + u32(len(mine))
     if method == b'RetrieveCarForAuction':
         a = by_id(r.u32())
-        if not a or a.get('returned') or not (
-                (a['xuid'] == who[0] and a.get('status', 0) in (EXPIRED, CANCELLED)) or winner(a) == who[0]):
+        to_seller = a and a['xuid'] == who[0] and a.get('status', 0) in (EXPIRED, CANCELLED) and not a.get('returned')
+        to_winner = a and winner(a) == who[0] and not a.get('won_collected')
+        if not (to_seller or to_winner):
             return b''
         with lock:
-            a['returned'] = True
+            a['returned' if to_seller else 'won_collected'] = True
             save()
         log('auction %d: car returned to %s' % (a['id'], who[1]))
         return auction_car(a) + u32(len(a['stats'])) + a['stats'] + u32(len(a['livery'])) + a['livery']
