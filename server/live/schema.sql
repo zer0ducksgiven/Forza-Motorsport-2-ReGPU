@@ -36,3 +36,12 @@ CREATE TABLE IF NOT EXISTS payments (
 );
 -- Transacted calls' replies (a 20-byte reply header and results) by the game's transaction id, for Reconcile.
 CREATE TABLE IF NOT EXISTS transactions (id TEXT PRIMARY KEY, payload BLOB NOT NULL, created INTEGER NOT NULL);
+
+-- Car gifts (Gift a Car): the car as the sender's game sent it, until the recipient collects it.
+CREATE TABLE IF NOT EXISTS gifts (
+    id INTEGER PRIMARY KEY,
+    sender_xuid TEXT NOT NULL, sender_tag TEXT NOT NULL, recipient_xuid TEXT NOT NULL,
+    car BLOB NOT NULL, stats BLOB NOT NULL, livery BLOB NOT NULL,
+    created INTEGER NOT NULL, retrieved INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS gifts_recipient ON gifts (recipient_xuid, retrieved);

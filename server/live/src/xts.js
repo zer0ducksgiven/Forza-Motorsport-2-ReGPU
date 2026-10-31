@@ -179,7 +179,9 @@ class Session {
       const payload = row ? new Uint8Array(row.payload) : new Writer().u32(0).u32(0).u32(0).i64(0).i32(0).done();
       results = new Writer().blob(payload).i32(payload.length).done();
     } else {
-      results = await calls(this.db, method, new Reader(params), this.who);
+      results = cls.startsWith("Xts.Titles.Forza2.WebServices.Gifting")
+        ? await gifting(this.db, method, new Reader(params), this.who)
+        : await calls(this.db, method, new Reader(params), this.who);
     }
     // reply body: u32 status, u32 code, u32 message length, u64 cache duration, results (zero padded)
     const body = new Writer().u32(0).u32(0).u32(0).i64(36000000000).bytes(results).bytes(new Uint8Array(256)).done();
@@ -244,6 +246,40 @@ async function settle(db) {
       batch.push(db.prepare("INSERT INTO payments (auction, xuid, reason, amount) VALUES (?1, ?2, ?3, ?4)").bind(a.id, a.xuid, SALE, top.amount));
     await db.batch(batch);
   }
+}
+
+// Gift a Car: Gifting.SendGift / GetGiftsForUser / GetDetails / RetrieveGift
+async function gifting(db, method, r, who) {
+  switch (method) {
+    case "SendGift": {
+      const recipient = r.take(8), car = r.take(34).slice(), stats = r.blob(), livery = r.blob();
+      const next = await db.prepare("SELECT COALESCE(MAX(id), 5000) + 1 AS id FROM gifts").first();
+      await db.prepare(`INSERT INTO gifts (id, sender_xuid, sender_tag, recipient_xuid, car, stats, livery, created)
+                        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)`)
+        .bind(next.id, who.xuid, who.tag, hex(recipient).toUpperCase(), car, stats, livery, Date.now()).run();
+      return new Writer().i32(next.id).done();
+    }
+    case "GetGiftsForUser": {
+      const startAt = r.i32(), max = Math.min(r.i32() || 30, 30);
+      const rows = (await db.prepare("SELECT * FROM gifts WHERE recipient_xuid = ?1 AND retrieved = 0 ORDER BY id LIMIT ?2 OFFSET ?3")
+        .bind(who.xuid, max, Math.max(startAt, 0)).all()).results;
+      // XTS_FORZA_GIFT_CAR: the car with its blob sizes, giftId, sender (XUID, gamertag), reason
+      const w = new Writer().u32(rows.length);
+      for (const g of rows)
+        w.bytes(new Uint8Array(g.car)).u32(new Uint8Array(g.stats).length).u32(new Uint8Array(g.livery).length)
+          .i32(g.id).player(g.sender_xuid, g.sender_tag).i32(0);
+      return w.u32(rows.length).done();
+    }
+    case "GetDetails":
+    case "RetrieveGift": {
+      const g = await db.prepare("SELECT * FROM gifts WHERE id = ?1 AND recipient_xuid = ?2 AND retrieved = 0").bind(r.i32(), who.xuid).first();
+      if (!g) return new Uint8Array(0);
+      if (method === "RetrieveGift")
+        await db.prepare("UPDATE gifts SET retrieved = 1 WHERE id = ?1").bind(g.id).run();
+      return new Writer().bytes(new Uint8Array(g.car)).blob(new Uint8Array(g.stats)).blob(new Uint8Array(g.livery)).done();
+    }
+  }
+  return new Uint8Array(0);
 }
 
 async function calls(db, method, r, who) {
