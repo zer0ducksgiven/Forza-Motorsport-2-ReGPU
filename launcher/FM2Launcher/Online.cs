@@ -29,5 +29,17 @@ static class Online
         GameSettings.SetValue("online_server", on ? DefaultServer : "off");
     }
 
-    public static object State() => new { enabled = Enabled, blocked = Blocked() };
+    /// <summary>What blocks online play in a word or two (the launcher's status light), or null.</summary>
+    static string? BlockedShort()
+    {
+        if (Cheats.Load(Profiles.FolderName(GameSettings.Load().Profile)).Any) return "cheats on";
+        if (CareerMod.Roguelike.IsEnabled) return "Rogue Mode";
+        if (ForzaPlus2.Enabled) return "Forza Plus 2";
+        return null;
+    }
+
+    /// <summary>Rogue Mode or Forza Plus 2: blocks online play for every profile, not just the playing one.</summary>
+    static bool ModBlocked => CareerMod.Roguelike.IsEnabled || ForzaPlus2.Enabled;
+
+    public static object State() => new { enabled = Enabled, blocked = Blocked(), blockedShort = BlockedShort(), modBlocked = ModBlocked };
 }

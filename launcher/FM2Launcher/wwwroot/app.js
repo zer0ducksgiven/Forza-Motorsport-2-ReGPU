@@ -184,7 +184,9 @@ function render() {
   chip(s.checks.running ? "warn" : "ok", s.checks.running ? "Game running" : "Not running")
   const zeroCopyTip = "Fast memory sharing between the game and your GPU (Direct3D 12 zero-copy). The game found it could not use it, so it copies data every frame: lower performance and hitches. Updating Windows and your GPU driver usually fixes it (Windows 11 23H2 or newer with a 2024 or newer driver works best)."
   if (s.system && !s.system.zeroCopy) chip("warn", "Reduced performance", zeroCopyTip)
-  if (s.online && s.online.enabled && !s.online.blocked) {
+  if (s.online && s.online.enabled && s.online.blocked)
+    chip("warn", `FM2 Live off: ${s.online.blockedShort}`, s.online.blocked)
+  else if (s.online && s.online.enabled) {
     const tip = "The FM2 Live server: online sessions, the auction house and leaderboards."
     if (liveUp === null) chip("warn", "FM2 Live: checking", tip)
     else chip(liveUp ? "ok" : "bad", liveUp ? "FM2 Live online" : "FM2 Live unreachable", tip)
@@ -621,7 +623,7 @@ function onProgress(d) {
 let profiles = null
 let profileSel = null
 async function loadProfiles() {
-  await guarded(async () => { profiles = await call("profiles.list"); renderProfiles() })
+  await guarded(async () => { profiles = await call("profiles.list"); state = await call("state"); render(); renderProfiles() })
 }
 function selectedProfile() { return profiles && profiles.profiles.find((p) => p.name === profileSel) }
 function when(d) { return d ? new Date(d).toLocaleString() : "never" }
@@ -636,10 +638,13 @@ function renderProfiles() {
     const main = el("div", "main")
     const title = el("div", "title", p.name)
     if (p.active) title.append(el("span", "badge-on", "Playing"))
-    // Signed in to FM2 Live when it starts: online on, and not blocked (cheats or Rogue Mode on this profile).
-    if (p.active && state.online && state.online.enabled && !state.online.blocked) title.append(el("span", "badge-live", "FM2 Live"))
+    // Signs in to FM2 Live when played: online on, no Rogue Mode or Forza Plus 2, and no cheats on this profile.
+    const c = p.cheats || {}
+    const cheats = c.infiniteCredits || c.giveCredits > 0 || c.maxLevel || c.allCars
+    const live = state.online && state.online.enabled && !state.online.modBlocked && !cheats
     main.append(title, el("div", "meta", `${p.photos} photo${p.photos === 1 ? "" : "s"} · ${size(p.bytes)} · ${p.lastPlayed ? new Date(p.lastPlayed).toLocaleDateString() : "never played"}`))
     it.append(main)
+    if (live) { const side = el("div", "live-side"); side.append(el("span", "badge-live", "FM2 Live")); it.append(side) }
     it.onclick = () => {
       profileSel = p.name
       renderProfiles()
@@ -697,6 +702,9 @@ async function profileCall(cmd, args, done) {
     const r = await call(cmd, args)
     if (r && r.profiles) profiles = r
     else if (r && r.state) profiles = r.state
+    // Cheats and the playing profile decide whether FM2 Live is blocked (state.online), so read it again too.
+    state = await call("state")
+    render()
     renderProfiles()
     if (done) toast(typeof done === "function" ? done(r) : done, true)
   })
