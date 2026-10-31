@@ -12,8 +12,9 @@ export function xtsSocket(request, env) {
   const session = new Session(server, env.DB);
   let queue = Promise.resolve();
   // the game (or the port) went away: close our end too, or the runtime takes the request for hung
-  server.addEventListener("close", (event) => server.close(event.code === 1005 ? 1000 : event.code, "bye"));
-  server.addEventListener("error", () => server.close(1011, "error"));
+  // (1005 and 1006 are only reported, never sent)
+  server.addEventListener("close", () => { try { server.close(1000, "bye"); } catch (e) {} });
+  server.addEventListener("error", () => { try { server.close(1011, "error"); } catch (e) {} });
   server.addEventListener("message", (event) => {
     const data = typeof event.data === "string" ? new TextEncoder().encode(event.data) : new Uint8Array(event.data);
     queue = queue.then(() => session.receive(data)).catch((e) => {

@@ -4,120 +4,44 @@
 // socket (net.cpp) works as it does with a plain host:port.
 #include <winsock2.h>
 #include <ws2tcpip.h>
-#include <windows.h>
-#include <winhttp.h>
 
 #include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
+#include "kernel/websocket.h"
 #include "log.h"
 
 namespace
 {
-struct Url
-{
-    std::wstring host, path;
-    INTERNET_PORT port = 0;
-    bool secure = false;
-};
-
-bool ParseUrl(const char* text, Url& url)
-{
-    std::string s = text;
-    if (s.rfind("wss://", 0) == 0)
-        url.secure = true, s = s.substr(6);
-    else if (s.rfind("ws://", 0) == 0)
-        s = s.substr(5);
-    else
-        return false;
-    const size_t slash = s.find('/');
-    std::string host = s.substr(0, slash), path = slash == std::string::npos ? "/" : s.substr(slash);
-    url.port = url.secure ? INTERNET_DEFAULT_HTTPS_PORT : INTERNET_DEFAULT_HTTP_PORT;
-    if (const size_t colon = host.find(':'); colon != std::string::npos)
-        url.port = INTERNET_PORT(atoi(host.c_str() + colon + 1)), host.resize(colon);
-    url.host.assign(host.begin(), host.end());
-    url.path.assign(path.begin(), path.end());
-    return true;
-}
-
-// One WebSocket to the server: the handles to close with it
-struct WebSocket
-{
-    HINTERNET session = nullptr, connection = nullptr, socket = nullptr;
-    ~WebSocket()
-    {
-        if (socket)
-        {
-            WinHttpWebSocketClose(socket, WINHTTP_WEB_SOCKET_SUCCESS_CLOSE_STATUS, nullptr, 0);
-            WinHttpCloseHandle(socket);
-        }
-        if (connection)
-            WinHttpCloseHandle(connection);
-        if (session)
-            WinHttpCloseHandle(session);
-    }
-};
-
-std::unique_ptr<WebSocket> Open(const Url& url)
-{
-    auto ws = std::make_unique<WebSocket>();
-    ws->session = WinHttpOpen(L"FM2", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
-    if (!ws->session)
-        return nullptr;
-    WinHttpSetTimeouts(ws->session, 5000, 5000, 5000, 0); // resolve, connect, send; receives wait for the server
-    ws->connection = WinHttpConnect(ws->session, url.host.c_str(), url.port, 0);
-    if (!ws->connection)
-        return nullptr;
-    HINTERNET request = WinHttpOpenRequest(ws->connection, L"GET", url.path.c_str(), nullptr, WINHTTP_NO_REFERER,
-                                           WINHTTP_DEFAULT_ACCEPT_TYPES, url.secure ? WINHTTP_FLAG_SECURE : 0);
-    if (!request)
-        return nullptr;
-    bool ok = WinHttpSetOption(request, WINHTTP_OPTION_UPGRADE_TO_WEB_SOCKET, nullptr, 0) &&
-              WinHttpSendRequest(request, WINHTTP_NO_ADDITIONAL_HEADERS, 0, nullptr, 0, 0, 0) &&
-              WinHttpReceiveResponse(request, nullptr);
-    if (ok)
-        ws->socket = WinHttpWebSocketCompleteUpgrade(request, 0);
-    WinHttpCloseHandle(request);
-    return ws->socket ? std::move(ws) : nullptr;
-}
-
 // Carry one accepted connection: the game's bytes to the WebSocket, and its messages back
-void Carry(SOCKET game, Url url)
+void Carry(SOCKET game, std::string url)
 {
-    std::shared_ptr<WebSocket> ws = Open(url);
+    std::shared_ptr<WebSocketClient> ws = WebSocketClient::Open(url);
     if (!ws)
     {
-        Log("title relay: no WebSocket to %ls%ls (error %lu)", url.host.c_str(), url.path.c_str(), GetLastError());
         closesocket(game);
         return;
     }
-    Log("title relay: connected to %ls%ls", url.host.c_str(), url.path.c_str());
+    Log("title relay: connected to %s", url.c_str());
     std::thread back([ws, game] {
-        std::string buffer(64 * 1024, '\0');
-        for (;;)
-        {
-            DWORD read = 0;
-            WINHTTP_WEB_SOCKET_BUFFER_TYPE type;
-            if (WinHttpWebSocketReceive(ws->socket, buffer.data(), DWORD(buffer.size()), &read, &type) != NO_ERROR ||
-                type == WINHTTP_WEB_SOCKET_CLOSE_BUFFER_TYPE)
-                break;
-            for (DWORD sent = 0; sent < read;)
+        for (std::vector<uint8_t> message; ws->Receive(message);)
+            for (size_t sent = 0; sent < message.size();)
             {
-                const int n = send(game, buffer.data() + sent, int(read - sent), 0);
+                const int n = send(game, reinterpret_cast<const char*>(message.data() + sent), int(message.size() - sent), 0);
                 if (n <= 0)
                     break;
-                sent += DWORD(n);
+                sent += size_t(n);
             }
-        }
         shutdown(game, SD_BOTH); // the game sees the connection drop, and reconnects
     });
     char buffer[64 * 1024];
     for (int n; (n = recv(game, buffer, sizeof(buffer), 0)) > 0;)
-        if (WinHttpWebSocketSend(ws->socket, WINHTTP_WEB_SOCKET_BINARY_MESSAGE_BUFFER_TYPE, buffer, DWORD(n)) != NO_ERROR)
+        if (!ws->Send(buffer, size_t(n)))
             break;
-    WinHttpWebSocketClose(ws->socket, WINHTTP_WEB_SOCKET_SUCCESS_CLOSE_STATUS, nullptr, 0);
+    ws->Close();
     back.join();
     closesocket(game);
     Log("title relay: connection closed");
@@ -130,15 +54,16 @@ bool TitleRelayAddress(sockaddr_in& address)
 {
     static std::mutex m;
     static sockaddr_in listening{};
-    static Url url;
+    static std::string url;
     static bool tried = false, ready = false;
     std::lock_guard lock(m);
     if (!tried)
     {
         tried = true;
         const char* target = getenv("FM2_TITLE_SERVER");
-        if (!target || !ParseUrl(target, url))
+        if (!WebSocketClient::IsUrl(target))
             return false;
+        url = target;
         const SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
         listening.sin_family = AF_INET;
         listening.sin_addr.s_addr = htonl(INADDR_LOOPBACK);

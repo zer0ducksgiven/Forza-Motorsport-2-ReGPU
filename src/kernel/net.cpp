@@ -34,6 +34,7 @@
 
 #include "kernel/imports.h"
 #include "kernel/sessions.h"
+#include "kernel/websocket.h"
 #include "log.h"
 #include "settings.h"
 
@@ -71,6 +72,7 @@ constexpr uint32_t kBroadcast = 0xFFFFFFFF;
 // FM2 Live server protocol (tools/online/fm2_live_server.py): every packet starts with 'RLV1'
 // and a type byte.
 constexpr uint32_t kLiveMagic = 0x524C5631;
+constexpr uint32_t kStunCookie = 0x2112A442;
 constexpr uint16_t kLiveVersion = 1, kLiveDefaultPort = 21100;
 enum LiveType : uint8_t
 {
@@ -193,6 +195,9 @@ struct Endpoint
     bool operator==(const Endpoint& o) const { return ip == o.ip && port == o.port; }
     bool operator!=(const Endpoint& o) const { return !(*this == o); }
 };
+
+// Where packets "from the server" come from when it's a Worker reached over a WebSocket: no real address
+const Endpoint kWsServer{ 0xFFFFFFFEu, 1 };
 
 // Another player on the server.
 struct LivePeer
@@ -739,11 +744,25 @@ private:
         peer.nextPunch = now;
     }
 
-    std::string ServerName() const { return serverHost_ + ":" + std::to_string(serverPort_); }
+    std::string ServerName() const { return wsMode_ ? serverHost_ : serverHost_ + ":" + std::to_string(serverPort_); }
 
     bool ResolveServer()
     {
         std::string spec = getenv("FM2_SERVER");
+        if (WebSocketClient::IsUrl(spec.c_str()))
+        {
+            // The server is a Worker (server/live): its messages go over a WebSocket, the players' datagrams
+            // still go player to player (each finds its public address with STUN)
+            std::lock_guard lock(mutex_);
+            if (!wsMode_)
+            {
+                wsMode_ = true;
+                serverHost_ = spec;
+                server_ = kWsServer;
+                std::thread([this] { WebSocketLoop(); }).detach();
+            }
+            return true;
+        }
         serverPort_ = kLiveDefaultPort;
         if (auto colon = spec.rfind(':'); colon != std::string::npos)
         {
@@ -773,7 +792,99 @@ private:
         Store32(packet.data(), kLiveMagic);
         packet[4] = type;
         memcpy(packet.data() + 5, body.data(), body.size());
+        if (wsMode_ && to == kWsServer)
+        {
+            std::shared_ptr<WebSocketClient> ws;
+            {
+                std::lock_guard lock(mutex_);
+                ws = ws_;
+            }
+            if (ws)
+                ws->Send(packet.data(), packet.size());
+            return;
+        }
         SendHost(to, packet);
+    }
+
+    // The Worker's WebSocket: connected (again) while the game runs; each message is one server packet
+    void WebSocketLoop()
+    {
+        for (;;)
+        {
+            std::shared_ptr<WebSocketClient> ws = WebSocketClient::Open(serverHost_);
+            if (ws)
+            {
+                Log("net: connected to the FM2 Live server %s", serverHost_.c_str());
+                {
+                    std::lock_guard lock(mutex_);
+                    ws_ = ws;
+                }
+                SendHello();
+                for (std::vector<uint8_t> message; ws->Receive(message);)
+                    if (message.size() >= 5 && Load32(message.data()) == kLiveMagic)
+                        OnLive(kWsServer, message[4], message.data() + 5, message.size() - 5);
+                {
+                    std::lock_guard lock(mutex_);
+                    ws_.reset();
+                    liveId_ = 0;
+                }
+                Log("net: lost the FM2 Live server %s; reconnecting", serverHost_.c_str());
+            }
+            std::this_thread::sleep_for(std::chrono::seconds(3));
+        }
+    }
+
+    // STUN (RFC 5389) from our UDP socket: the public address other players reach us at, which the server
+    // can't see over a WebSocket. FM2_STUN=host:port (default stun.cloudflare.com:3478).
+    void SendStun()
+    {
+        if (!stunServer_.ip)
+        {
+            std::string spec = getenv("FM2_STUN") ? getenv("FM2_STUN") : "stun.cloudflare.com:3478";
+            uint16_t port = 3478;
+            if (auto colon = spec.rfind(':'); colon != std::string::npos)
+                port = uint16_t(atoi(spec.c_str() + colon + 1)), spec.resize(colon);
+            addrinfo hints{}, *result = nullptr;
+            hints.ai_family = AF_INET;
+            hints.ai_socktype = SOCK_DGRAM;
+            if (getaddrinfo(spec.c_str(), nullptr, &hints, &result) != 0 || !result)
+                return;
+            stunServer_ = { ntohl(reinterpret_cast<sockaddr_in*>(result->ai_addr)->sin_addr.s_addr), port };
+            freeaddrinfo(result);
+        }
+        std::vector<uint8_t> request(20, 0);
+        Store16(request.data(), 0x0001); // binding request, no attributes
+        Store32(request.data() + 4, kStunCookie);
+        for (size_t i = 8; i < 20; i++)
+            request[i] = uint8_t(liveToken_ >> (8 * (i % 8)));
+        SendHost(stunServer_, request);
+    }
+
+    // A STUN binding success: its XOR-MAPPED-ADDRESS (or MAPPED-ADDRESS) as our public endpoint
+    bool OnStun(const uint8_t* p, size_t n)
+    {
+        if (n < 20 || Load16(p) != 0x0101 || Load32(p + 4) != kStunCookie)
+            return false;
+        for (size_t at = 20; at + 4 <= n;)
+        {
+            const uint16_t type = Load16(p + at), size = Load16(p + at + 2);
+            if (at + 4 + size > n)
+                break;
+            if ((type == 0x0020 || type == 0x0001) && size >= 8 && p[at + 5] == 1) // IPv4
+            {
+                uint16_t port = Load16(p + at + 6);
+                uint32_t ip = Load32(p + at + 8);
+                if (type == 0x0020)
+                    port ^= uint16_t(kStunCookie >> 16), ip ^= kStunCookie;
+                std::lock_guard lock(mutex_);
+                if (stunPublic_.ip != ip || stunPublic_.port != port)
+                    Log("net: public address %s:%u (STUN)", IpString(ip).c_str(), port);
+                stunPublic_ = { ip, port };
+                return true;
+            }
+            at += 4 + ((size + 3) & ~3u);
+        }
+        return true;
     }
 
     void SendHello()
@@ -791,13 +902,25 @@ private:
         body.push_back(0); // room: everyone on the server
         body.push_back(uint8_t(name.size()));
         body.insert(body.end(), name.begin(), name.end());
+        if (wsMode_)
+        {
+            // where other players reach us (STUN; zeros until it answers), which a server behind a WebSocket can't see
+            Endpoint pub;
+            {
+                std::lock_guard lock(mutex_);
+                pub = stunPublic_;
+            }
+            body.resize(body.size() + 6);
+            Store32(body.data() + body.size() - 6, pub.ip);
+            Store16(body.data() + body.size() - 2, pub.port);
+        }
         SendLive(server_, kHello, body);
     }
 
     // Registration, keep-alive and hole punching.
     void LiveLoop()
     {
-        Clock::time_point nextHello{}, nextResolve{};
+        Clock::time_point nextHello{}, nextResolve{}, nextStun{};
         bool resolved = false;
         for (;;)
         {
@@ -806,6 +929,16 @@ private:
             {
                 resolved = ResolveServer();
                 nextResolve = now + std::chrono::seconds(10);
+            }
+            if (resolved && wsMode_ && now >= nextStun)
+            {
+                SendStun();
+                Endpoint pub;
+                {
+                    std::lock_guard lock(mutex_);
+                    pub = stunPublic_;
+                }
+                nextStun = now + std::chrono::seconds(pub.ip ? 25 : 2); // keeps the NAT mapping open too
             }
             if (resolved && now >= nextHello)
             {
@@ -1052,6 +1185,8 @@ private:
                 continue;
             }
             const Endpoint endpoint{ ntohl(from.sin_addr.s_addr), ntohs(from.sin_port) };
+            if (wsMode_ && endpoint == stunServer_ && OnStun(buffer.data(), size_t(n)))
+                continue;
             const uint32_t magic = Load32(buffer.data());
             if (magic == kLiveMagic)
             {
@@ -1084,6 +1219,9 @@ private:
     std::string serverHost_;
     uint16_t serverPort_ = kLiveDefaultPort;
     Endpoint server_;
+    bool wsMode_ = false;                 // FM2_SERVER is a ws(s):// URL (the Worker)
+    std::shared_ptr<WebSocketClient> ws_; // its connection, while there is one
+    Endpoint stunServer_, stunPublic_;
     uint64_t liveToken_ = 0; // tells the server a restarted game from a stale registration
     uint32_t liveId_ = 0;    // our id on the server, 0 until it welcomes us
     uint16_t liveEpoch_ = 0;

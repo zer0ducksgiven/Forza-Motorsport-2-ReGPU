@@ -8,3 +8,13 @@ compatibility_date = "2025-06-01"
 binding = "DB"
 database_name = "fm2-live"
 database_id = "local"
+
+# FM2 Live sessions (src/live_room.js): one Durable Object holds the players' WebSockets. SQLite-backed, which the
+# free plan allows.
+[[durable_objects.bindings]]
+name = "LIVE"
+class_name = "LiveRoom"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["LiveRoom"]

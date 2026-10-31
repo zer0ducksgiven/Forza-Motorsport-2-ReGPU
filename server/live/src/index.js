@@ -1,5 +1,6 @@
 // FM2 Live: the port's stand-in for Xbox Live: leaderboards (src/kernel/leaderboards.cpp is the client), and
-// GET /xts as a WebSocket: the title services (the auction house; src/xts.js, the port's kernel/net.cpp the client).
+// GET /xts as a WebSocket: the title services (the auction house; src/xts.js, the port's kernel/net.cpp the client),
+// GET /live as a WebSocket: sessions, presence and matchmaking (src/live_room.js; replaces tools/online/fm2_live_server.py).
 // Plain text in and out, a line each, so the C++ side needs no JSON:
 //
 // POST /stats/write   "<xuid hex> <gamertag>" then one line per view: "<view> rating=<n> car=<n> ..."
@@ -10,6 +11,7 @@
 //                     ("-" for a column never written).
 
 import { xtsSocket } from "./xts.js";
+export { LiveRoom } from "./live_room.js";
 
 const COLUMNS = ["car", "assists", "datetime", "time", "mode", "pi"];
 const INTEGER = /^-?\d{1,20}$/;
@@ -20,6 +22,8 @@ export default {
     const url = new URL(request.url);
     if (url.pathname === "/xts" && request.headers.get("Upgrade") === "websocket")
       return xtsSocket(request, env);
+    if (url.pathname === "/live") // sessions: one Durable Object for everyone
+      return env.LIVE.get(env.LIVE.idFromName("live")).fetch(request);
     if (request.method !== "POST") return text("FM2 Live\n");
     const body = (await request.text()).slice(0, 64 * 1024);
     try {
