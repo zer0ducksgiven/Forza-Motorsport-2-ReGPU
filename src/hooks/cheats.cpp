@@ -109,6 +109,7 @@ PPC_FUNC_IMPL(__imp__sub_8220FD20);
 // luaL_checkudata(L, index, type): the first App::Forza with a profile loaded gets the cheat.
 PPC_FUNC(sub_8254E1A0)
 {
+    FM2_SHADOW_ORIGINAL(__imp__sub_8254E1A0);
     const uint32_t type = ctx.r5.u32;
     __imp__sub_8254E1A0(ctx, base);
     static bool done = false;
@@ -139,6 +140,7 @@ PPC_FUNC_IMPL(__imp__sub_8245FD08);
 // a profile value goes through it (the menus' ProfileManager.Main.Credits as well as GetCredits).
 PPC_FUNC(sub_8245FD08)
 {
+    FM2_SHADOW_ORIGINAL(__imp__sub_8245FD08);
     const uint32_t key = ctx.r5.u32, result = ctx.r3.u32;
     __imp__sub_8245FD08(ctx, base);
     if (!g_profileLoaded && key && KeyIs(key, "Credits"))

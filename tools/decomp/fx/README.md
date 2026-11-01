@@ -3,7 +3,8 @@
 Copied into `<install>\lift\` on the test PC (the FX), with the check build as `build\tu\fm2-lift.exe`. The game needs
 the logged-in desktop, so a scheduled task (`schtasks /create /tn FM2LiftTest /tr <install>\lift\job.cmd /sc once
 /st 00:00 /sd 01/01/2030 /it /f`) runs each line of `lift\job.txt`; `schtasks /run /tn FM2LiftTest` starts it, and
-`lift\job.done` appears when it ends (output in `lift\job.out`).
+`lift\job.done` appears when it ends (output in `lift\job.out`). Wait a few seconds after writing job.txt over
+the network before starting the task: started at once, it can read the file empty and end straight away.
 
 - `runwatch.py <log> <tour> [enable file | -] [KEY=VALUE ...]`: one windowed 720p run with the debug server; killed
   when the frame count stops for FREEZE seconds (8; checks.py uses 120, as checks during boot stall frames for ~30).

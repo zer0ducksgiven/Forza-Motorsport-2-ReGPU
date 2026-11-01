@@ -100,8 +100,11 @@ them, checked against the originals. Lifted code goes to `out/lift` (never commi
    every branch run in a passing check, across the routes given.
    `FM2_LIFT_ENABLE=<file of addresses>` runs only some lifted, for bisecting a bad one.
 
-tools/patch_mem.py routes the recompiled code's vector loads and stores, lwarx/stwcx. and dcbz through macros, so
-they use the overlay too, and so do the critical sections (src/kernel/imports_rtl.cpp; one held by another thread
+tools/patch_mem.py routes the recompiled code's vector loads and stores, lwarx/stwcx., dcbz and setjmp/longjmp
+through macros, so they use the overlay too (a lifted run may longjmp only to a setjmp of its own: Lua's error throw
+blocked 1,155 functions otherwise). Hooks that only add to their original (a log line, a counter, a cheat applied
+once) start with FM2_SHADOW_ORIGINAL(__imp__sub_X), which runs the original instead inside a check run, and checks
+follow calls into them; and so do the critical sections (src/kernel/imports_rtl.cpp; one held by another thread
 ends the run) and mtmsrd (the interrupt lock is skipped there). A check's lifted run is abandoned if it reaches any other
 kernel import, a hook (directly or through a pointer), setjmp/longjmp, faults, or spins (2 million loads): it hasn't
 touched guest memory yet. A fault or a spin rules the function out; an import or a hook only leaves that call

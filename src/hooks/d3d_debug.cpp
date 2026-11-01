@@ -20,6 +20,7 @@ std::atomic<uint32_t> g_waitPosition{ 0 }, g_waitGeneration{ 0 }, g_waitDevice{ 
 // D3D: wait until the GPU retires command position r4 (generation r5).
 PPC_FUNC(sub_82371D60)
 {
+    FM2_SHADOW_ORIGINAL(__imp__sub_82371D60);
     g_waitDevice = ctx.r3.u32;
     g_waitPosition = ctx.r4.u32;
     g_waitGeneration = ctx.r5.u32;
@@ -72,6 +73,7 @@ std::vector<std::string> g_kicks;
 // D3D: submit r5 indirect buffers listed at r4 ({address, size} pairs) to the ring.
 PPC_FUNC(sub_823724C8)
 {
+    FM2_SHADOW_ORIGINAL(__imp__sub_823724C8);
     {
         char line[256];
         int n = snprintf(line, sizeof(line), "thread %u kicks %u:", CurrentGuestThreadId(), ctx.r5.u32);
@@ -153,12 +155,14 @@ std::atomic<uint64_t> g_apiDraws{ 0 }, g_apiDraws2{ 0 };
 // The only two functions that build draw packets (DRAW_INDX / DRAW_INDX_2).
 PPC_FUNC(sub_8237D158)
 {
+    FM2_SHADOW_ORIGINAL(__imp__sub_8237D158);
     g_apiDraws++;
     __imp__sub_8237D158(ctx, base);
 }
 
 PPC_FUNC(sub_8236D830)
 {
+    FM2_SHADOW_ORIGINAL(__imp__sub_8236D830);
     g_apiDraws2++;
     __imp__sub_8236D830(ctx, base);
 }

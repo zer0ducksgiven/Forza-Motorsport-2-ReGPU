@@ -136,6 +136,14 @@ template <typename T, typename A, typename B> inline bool Fm2Cas(uint8_t* base, 
 #define FM2_RESERVE32(p) Fm2Reserve(base, (p))
 #define FM2_RESERVE64(p) Fm2Reserve(base, (p))
 #define FM2_CAS(p, expected, desired) Fm2Cas(base, (p), (expected), (desired))
+// setjmp/longjmp (Lua's error handling): a lifted run may jump only to a setjmp of its own; a longjmp to one from
+// before the check would leave the check mid-way, so the run is abandoned there instead. setjmp writes the host
+// registers into the guest buffer directly, which is on the guest stack below the caller, where the original's
+// own setjmp writes next
+void Fm2NoteSetjmp(uint32_t buffer);
+void Fm2CheckLongjmp(uint32_t buffer);
+#define FM2_SETJMP(buf) (Fm2NoteSetjmp(FM2_GUEST(&(buf))), setjmp(buf))
+#define FM2_LONGJMP(buf, v)                     do                                          {                                               Fm2CheckLongjmp(FM2_GUEST(&(buf)));         longjmp((buf), (v));                    } while (0)
 #else
 // tools/patch_mem.py's macros, as XenonRecomp wrote them
 #define FM2_VLOAD(p) simde_mm_load_si128(p)
@@ -144,6 +152,8 @@ template <typename T, typename A, typename B> inline bool Fm2Cas(uint8_t* base, 
 #define FM2_RESERVE32(p) (*(p))
 #define FM2_RESERVE64(p) (*(p))
 #define FM2_CAS(p, expected, desired) __sync_bool_compare_and_swap((p), (expected), (desired))
+#define FM2_SETJMP(buf) setjmp(buf)
+#define FM2_LONGJMP(buf, v) longjmp((buf), (v))
 #endif
 
 // MSR[EE] cleared -> take the global interrupt lock; set -> release it.

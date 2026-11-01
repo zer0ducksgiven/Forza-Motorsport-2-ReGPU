@@ -9,6 +9,17 @@
 #include "log.h"
 #include "memory.h"
 
+// FM2_SHADOW_ORIGINAL(__imp__sub_X); first in a hook that only adds to its original (a log line, a counter, a cheat
+// applied once): inside a lifted function's check run (src/decomp/lift.cpp) the original runs instead, against the
+// check's overlay, as the hook's own C++ would read and write real memory. tools/decomp/lift.py lets checks follow
+// calls into these hooks (the rest end a check run, and keep their callers from being lifted).
+#ifdef FM2_STORE_LOG
+extern thread_local bool g_fm2Shadow;
+#define FM2_SHADOW_ORIGINAL(original)     do                                    {                                         if (g_fm2Shadow)                      {                                         original(ctx, base);                  return;                           }                                 } while (0)
+#else
+#define FM2_SHADOW_ORIGINAL(original)     do                                    {                                     } while (0)
+#endif
+
 // Every import goes through TraceImport and TraceImportReturn (FM2_TRACE_IMPORTS=<seconds>: log calls made
 // after that time, a few per name, with what they return; FM2_TRACE_IMPORTS_MATCH=Xam,XNotify: only names
 // containing one of those).

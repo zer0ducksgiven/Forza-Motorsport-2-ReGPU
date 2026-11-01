@@ -5,7 +5,8 @@
 
 XenonRecomp writes vector loads and stores, lwarx/stwcx. and dcbz straight to guest memory
 (simde_mm_load_si128/simde_mm_store_si128 on base + ea, a plain load, __sync_bool_compare_and_swap,
-memset). They become FM2_VLOAD, FM2_VSTORE, FM2_RESERVE32/64, FM2_CAS and FM2_MEMSET (src/ppc_hooks.h),
+memset), and setjmp/longjmp. They become FM2_VLOAD, FM2_VSTORE, FM2_RESERVE32/64, FM2_CAS, FM2_MEMSET,
+FM2_SETJMP and FM2_LONGJMP (src/ppc_hooks.h),
 which are exactly those calls in a normal build; an FM2_STORE_LOG build points them at the lifted
 functions' check overlay and store log (src/decomp/lift.h) like the scalar loads and stores.
 
@@ -20,6 +21,8 @@ RULES = [
     ('simde_mm_store_si128((simde__m128i*)(base + ', 'FM2_VSTORE((simde__m128i*)(base + '),
     ('__sync_bool_compare_and_swap(reinterpret_cast<uint', 'FM2_CAS(reinterpret_cast<uint'),
     ('\tmemset(base + ', '\tFM2_MEMSET(base + '),
+    ('= setjmp(*reinterpret_cast<jmp_buf*>(base + ', '= FM2_SETJMP(*reinterpret_cast<jmp_buf*>(base + '),
+    ('\tlongjmp(*reinterpret_cast<jmp_buf*>(base + ', '\tFM2_LONGJMP(*reinterpret_cast<jmp_buf*>(base + '),
 ]
 RESERVE = re.compile(r'^(\treserved\.u(32|64) = )\*\(uint\2_t\*\)\((base \+ [^\n]*)\);$', re.M)
 

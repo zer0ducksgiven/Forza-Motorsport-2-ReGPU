@@ -23,6 +23,7 @@ extern std::atomic<uint32_t> g_titleWaitAddress;
 
 PPC_FUNC(sub_82369340)
 {
+    FM2_SHADOW_ORIGINAL(__imp__sub_82369340);
     static LiveSwitch probe("FM2_PROBE_WAIT");
     if (probe)
     {
@@ -298,6 +299,7 @@ PPC_FUNC(sub_827C3BF0)
 
 PPC_FUNC(sub_827C3CB8)
 {
+    FM2_SHADOW_ORIGINAL(__imp__sub_827C3CB8);
     static const uint32_t minBytes = getenv("FM2_PROBE_HEAP") ? 1u : 0u;
     if (minBytes)
         Log("probe: free(%08X) (lr %08llX)", ctx.r3.u32, ctx.lr);
@@ -323,6 +325,7 @@ static uint64_t PatchConfigHash(PPCContext& ctx)
 
 PPC_FUNC(sub_8272F650)
 {
+    FM2_SHADOW_ORIGINAL(__imp__sub_8272F650);
     static LiveSwitch record("FM2_RECORD_CONFIGS");
     if (record)
     {

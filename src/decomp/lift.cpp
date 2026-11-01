@@ -3,6 +3,7 @@
 
 #include <windows.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -37,6 +38,7 @@ struct ReadByte
     uint8_t value;
 };
 thread_local std::vector<ReadByte>* t_reads = nullptr;
+thread_local std::vector<uint32_t>* t_jmpbufs = nullptr; // setjmp buffers the current lifted run set
 thread_local int t_depth = 0; // inside a check: everything below runs as the original
 thread_local uint64_t t_shadowLoads = 0;
 
@@ -201,6 +203,21 @@ void Fm2ShadowRead(const uint8_t* base, uint32_t addr, void* out, uint32_t size)
 
 static void ShadowSizeGuard();
 
+void Fm2NoteSetjmp(uint32_t buffer)
+{
+    if (g_fm2Shadow && t_jmpbufs)
+        t_jmpbufs->push_back(buffer);
+}
+
+void Fm2CheckLongjmp(uint32_t buffer)
+{
+    if (g_fm2Shadow && (!t_jmpbufs || std::find(t_jmpbufs->begin(), t_jmpbufs->end(), buffer) == t_jmpbufs->end()))
+    {
+        t_escapedBy = "longjmp";
+        throw ShadowEscape{};
+    }
+}
+
 void Fm2ShadowWrite(uint32_t addr, const void* in, uint32_t size)
 {
     ShadowSizeGuard();
@@ -275,8 +292,10 @@ void LiftRun(LiftStats& s, PPCContext& ctx, uint8_t* base, PPCFunc* original, PP
     g_fm2StoreLog = false;
     std::unordered_map<uint32_t, uint8_t> overlay;
     std::vector<ReadByte> reads;
+    std::vector<uint32_t> jmpbufs;
     t_overlay = &overlay;
     t_reads = &reads;
+    t_jmpbufs = &jmpbufs;
     g_fm2Shadow = true;
     PPCContext c = ctx;
     t_shadowLoads = 0;
@@ -289,6 +308,7 @@ void LiftRun(LiftStats& s, PPCContext& ctx, uint8_t* base, PPCFunc* original, PP
     g_fm2StoreLog = outerLogging;
     t_overlay = nullptr;
     t_reads = nullptr;
+    t_jmpbufs = nullptr;
     if (escaped)
     {
         t_depth--;

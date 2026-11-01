@@ -907,12 +907,14 @@ def main(argv):
                 t = open(os.path.join(d, f), encoding='utf-8', errors='replace').read()
                 taken |= {int(a, 16) for a in re.findall(r'TU_SUB\(([0-9A-F]{8})\)', t)}
     hooked = set()  # replaced by the port's own C++ (their stores aren't logged)
+    passthrough = set()  # hooks that run their original inside a check (FM2_SHADOW_ORIGINAL): checks follow them
     for d in ('build/cov/remapped', 'build/tu/remapped'):
         for dd, _, files in os.walk(os.path.join(ROOT, d)):
             for f in files:
                 if f.endswith('.cpp'):
                     t = open(os.path.join(dd, f), encoding='utf-8', errors='replace').read()
                     hooked |= {int(a, 16) for a in re.findall(r'PPC_FUNC\(sub_([0-9A-F]{8})\)', t)}
+                    passthrough |= {int(a, 16) for a in re.findall(r'PPC_FUNC\(sub_([0-9A-F]{8})\)\s*\{\s*FM2_SHADOW_ORIGINAL', t)}
     for d in ('build/cov/generated', 'build/tu/generated'):
         for dd, _, files in os.walk(os.path.join(ROOT, d)):
             for f in files:
@@ -921,8 +923,8 @@ def main(argv):
                     taken |= {int(a, 16) for a in re.findall(r'PPC_FUNC\(sub_([0-9A-F]{8})\)', t)}
     taken |= hooked
     # A check runs the lifted version against an overlay, so everything it calls has to keep to loads and stores
-    # that go through it (tools/patch_mem.py routes the vector and block ones there): no setjmp/longjmp, and no
-    # hooks (the port's C++). Imports and calls through pointers are caught as they happen (the run is abandoned and
+    # that go through it (tools/patch_mem.py routes the vector and block ones there, and setjmp/longjmp, which may
+    # only jump within the run), and no hooks (the port's C++). Imports and calls through pointers are caught as they happen (the run is abandoned and
     # the function isn't kept); --strict leaves out functions that reach them at all.
     calls, impure, setups, extended = {}, set(), {}, {}
     ppc = os.path.join(ROOT, 'out', 'ppc_tu4')
@@ -938,7 +940,7 @@ def main(argv):
                 extended[a] = {int(r) for r in re.findall(r'// (?:extsw|clrldi|rldicl) r\d+,r(\d+)', body)}
                 follows = not follow and re.search(r'PPC_CALL_INDIRECT_FUNC|__imp__(?!sub_)\w+\(ctx, base\)', body)
                 # (vector stores, lwarx/stwcx. and dcbz go through the overlay too: tools/patch_mem.py)
-                if re.search(r'setjmp|longjmp|simde_mm_store\w*\(\(\w+\*\)\(base|[^_]memset\(base|memcpy\(base', body) or a in hooked or follows:
+                if re.search(r'setjmp|longjmp|simde_mm_store\w*\(\(\w+\*\)\(base|[^_]memset\(base|memcpy\(base', body) or (a in hooked and a not in passthrough) or follows:
                     impure.add(a)
     changed = True
     while changed:
@@ -968,7 +970,7 @@ def main(argv):
             if addr in taken:
                 raise Reject('already replaced')
             if addr in unlogged:
-                raise Reject('hooks or setjmp in its calls')
+                raise Reject('hooks in its calls')
             c = f['c']
             if len(c) > 150000:  # 82750DE0, the 74 KB D3D function: too big for this lifter to finish
                 raise Reject('too big')

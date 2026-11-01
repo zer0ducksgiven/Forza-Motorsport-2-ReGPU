@@ -20,6 +20,7 @@ PPC_FUNC_IMPL(__imp__sub_824B91F0);
 // luaD_throw
 PPC_FUNC(sub_824B91F0)
 {
+    FM2_SHADOW_ORIGINAL(__imp__sub_824B91F0);
     const uint32_t L = ctx.r3.u32, errcode = ctx.r4.u32;
     const uint32_t top = __builtin_bswap32(*GuestPtr<uint32_t>(L + 8));
     const uint32_t tag = __builtin_bswap32(*GuestPtr<uint32_t>(top - 16 + 8));
