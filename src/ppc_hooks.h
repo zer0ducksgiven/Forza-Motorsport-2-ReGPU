@@ -4,6 +4,22 @@
 
 struct PPCContext;
 
+#ifdef FM2_COVERAGE
+// Which recompiled functions run (src/coverage.cpp). The generated PPC_FUNC_PROLOGUE() is defined after this
+// header, unguarded, as a __builtin_assume, so that's what is redefined: each function records its name once.
+void Fm2Cover(const char* func);
+#define __builtin_assume(x)                \
+    do                                     \
+    {                                      \
+        static bool fm2_seen;              \
+        if (!fm2_seen)                     \
+        {                                  \
+            fm2_seen = true;               \
+            Fm2Cover(__func__);            \
+        }                                  \
+    } while (0)
+#endif
+
 // MSR[EE] cleared -> take the global interrupt lock; set -> release it.
 void PPCMsrChanged(PPCContext& ctx, uint64_t oldMsr);
 #define PPC_MSR_CHANGED(ctx, oldMsr)                       \

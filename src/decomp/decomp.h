@@ -41,6 +41,12 @@ struct DecompStats
 };
 void DecompReport(DecompStats& s, bool same, uint32_t r3, uint32_t original, uint32_t decompiled, const char* what);
 
+// Turn 10's name hash (name_hash.cpp) on a guest string.
+uint32_t DecompHashName(const uint8_t* base, uint32_t s);
+// A HashedName start-up constant: *global = hash of the string (hashed_names.cpp; the replacements that call it are
+// generated from the image by tools/decomp/gen_hashed_names.py).
+void HashedNameInit(PPCContext& ctx, uint8_t* base, PPCFunc* original, uint32_t string, uint32_t global);
+
 // original: runs the recompiled function on ctx; decompiled: the C++ version. regions(ctx) lists what may change.
 template <typename Original, typename Decompiled, typename Regions>
 void DecompCheck(DecompStats& stats, PPCContext& ctx, uint8_t* base, Original original, Decompiled decompiled, Regions regions)

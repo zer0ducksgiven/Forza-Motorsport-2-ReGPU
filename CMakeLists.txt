@@ -14,6 +14,11 @@ add_subdirectory(thirdparty/XenonRecomp EXCLUDE_FROM_ALL)
 # recompiled code is out/ppc_tu4, the guest addresses in the hooks are translated into the
 # build folder, and the loader applies the update's default.xexp to your default.xex.
 option(FM2_TITLE_UPDATE "Build for the title-updated executable" OFF)
+# Records which recompiled functions run (src/coverage.cpp); slower, for a build folder of its own.
+option(FM2_COVERAGE "Record the recompiled functions that run" OFF)
+if(FM2_COVERAGE)
+    add_compile_definitions(FM2_COVERAGE=1)
+endif()
 
 # Recompiled game code (out/ppc, produced by XenonRecomp from your own
 # default.xex; never committed).
@@ -102,6 +107,15 @@ add_custom_command(OUTPUT "${FM2_GENERATED}/smaa_cs.h"
     DEPENDS "${CMAKE_SOURCE_DIR}/src/gpu/smaa_passes.hlsl" "${CMAKE_SOURCE_DIR}/thirdparty/smaa/SMAA.hlsl" "${CMAKE_SOURCE_DIR}/tools/embed_hlsl.py"
     COMMENT "Compiling SMAA shaders")
 list(APPEND FM2_SOURCES "${FM2_GENERATED}/smaa_cs.h")
+if(FM2_TITLE_UPDATE)
+    # Native replacements for the game's HashedName start-up constants, found in your own image (src/decomp/hashed_names.cpp).
+    add_custom_command(OUTPUT "${FM2_GENERATED}/hashed_names.cpp"
+        COMMAND py -3 -I "${CMAKE_SOURCE_DIR}/tools/decomp/gen_hashed_names.py" "${FM2_TU_DIR}/image.bin"
+                "${FM2_PPC_DIR}/ppc_func_mapping.cpp" "${FM2_GENERATED}/hashed_names.cpp"
+        DEPENDS "${FM2_TU_DIR}/image.bin" "${FM2_PPC_DIR}/ppc_func_mapping.cpp" "${CMAKE_SOURCE_DIR}/tools/decomp/gen_hashed_names.py"
+        COMMENT "Finding the HashedName constants")
+    list(APPEND FM2_SOURCES "${FM2_GENERATED}/hashed_names.cpp")
+endif()
 set(FM2_DLSS "${CMAKE_SOURCE_DIR}/thirdparty/dlss")
 if(NOT EXISTS "${FM2_DLSS}/include/nvsdk_ngx.h")
     message(FATAL_ERROR "thirdparty/dlss is missing: clone NVIDIA/DLSS v310.9.16 there (see README)")

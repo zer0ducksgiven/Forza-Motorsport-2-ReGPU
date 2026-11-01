@@ -4,7 +4,7 @@
 // (extsb), and the top bit set on the result.
 #include "decomp/decomp.h"
 
-static uint32_t HashName(const uint8_t* base, uint32_t s)
+uint32_t DecompHashName(const uint8_t* base, uint32_t s)
 {
     uint32_t h = 0;
     for (int n = 0; n < 100; n++, s++)
@@ -23,7 +23,7 @@ PPC_FUNC(TU_SUB(827F4280))
 {
     static DecompStats stats{ "name hash" };
     DecompCheck(stats, ctx, base, TU_IMP(827F4280),
-        [](PPCContext& ctx, uint8_t* base) { ctx.r3.u64 = HashName(base, ctx.r3.u32); },
+        [](PPCContext& ctx, uint8_t* base) { ctx.r3.u64 = DecompHashName(base, ctx.r3.u32); },
         [](PPCContext&) { return std::vector<DecompRegion>{}; });
 }
 #endif
