@@ -1,13 +1,15 @@
 """Each recompiled function's real inputs: the argument registers (r3-r10, f1-f13) it reads before writing them.
 
-  py -3 tools/decomp/livein.py      -> out/decomp/livein.json {address: [registers]}
+  py -3 tools/decomp/livein.py      -> out/decomp/livein.json {address: [registers]}, and livein.txt for Ghidra
+                                       (ghidra/ApplyParamsFm2.java)
 
 Ghidra's C names a call's arguments from its own guess at the callee, and it drops some: lift.py compares a call
 with the registers the callee really reads (this) and the caller really sets up. Worked out by liveness over the
 XenonRecomp output (out/ppc_tu4), whose comments give each instruction and whose C gives what it reads and writes:
 a call reads what the callee reads and leaves the volatile registers undefined, repeated over the whole program
 until nothing changes. Kernel imports read what their C++ in src/kernel reads; a call through a pointer reads
-r3-r10 and f1-f13 (anything could be behind it).
+r3-r10 (anything could be behind it, but a float argument passed through untouched is rare, and counting them all
+made a third of the game's functions take 21 parameters).
 """
 import json
 import os
@@ -26,6 +28,7 @@ def bit(kind, n):
 
 
 ALL = (1 << 21) - 1
+INTS = (1 << 8) - 1  # r3-r10
 REG = re.compile(r'\bctx\.([rf])(\d+)\.')
 WRITE = re.compile(r'^\s*ctx\.([rf])(\d+)\.\w+\s*=[^=]')
 CALL = re.compile(r'\b(sub_[0-9A-F]{8}|__imp__\w+)\(ctx, base\)')
@@ -98,7 +101,7 @@ def livein(instrs, labels, summary, imports):
                 g |= imports.get(c[7:], ALL) & ~k
             k |= VOLATILE
         if ins['indirect']:
-            g |= ALL & ~k
+            g |= INTS & ~k
             k |= VOLATILE
         gen.append(g)
         kill.append(k)
@@ -158,7 +161,11 @@ def main():
             break
     out = os.path.join(ROOT, 'out', 'decomp', 'livein.json')
     json.dump({'%08X' % a: names(v) for a, v in summary.items()}, open(out, 'w'))
-    print('wrote', out)
+    # for ghidra/ApplyParamsFm2.java
+    with open(os.path.join(ROOT, 'out', 'decomp', 'livein.txt'), 'w') as f:
+        for a, v in sorted(summary.items()):
+            f.write(' '.join(['%08X' % a] + names(v)) + '\n')
+    print('wrote', out, 'and livein.txt')
 
 
 if __name__ == '__main__':

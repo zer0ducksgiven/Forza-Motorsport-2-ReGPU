@@ -109,8 +109,13 @@ FM2_LIFT_SHADOW_CS=0 and FM2_LIFT_SHADOW_MSR=0 end runs at those again. `--stric
 3,733 with them followed).
 
 Ghidra's C drops call arguments, so `py -3 tools/decomp/livein.py` works out each function's real inputs (the
-argument registers it reads before writing, by liveness over the recompiled code) and the lifter rejects a call
-that leaves out a register the original sets up and the callee reads (82297C38 lost a memmove's source and
+argument registers it reads before writing, by liveness over the recompiled code). `ghidra/apply_params.cmd` writes
+them into the Ghidra project as each function's parameters (32-bit pieces of the registers, custom storage; the
+project before is in D:\ghidra\projects\FM2-before-params), which fixes most of Ghidra's dropped arguments and a
+constant it folded through a call, and makes the C read better. Registers Ghidra still sees no setup for (in_r6,
+extraout_r4) are read where used; a 32-bit parameter widened to 64 bits is left out (Ghidra guesses the top half:
+8237E0D8 froze boot). The lifter also rejects a call that leaves out a register the original sets up and the callee
+reads (82297C38 lost a memmove's source and
 length, 824EBB68 a virtual call's this). From what else has bitten so far it rejects `void` functions whose r3
 differs (callers use it) and stack locals whose address goes to a callee (Ghidra folded one's value through the
 call), and keeps a function only once every branch of it has run in a passing check.

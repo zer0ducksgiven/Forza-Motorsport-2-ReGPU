@@ -200,6 +200,7 @@ def call_setup(body):
 # ---- the function --------------------------------------------------------------------------------------------
 
 REG = re.compile(r'^(r|f)(\d+):(\d+)$')
+REG_INPUT = re.compile(r'^(in|extraout|unaff)_([rf])(\d+)(_\d+)?$')
 
 
 class Lifter:
@@ -271,6 +272,8 @@ class Lifter:
             name = n.name
             if name in self.vars:
                 t, where, off = self.vars[name]
+                if where == 'reg':
+                    return ('r', reg_read(off[0], off[1], t), t)
                 if where == 'guest':
                     return ('mem', 'uint32_t(sp + %d)' % off, t)
                 return ('var', 'v_' + name, t)
@@ -325,6 +328,17 @@ class Lifter:
             return ('r', '((%s) ? %s(%s) : %s(%s))' % (c, t.cpp(), a, t.cpp(), b), t)
         if isinstance(n, c_ast.FuncCall):
             return self.call(n, None)
+        if isinstance(n, c_ast.StructRef):
+            # Ghidra's piece of a value: x._4_4_ is bytes 4-7 of it in memory order (big-endian: the low half of 8)
+            m = re.fullmatch(r'_(\d+)_(\d+)_', n.field.name) if n.type == '.' else None
+            if not m:
+                raise Reject('expression StructRef')
+            code, t = self.rv(n.name)
+            off, size = int(m.group(1)), int(m.group(2))
+            if t.kind not in ('int', 'ptr') or size not in (1, 2, 4) or off + size > t.bytes():
+                raise Reject('piece of ' + t.kind)
+            rt = T('int', size, False)
+            return ('r', '%s(uint64_t(%s) >> %d)' % (rt.cpp(), code, 8 * (t.bytes() - off - size)), rt)
         if isinstance(n, c_ast.ExprList):
             parts = [self.rv(e) for e in n.exprs]
             return ('r', '(' + ', '.join(p[0] for p in parts) + ')', parts[-1][1])
@@ -334,8 +348,9 @@ class Lifter:
         t = g['type'].strip()
         stars = t.count('*')
         base_name = t.replace('*', '').strip()
-        if '[' in base_name:
-            raise Reject('global array')
+        if '[' in base_name or base_name in ('string', 'TerminatedCString', 'unicode', 'TerminatedUnicode'):
+            # an array (a string): used as a value, its address
+            return T('array', to=T('int', 1, True), n=max(1, g['size']))
         bt = named_type(base_name.split())
         if bt.kind == 'opaque':
             bt.size = g['size'] if not stars else 0
@@ -423,7 +438,7 @@ class Lifter:
         """(code, T) of an assignment"""
         lhs = self.ex(n.lvalue)
         t = lhs[2]
-        if lhs[0] not in ('var', 'mem') or not t.scalar():
+        if lhs[0] not in ('var', 'mem') or not t.scalar():  # (registers read in place are 'r')
             raise Reject('assignment to ' + lhs[0] + ' ' + t.kind)
         if isinstance(n.rvalue, c_ast.FuncCall):
             rc, rt = self.call(n.rvalue, t)[1:]
@@ -448,8 +463,68 @@ class Lifter:
         return '({ uint32_t %s = %s; %s %s = %s(%s); lift::Store<%s>(base, %s, %s); %s; })' % (
             a, lhs[1], t.cpp(), w, t.cpp(), rc, t.cpp(), a, w, w), t
 
+    def builtin(self, n):
+        """Ghidra's p-code helpers in its C, or None if this isn't one"""
+        if not isinstance(n.name, c_ast.ID):
+            return None
+        name = n.name.name
+        args = n.args.exprs if n.args else []
+        m = re.fullmatch(r'(ZEXT|SEXT)(\d)(\d+)', name)
+        if m:
+            code, t = self.rv(args[0])
+            src, dst = int(m.group(2)), int(m.group(3))
+            if dst > 8 or src > 8:
+                raise Reject('vector-sized ' + name)
+            signed = m.group(1) == 'SEXT'
+            st, dt = T('int', src, signed), T('int', dst, signed)
+            return ('r', '%s(%s(%s))' % (dt.cpp(), st.cpp(), code), dt)
+        m = re.fullmatch(r'CONCAT(\d)(\d)', name)
+        if m:
+            hi, lo = int(m.group(1)), int(m.group(2))
+            if hi + lo not in (2, 4, 8) or hi not in (1, 2, 4) or lo not in (1, 2, 4):
+                raise Reject('odd-sized ' + name)
+            a, b = self.rv(args[0])[0], self.rv(args[1])[0]
+            t = T('int', hi + lo, False)
+            return ('r', '%s((%s(uint%d_t(%s)) << %d) | uint%d_t(%s))' % (t.cpp(), t.cpp(), hi * 8, a, lo * 8, lo * 8, b), t)
+        m = re.fullmatch(r'SUB(\d)(\d)', name)
+        if m:
+            size = int(m.group(2))
+            if size not in (1, 2, 4, 8):
+                raise Reject('odd-sized ' + name)
+            code, t = self.rv(args[0])
+            k = int(self.rv(args[1])[0].split('(')[-1].rstrip('u)'), 16) if 'x' in self.rv(args[1])[0] else None
+            if k is None:
+                raise Reject('SUB with a variable offset')
+            src = T('int', int(m.group(1)), False)
+            rt = T('int', size, False)
+            return ('r', '%s(%s(%s) >> %d)' % (rt.cpp(), src.cpp(), code, 8 * k), rt)
+        if name == 'trapWord':
+            return ('r', '(void)0', T('void'))  # XenonRecomp doesn't trap either (twi 31,r0,22 marks the unreachable)
+        if name in ('LZCOUNT', 'POPCOUNT'):
+            code, t = self.rv(args[0])
+            if t.kind != 'int':
+                raise Reject(name + ' of ' + t.kind)
+            if name == 'POPCOUNT':
+                return ('r', 'int32_t(lift::Popcount(%s(%s)))' % (t.cpp(), code), I32)
+            f = 'lift::Lzcount64' if t.size == 8 else 'lift::Lzcount32'
+            if t.size < 4:
+                raise Reject('LZCOUNT of a small type')
+            return ('r', 'int32_t(%s(%s(%s)))' % (f, t.cpp(), code), I32)
+        if name == 'ABS':
+            code, t = self.rv(args[0])
+            if t.kind == 'float':
+                return ('r', '%s(__builtin_fabs(%s))' % (t.cpp(), code), t)
+            return ('r', '%s(%s < 0 ? -%s : %s)' % (t.cpp(), code, code, code), t)
+        if name == 'SQRT':
+            code, t = self.rv(args[0])
+            return ('r', 'double(__builtin_sqrt(double(%s)))' % code, T('float', 8))
+        return None
+
     def call(self, n, want, as_float=False):
         """a call: ('r', code, T); want = the type the result is assigned to, if it is"""
+        b = self.builtin(n)
+        if b is not None:
+            return b
         self.calls = True
         target = self.ex(n.name)
         if target[0] == 'fn':
@@ -662,6 +737,14 @@ class Lifter:
                 t = type_of(s.type)
                 info = locals_.get(s.name)
                 storage = info['storage'] if info else ''
+                m = REG_INPUT.match(s.name)
+                if m:
+                    # a register Ghidra didn't see set up (garbage passed on, a callee's second result, a saved
+                    # register): its value where it's used, which the lifted code's same calls leave the same
+                    if not t.scalar():
+                        raise Reject('register input type')
+                    self.vars[s.name] = (t, 'reg', (m.group(2), int(m.group(3))))
+                    continue
                 if s.name.startswith(('in_', 'unaff_', 'extraout_')):
                     raise Reject('register input')
                 if t.kind == 'array' or s.name in av.names:
@@ -701,9 +784,11 @@ QUALIFIED = re.compile(r'[A-Za-z_~][\w~]*(?:::[A-Za-z_~][\w~]*)+')
 
 # Ghidra's warnings that don't make its C wrong: the register save/restore helpers it's told to treat as nothing
 # (ghidra/ImportFm2Symbols.java), dead blocks dropped, switch tables we supplied, overlapping global names, and a
-# tail jump through a pointer written as a call (which it is, then a return).
+# tail jump through a pointer written as a call (which it is, then a return), and parameters we set ourselves
+# (ghidra/ApplyParamsFm2.java, as custom storage).
 HARMLESS = re.compile(r'replaced with injection: fm2_saverest|Removing unreachable block|Switch is manually overridden'
-                      r'|overlap smaller symbols|Treating indirect jump as call|Could not recover jumptable')
+                      r'|overlap smaller symbols|Treating indirect jump as call|Could not recover jumptable'
+                      r'|Unknown calling convention')
 
 
 def sanitize(name):
@@ -820,9 +905,14 @@ def main(argv):
     known = {int(a, 16) for a in re.findall(r'\{ 0x([0-9A-F]+), sub_', open(os.path.join(ppc, 'ppc_func_mapping.cpp')).read())}
     parser = c_parser.CParser()
     reasons = collections.Counter()
+    why = {}
     done = []
+    trace = open(os.environ['LIFT_TRACE'], 'w') if os.environ.get('LIFT_TRACE') else None  # the function being lifted
     for f in funcs:
         addr = int(f['addr'], 16)
+        if trace:
+            trace.write(f['addr'] + '\n')
+            trace.flush()
         if keep is not None and f['addr'] not in keep:
             continue
         try:
@@ -833,13 +923,16 @@ def main(argv):
             if addr in unlogged:
                 raise Reject('hooks or setjmp in its calls')
             c = f['c']
+            # a 32-bit parameter widened to 64: the register's top half, which Ghidra guessed (8237E0D8)
+            if re.search(r'\((u?longlong|undefined8)\)\s*\(?\s*(param_r|in_r)\d+\b', c):
+                raise Reject('a parameter used as 64 bits')
+            if len(c) > 150000:  # 82750DE0, the 74 KB D3D function: too big for this lifter to finish
+                raise Reject('too big')
             if 'halt_baddata' in c:
                 raise Reject('Ghidra warning: bad instruction data')
             for w in re.findall(r'WARNING: ([^*]*)\*/', c):
                 if not HARMLESS.search(w):
                     raise Reject('Ghidra warning: ' + re.sub(r'0x[0-9a-f]+|\d+', 'N', w.strip())[:40])
-            if re.search(r'\b(in_|unaff_|extraout_)\w+', c):
-                raise Reject('register input')
             src, found = prepare(c, names_by_raw)
             names = {'FUN_%08x' % a: a for a in []}
             for m in re.finditer(r'\b(?:FUN|thunk_FUN)_([0-9a-f]{8})\b', src):
@@ -873,6 +966,7 @@ def main(argv):
         except Reject as e:
             r = str(e)
             reasons['unknown name' if r.startswith('unknown name') else r[:60]] += 1
+            why[f['addr']] = r
         except RecursionError:
             reasons['too deep'] += 1
 
@@ -895,6 +989,9 @@ def main(argv):
                 out.write('PPC_FUNC_IMPL(__imp__sub_%08X);\n' % addr)
                 out.write('PPC_FUNC(sub_%08X)\n{\n    static LiftStats s(0x%08X, %s, %d);\n    LiftRun(s, ctx, base, __imp__sub_%08X, lifted_%08X);\n}\n\n'
                           % (addr, addr, rk, nb, addr, addr))
+    with open(os.path.join(out_dir, 'reasons.tsv'), 'w') as f:  # each function left out, and why
+        for a, r in sorted(why.items()):
+            f.write('%s\t%s\n' % (a, r))
     with open(os.path.join(out_dir, 'report.tsv'), 'w') as rep:
         for r, n in reasons.most_common():
             rep.write('%d\t%s\n' % (n, r))
