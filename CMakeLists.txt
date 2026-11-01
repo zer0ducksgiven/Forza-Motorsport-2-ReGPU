@@ -51,6 +51,13 @@ if(NOT FM2_MFTB_CODE EQUAL 0)
     message(FATAL_ERROR "tools/patch_mftb.py failed on ${FM2_PPC_DIR}")
 endif()
 message(STATUS "mftb: ${FM2_MFTB_RESULT}")
+# Vector loads and stores, lwarx/stwcx. and dcbz through macros of their own (tools/patch_mem.py, src/ppc_hooks.h).
+execute_process(COMMAND py -3 -I "${CMAKE_SOURCE_DIR}/tools/patch_mem.py" "${FM2_PPC_DIR}"
+                OUTPUT_VARIABLE FM2_MEM_RESULT RESULT_VARIABLE FM2_MEM_CODE OUTPUT_STRIP_TRAILING_WHITESPACE)
+if(NOT FM2_MEM_CODE EQUAL 0)
+    message(FATAL_ERROR "tools/patch_mem.py failed on ${FM2_PPC_DIR}")
+endif()
+message(STATUS "memory: ${FM2_MEM_RESULT}")
 
 file(GLOB_RECURSE FM2_SOURCES CONFIGURE_DEPENDS src/*.cpp)
 if(FM2_TITLE_UPDATE)

@@ -5,7 +5,9 @@
 
 #include <chrono>
 #include <cstdio>
+#include <map>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <unordered_map>
 #include <vector>
@@ -21,7 +23,7 @@ struct Logged
 {
     uint32_t addr;
     uint32_t size;
-    uint8_t old[8];
+    uint8_t old[16]; // up to a vector
 };
 thread_local std::vector<Logged>* t_log = nullptr;
 thread_local std::unordered_map<uint32_t, uint8_t>* t_overlay = nullptr;
@@ -35,6 +37,13 @@ struct ShadowEscape
 };
 
 std::atomic<LiftStats*> g_all{ nullptr };
+
+std::string Hex(uint32_t v, int digits)
+{
+    char b[16];
+    snprintf(b, sizeof(b), "%0*X", digits, v);
+    return b;
+}
 
 void Writer()
 {
@@ -134,7 +143,7 @@ uint64_t Fm2ShadowLoad(const uint8_t* base, uint32_t addr, uint32_t size)
 {
     // a lifted run that waits on memory it wrote itself (into the overlay, where no other thread can change it)
     // would never finish: give up on it
-    if (++t_shadowLoads > 20000000)
+    if (++t_shadowLoads > 2000000)
         throw ShadowEscape{};
     uint64_t v = 0;
     for (uint32_t i = 0; i < size; i++)
@@ -144,6 +153,26 @@ uint64_t Fm2ShadowLoad(const uint8_t* base, uint32_t addr, uint32_t size)
         v = v << 8 | (it != t_overlay->end() ? it->second : base[a]);
     }
     return v;
+}
+
+void Fm2ShadowRead(const uint8_t* base, uint32_t addr, void* out, uint32_t size)
+{
+    if (++t_shadowLoads > 2000000)
+        throw ShadowEscape{};
+    uint8_t* o = static_cast<uint8_t*>(out);
+    for (uint32_t i = 0; i < size; i++)
+    {
+        const uint32_t a = addr + i;
+        auto it = t_overlay->find(a);
+        o[i] = it != t_overlay->end() ? it->second : base[a];
+    }
+}
+
+void Fm2ShadowWrite(uint32_t addr, const void* in, uint32_t size)
+{
+    const uint8_t* b = static_cast<const uint8_t*>(in);
+    for (uint32_t i = 0; i < size; i++)
+        (*t_overlay)[addr + i] = b[i];
 }
 
 void Fm2ShadowStore(uint32_t addr, uint32_t size, uint64_t value)
@@ -246,6 +275,22 @@ void LiftRun(LiftStats& s, PPCContext& ctx, uint8_t* base, PPCFunc* original, PP
         retSame = ctx.f1.u64 == c.f1.u64;
     else if (ctx.r3.u32 != c.r3.u32)
         s.voidR3++;
+    // FM2_LIFT_TRACE=<hex address>: everything a check of that function compared, the first few times it differs
+    static const uint32_t trace = getenv("FM2_LIFT_TRACE") ? uint32_t(strtoul(getenv("FM2_LIFT_TRACE"), nullptr, 16)) : 0;
+    if (trace == s.address && !memSame && s.wrong < 2)
+    {
+        std::map<uint32_t, uint8_t> sorted(overlay.begin(), overlay.end());
+        std::string line;
+        for (const auto& [a, v] : sorted)
+            if (!dead(a))
+                line += Hex(a, 8) + "=" + Hex(v, 2) + "/" + Hex(base[a], 2) + " ";
+        Log("lift trace %08X: overlay (lifted/real) %s", s.address, line.c_str());
+        line.clear();
+        for (const Logged& e : log)
+            if (!dead(e.addr))
+                line += Hex(e.addr, 8) + ":" + std::to_string(e.size) + " ";
+        Log("lift trace %08X: original stored %s", s.address, line.c_str());
+    }
     if (!(memSame && retSame))
     {
         uint8_t none = 0;

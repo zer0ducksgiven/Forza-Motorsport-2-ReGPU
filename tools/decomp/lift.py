@@ -1,6 +1,6 @@
 """Lifts game functions from Ghidra's decompiled C into C++ that builds into the port (out/lift, never committed).
 
-  py -3 tools/decomp/lift.py <info.jsonl> [--keep out/lift_check.tsv] [--follow] [--out out/lift]
+  py -3 tools/decomp/lift.py <info.jsonl> [--keep out/lift_check.tsv[,more.tsv]] [--strict] [--out out/lift]
 
 info.jsonl comes from ghidra/LiftInfoFm2.java (the C plus each parameter's register and each global's type).
 Each function's C is parsed (pycparser) and written out against guest memory: loads and stores go through
@@ -429,6 +429,9 @@ class Lifter:
             how = 'sub_%08X(ctx, base)' % target[1]
             ret = self.rets.get(target[1])
         elif target[0] == 'fptr':
+            if not (n.args and n.args.exprs):
+                # a call through a pointer passes at least this; with no arguments, Ghidra lost them (824EBB68)
+                raise Reject('call through a pointer with no arguments')
             how = 'PPC_CALL_INDIRECT_FUNC(%s)' % target[1]
             ret = None
         else:
@@ -447,6 +450,11 @@ class Lifter:
             m = REG.match(sig[i]) if sig and i < len(sig) else None
             if m:  # where the callee reads it
                 sets.append(reg_write(m.group(1), int(m.group(2)), t, code))
+                # arguments past what the callee's signature lists go in the registers after these
+                if m.group(1) == 'r':
+                    ri = max(ri, int(m.group(2)) + 1)
+                else:
+                    fi = max(fi, int(m.group(2)) + 1)
             elif t.kind == 'float':
                 if fi > 13:
                     raise Reject('too many float arguments')
@@ -670,19 +678,28 @@ def main(argv):
         return 1
     info_path = args.pop(0)
     keep = None
-    follow = False
+    follow = True
     out_dir = os.path.join(ROOT, 'out', 'lift')
     while args:
         a = args.pop(0)
         if a == '--keep':
+            # one check file or several (comma separated): kept if it passed in one and failed in none
             keep = {}
-            for line in open(args.pop(0)):
-                f = line.rstrip('\n').split('\t')
-                # ran, never differed, and (void by Ghidra) left r3 as the original did: callers may use it
-                if f[0] != 'address' and int(f[1]) > 0 and int(f[2]) == 0 and int(f[3]) == 0:
-                    keep[f[0]] = int(f[1])
-        elif a == '--follow':
-            follow = True
+            failed = set()
+            for path in args.pop(0).split(','):
+                for line in open(path):
+                    f = line.rstrip('\n').split('\t')
+                    if f[0] == 'address' or int(f[1]) == 0:
+                        continue
+                    # ran, never differed, and (void by Ghidra) left r3 as the original did: callers may use it
+                    if int(f[2]) == 0 and int(f[3]) == 0:
+                        keep[f[0]] = int(f[1])
+                    else:
+                        failed.add(f[0])
+            for a in failed:
+                keep.pop(a, None)
+        elif a == '--strict':
+            follow = False
         elif a == '--out':
             out_dir = args.pop(0)
 
@@ -718,9 +735,9 @@ def main(argv):
                     taken |= {int(a, 16) for a in re.findall(r'PPC_FUNC\(sub_([0-9A-F]{8})\)', t)}
     taken |= hooked
     # A check runs the lifted version against an overlay, so everything it calls has to keep to loads and stores
-    # that go through it: no vector or block stores, and no hooks (the port's C++). By default no imports or calls
-    # through pointers either; --follow lets those through, to be caught as they happen (the run is abandoned and
-    # the function isn't kept), which lifts more but has made checks less reliable so far.
+    # that go through it (tools/patch_mem.py routes the vector and block ones there): no setjmp/longjmp, and no
+    # hooks (the port's C++). Imports and calls through pointers are caught as they happen (the run is abandoned and
+    # the function isn't kept); --strict leaves out functions that reach them at all.
     calls, impure = {}, set()
     ppc = os.path.join(ROOT, 'out', 'ppc_tu4')
     for f in os.listdir(ppc):
@@ -730,7 +747,8 @@ def main(argv):
                 a, body = int(m.group(1), 16), m.group(2)
                 calls[a] = {int(c, 16) for c in re.findall(r'\bsub_([0-9A-F]{8})\(ctx, base\)', body)}
                 follows = not follow and re.search(r'PPC_CALL_INDIRECT_FUNC|__imp__(?!sub_)\w+\(ctx, base\)', body)
-                if re.search(r'simde_mm_store\w*\(\(\w+\*\)\(base|memset\(base|memcpy\(base', body) or a in hooked or follows:
+                # (vector stores, lwarx/stwcx. and dcbz go through the overlay too: tools/patch_mem.py)
+                if re.search(r'setjmp|longjmp|simde_mm_store\w*\(\(\w+\*\)\(base|[^_]memset\(base|memcpy\(base', body) or a in hooked or follows:
                     impure.add(a)
     changed = True
     while changed:
@@ -755,7 +773,7 @@ def main(argv):
             if addr in taken:
                 raise Reject('already replaced')
             if addr in unlogged:
-                raise Reject('vector stores or hooks in its calls')
+                raise Reject('hooks or setjmp in its calls')
             c = f['c']
             if 'halt_baddata' in c or 'WARNING' in c:
                 raise Reject('Ghidra warning')

@@ -98,12 +98,13 @@ them, checked against the originals. Lifted code goes to `out/lift` (never commi
 5. `py -3 tools/decomp/lift.py <info.jsonl> --keep out/lift_check.tsv` keeps the exact ones.
    `FM2_LIFT_ENABLE=<file of addresses>` runs only some lifted, for bisecting a bad one.
 
-A check's lifted run is abandoned, and the function not kept, if it reaches a kernel import, a call through a
-pointer into something the overlay can't see (hooks, vector or block stores), faults, or spins (20 million loads):
-it hasn't touched guest memory yet. `--follow` also lifts functions that call imports or call through pointers,
-relying on that at run time; it lifted 6,630 against 2,299 but its checks went wrong (1,127 memory differences, and
-the kept set crashed), so it stays off until vector stores go through the overlay too.
+tools/patch_mem.py routes the recompiled code's vector loads and stores, lwarx/stwcx. and dcbz through macros, so
+they use the overlay too. A check's lifted run is abandoned, and the function not kept, if it reaches a kernel
+import, a hook (directly or through a pointer), setjmp/longjmp, faults, or spins (2 million loads): it hasn't touched
+guest memory yet. `--strict` leaves out functions that call imports or through pointers at all (2,107 kept against
+3,733 with them followed).
 
 Ghidra's C is wrong in ways a sample of calls can miss, so the lifter rejects what has bitten so far: calls with
-fewer arguments than the callee takes, `void` functions whose r3 differs (callers use it), and stack locals whose
-address goes to a callee (Ghidra folded one's value through the call).
+fewer arguments than the callee takes, calls through a pointer with none (`this` lost), `void` functions whose r3
+differs (callers use it), and stack locals whose address goes to a callee (Ghidra folded one's value through the
+call). Arguments past a callee's listed parameters go in the registers after them.

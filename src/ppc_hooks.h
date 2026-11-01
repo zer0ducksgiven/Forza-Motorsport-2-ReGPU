@@ -23,7 +23,7 @@ void Fm2Cover(const char* func);
 #ifdef FM2_STORE_LOG
 // The lifted functions' check (src/decomp/lift.cpp): while a lifted version runs, the recompiled code it calls
 // reads and writes a private overlay instead of guest memory (g_fm2Shadow); while the original runs, its stores
-// are logged (g_fm2StoreLog). Vector loads and stores and dcbz don't come through here.
+// are logged (g_fm2StoreLog). The accesses tools/patch_mem.py routes through macros do the same.
 extern thread_local bool g_fm2StoreLog, g_fm2Shadow;
 void Fm2LogStore(uint8_t* base, uint32_t addr, uint32_t size);
 uint64_t Fm2ShadowLoad(const uint8_t* base, uint32_t addr, uint32_t size);
@@ -53,7 +53,97 @@ void Fm2ShadowStore(uint32_t addr, uint32_t size, uint64_t value);
 #define PPC_STORE_U64(x, y) FM2_STORE(x, y, 8, uint64_t, __builtin_bswap64)
 // calls through pointers stay in the overlay, unless they reach one of the port's own C++ hooks
 void Fm2ShadowIndirect(uint32_t target);
-#define PPC_CALL_INDIRECT_FUNC(x)                             do                                                        {                                                             const uint32_t fm2_t = (x);                               if (g_fm2Shadow)                                              Fm2ShadowIndirect(fm2_t);                             (PPC_LOOKUP_FUNC(base, fm2_t))(ctx, base);            } while (0)
+#define PPC_CALL_INDIRECT_FUNC(x)                  \
+    do                                             \
+    {                                              \
+        const uint32_t fm2_t = (x);                \
+        if (g_fm2Shadow)                           \
+            Fm2ShadowIndirect(fm2_t);              \
+        (PPC_LOOKUP_FUNC(base, fm2_t))(ctx, base); \
+    } while (0)
+
+// raw bytes, in memory order, for the accesses below
+void Fm2ShadowRead(const uint8_t* base, uint32_t addr, void* out, uint32_t size);
+void Fm2ShadowWrite(uint32_t addr, const void* in, uint32_t size);
+#define FM2_GUEST(p) uint32_t((const uint8_t*)(p) - base)
+#define FM2_VLOAD(p)                                         \
+    ([&] {                                                   \
+        simde__m128i fm2_v;                                  \
+        if (g_fm2Shadow)                                     \
+            Fm2ShadowRead(base, FM2_GUEST(p), &fm2_v, 16);   \
+        else                                                 \
+            fm2_v = simde_mm_load_si128(p);                  \
+        return fm2_v;                                        \
+    }())
+#define FM2_VSTORE(p, v)                                     \
+    do                                                       \
+    {                                                        \
+        simde__m128i* const fm2_p = (p);                     \
+        const simde__m128i fm2_v = (v);                      \
+        if (g_fm2Shadow)                                     \
+            Fm2ShadowWrite(FM2_GUEST(fm2_p), &fm2_v, 16);    \
+        else                                                 \
+        {                                                    \
+            if (g_fm2StoreLog)                               \
+                Fm2LogStore(base, FM2_GUEST(fm2_p), 16);     \
+            simde_mm_store_si128(fm2_p, fm2_v);              \
+        }                                                    \
+    } while (0)
+#define FM2_MEMSET(p, c, n)                                                 \
+    do                                                                      \
+    {                                                                       \
+        uint8_t* const fm2_p = (uint8_t*)(p);                               \
+        if (g_fm2Shadow)                                                    \
+        {                                                                   \
+            uint8_t fm2_z[128];                                             \
+            memset(fm2_z, (c), sizeof(fm2_z));                              \
+            for (uint32_t fm2_i = 0; fm2_i < uint32_t(n); fm2_i += 128)     \
+                Fm2ShadowWrite(FM2_GUEST(fm2_p) + fm2_i, fm2_z, 128);       \
+        }                                                                   \
+        else                                                                \
+        {                                                                   \
+            if (g_fm2StoreLog)                                              \
+                for (uint32_t fm2_i = 0; fm2_i < uint32_t(n); fm2_i += 16)  \
+                    Fm2LogStore(base, FM2_GUEST(fm2_p) + fm2_i, 16);        \
+            memset(fm2_p, (c), (n));                                        \
+        }                                                                   \
+    } while (0)
+template <typename T> inline T Fm2Reserve(const uint8_t* base, T* p)
+{
+    T v;
+    if (g_fm2Shadow)
+        Fm2ShadowRead(base, FM2_GUEST(p), &v, sizeof(T));
+    else
+        v = *p;
+    return v;
+}
+template <typename T, typename A, typename B> inline bool Fm2Cas(uint8_t* base, T* p, A expected, B desired)
+{
+    if (g_fm2Shadow)
+    {
+        T cur;
+        Fm2ShadowRead(base, FM2_GUEST(p), &cur, sizeof(T));
+        if (cur != T(expected))
+            return false;
+        const T d = T(desired);
+        Fm2ShadowWrite(FM2_GUEST(p), &d, sizeof(T));
+        return true;
+    }
+    if (g_fm2StoreLog)
+        Fm2LogStore(base, FM2_GUEST(p), sizeof(T));
+    return __sync_bool_compare_and_swap(p, T(expected), T(desired));
+}
+#define FM2_RESERVE32(p) Fm2Reserve(base, (p))
+#define FM2_RESERVE64(p) Fm2Reserve(base, (p))
+#define FM2_CAS(p, expected, desired) Fm2Cas(base, (p), (expected), (desired))
+#else
+// tools/patch_mem.py's macros, as XenonRecomp wrote them
+#define FM2_VLOAD(p) simde_mm_load_si128(p)
+#define FM2_VSTORE(p, v) simde_mm_store_si128((p), (v))
+#define FM2_MEMSET(p, c, n) memset((p), (c), (n))
+#define FM2_RESERVE32(p) (*(p))
+#define FM2_RESERVE64(p) (*(p))
+#define FM2_CAS(p, expected, desired) __sync_bool_compare_and_swap((p), (expected), (desired))
 #endif
 
 // MSR[EE] cleared -> take the global interrupt lock; set -> release it.

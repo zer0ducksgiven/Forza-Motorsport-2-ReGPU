@@ -7,8 +7,8 @@
 // calls, go to a private copy, and its loads read that copy first, so guest memory isn't touched. Then the original
 // runs for real, its stores logged, and what each left (outside the dead stack around r1) and the return register
 // are compared. The game always gets the original's results, so a check run plays like the original. Results go
-// to out/lift_check.tsv, which lift.py reads to keep only exact functions. Vector loads and stores, dcbz and our own
-// C++ hooks bypass the overlay and the log: lift.py doesn't lift functions that reach those.
+// to out/lift_check.tsv, which lift.py reads to keep only exact functions. Our own C++ hooks and imports bypass the
+// overlay: a run that reaches one is abandoned (lift.cpp), and lift.py doesn't lift functions that call hooks.
 #pragma once
 
 #include <atomic>
