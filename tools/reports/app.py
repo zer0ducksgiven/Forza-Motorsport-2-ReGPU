@@ -1,15 +1,15 @@
-"""The reports desk: a local page for triaging FM2 bug reports and reading shared play.logs.
+"""The reports desk: a local page for triaging FM2 and PGR4 bug reports and reading shared play.logs.
 
   py tools/reports/app.py [port]      then open http://127.0.0.1:8790 (reports-desk.cmd does both)
 
 Serves desk.html and a JSON API over reports.py, so anything the page does is a gh call on the private repo.
-Only listens on 127.0.0.1. The same API is handy from scripts:
-  GET  /api/issues?state=all|open|closed      GET /api/issue/<n>?source=reports|fm2
-       (issues from both the reports repo and the FM2 repo; source says which an issue is in)
+Only listens on 127.0.0.1. Every call takes ?game=fm2|pgr4 (fm2 if left out). The same API is handy from scripts:
+  GET  /api/issues?state=all|open|closed      GET /api/issue/<n>?source=reports|project
+       (issues from both the reports repo and the game's own repo; source says which an issue is in)
   GET  /api/logs                              GET /api/log?path=logs/...   (text and summary)
   GET  /api/stats                             hardware across installs (newest log of each)
   GET  /api/live                              FM2 Live: who's online, auctions, activity, Cloudflare usage (live.py)
-  POST /api/issue/<n>?source=reports|fm2  {"state": "open"|"closed", "reason"?, "addLabel"?, "removeLabel"?, "comment"?}
+  POST /api/issue/<n>?source=reports|project  {"state": "open"|"closed", "reason"?, "addLabel"?, "removeLabel"?, "comment"?}
   POST /api/log/delete {"path": "logs/..."}
 
 Logs with nothing in them (reports.is_empty) are deleted from the repo in the background as the log list loads.
@@ -28,26 +28,30 @@ import live  # noqa: E402
 import reports  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-_stats = {'at': 0, 'data': None}
-_checked = set()  # logs already read for the empty check
-_empty = set()    # empty logs found (deleted, or being deleted)
-_purge_lock = threading.Lock()
+# Per game (reports.GAMES): the stats cache, logs already read for the empty check, empty logs found (deleted, or being deleted)
+_stats = {g: {'at': 0, 'data': None} for g in reports.GAMES}
+_checked = {g: set() for g in reports.GAMES}
+_empty = {g: set() for g in reports.GAMES}
+_purge_lock = {g: threading.Lock() for g in reports.GAMES}
 
 
-def purge_empty(all_logs):
+def purge_empty(game, all_logs):
     """Reads each log not yet checked and deletes the empty ones. Runs in the background."""
-    if not _purge_lock.acquire(blocking=False):
+    if not _purge_lock[game].acquire(blocking=False):
         return
+    reports.use(game)
+    checked, empty_logs = _checked[game], _empty[game]
     try:
-        todo = [l for l in all_logs if l['path'] not in _checked]
+        todo = [l for l in all_logs if l['path'] not in checked]
         def check(l):
+            reports.use(game)
             try:
                 empty = reports.is_empty(reports.log_text(l['path']))
             except reports.GhError:
                 return
-            _checked.add(l['path'])
+            checked.add(l['path'])
             if empty:
-                _empty.add(l['path'])
+                empty_logs.add(l['path'])
                 try:
                     reports.delete_log(l['path'], l['sha'])
                     print(f'Deleted empty log {l["path"]}', flush=True)
@@ -56,28 +60,31 @@ def purge_empty(all_logs):
         with ThreadPoolExecutor(8) as pool:
             list(pool.map(check, todo))
         if todo:
-            _stats['at'] = 0
+            _stats[game]['at'] = 0
     finally:
-        _purge_lock.release()
+        _purge_lock[game].release()
 
 
 def logs():
     all_logs = reports.logs()
-    threading.Thread(target=purge_empty, args=(all_logs,), daemon=True).start()
-    return [l for l in all_logs if l['path'] not in _empty]
+    threading.Thread(target=purge_empty, args=(reports.game(), all_logs), daemon=True).start()
+    return [l for l in all_logs if l['path'] not in _empty[reports.game()]]
 
 
 def stats():
     # Each install's newest log that names its hardware (a session can end before the system lines),
     # summarised (logs are cached once read); at most once a minute. Installs that never logged their
     # hardware (most never got the game running) are only counted, with the reason their newest log gives.
-    if _stats['data'] and time.time() - _stats['at'] < 60:
-        return _stats['data']
+    cache = _stats[reports.game()]
+    if cache['data'] and time.time() - cache['at'] < 60:
+        return cache['data']
     per_install = {}
     all_logs = logs()
     for l in all_logs:
         per_install.setdefault(l['install'], []).append(l)  # newest first
+    game = reports.game()
     def summary(install_logs):
+        reports.use(game)
         for l in install_logs:
             s = reports.log_summary(reports.log_text(l['path']))
             if s['gpu'] or s['os']:
@@ -93,11 +100,12 @@ def stats():
     data = {'logs': sum(l['install'] not in old for l in all_logs), 'old': old,
             'installs': [r for r in results if not r.get('noHardware') and r['install'] not in old],
             'noHardware': [r for r in results if r.get('noHardware')]}
-    _stats.update(at=time.time(), data=data)
+    cache.update(at=time.time(), data=data)
     return data
 
 
-MIN_VERSION = (0, 8, 0)  # older builds aren't relevant any more: their issues, installs and logs are left out
+# Per game: older builds aren't relevant any more; their issues, installs and logs are left out
+MIN_VERSION = {'fm2': (0, 8, 0), 'pgr4': (0, 0, 0)}
 
 
 def too_old(v):
@@ -108,12 +116,12 @@ def too_old(v):
         if not digits:
             break
         parts.append(int(digits))
-    return bool(parts) and tuple(parts) < MIN_VERSION
+    return bool(parts) and tuple(parts) < MIN_VERSION[reports.game()]
 
 
 def source(q):
     s = q.get('source', 'reports')
-    if s not in reports.ISSUE_REPOS:
+    if s not in reports.issue_repos():
         raise ValueError('Unknown issue source.')
     return s
 
@@ -131,6 +139,7 @@ class Handler(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         q = {k: v[0] for k, v in parse_qs(u.query).items()}
         try:
+            reports.use(q.get('game', 'fm2'))
             if u.path in ('/', '/index.html'):
                 with open(os.path.join(HERE, 'desk.html'), 'rb') as f:
                     return self.send(200, f.read(), 'text/html; charset=utf-8')
@@ -155,7 +164,7 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == '/api/log':
                 text = reports.log_text(q.get('path', ''))
                 return self.send(200, {'path': q['path'], 'text': text, 'summary': reports.log_summary(text)})
-            if u.path == '/api/live':
+            if u.path == '/api/live':  # FM2 only
                 return self.send(200, {'status': live.status(), 'usage': live.usage()})
             if u.path == '/api/stats':
                 return self.send(200, {k: v for k, v in stats().items() if k != 'old'})
@@ -172,10 +181,12 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(403, {'error': 'Forbidden.'})
         try:
             body = json.loads(self.rfile.read(int(self.headers.get('content-length') or 0)) or b'{}')
+            q = {k: v[0] for k, v in parse_qs(u.query).items()}
+            reports.use(q.get('game', 'fm2'))
             if u.path.startswith('/api/issue/'):
                 n = int(u.path.rsplit('/', 1)[1])
-                src = source({k: v[0] for k, v in parse_qs(u.query).items()})
-                repo = reports.ISSUE_REPOS[src]
+                src = source(q)
+                repo = reports.issue_repos()[src]
                 if body.get('comment'):
                     reports.comment(n, body['comment'], repo)
                 if body.get('addLabel'):
@@ -187,8 +198,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(200, reports.issue(n, src))
             if u.path == '/api/log/delete':
                 reports.delete_log(body['path'])
-                _empty.add(body['path'])  # keeps it out of the list until GitHub's tree catches up
-                _stats['at'] = 0
+                _empty[reports.game()].add(body['path'])  # keeps it out of the list until GitHub's tree catches up
+                _stats[reports.game()]['at'] = 0
                 return self.send(200, {'deleted': body['path']})
             return self.send(404, {'error': 'Not found.'})
         except reports.GhError as e:
