@@ -171,13 +171,41 @@ def reg_write(cls, num, t, code):
     raise Reject('float register from ' + t.kind)
 
 
+ARG_WRITE = re.compile(r'^\s*ctx\.([rf])(\d+)\.\w+\s*=[^=]')
+ARG_CALL = re.compile(r'\bsub_([0-9A-F]{8})\(ctx, base\)|PPC_CALL_INDIRECT_FUNC')
+
+
+def arg_names(kind, n):
+    return '%s%d' % (kind, n) if (kind == 'r' and 3 <= n <= 10) or (kind == 'f' and 1 <= n <= 13) else None
+
+
+def call_setup(body):
+    """{call target (an address, or 'indirect'): the argument registers the original writes before calling it}"""
+    out = {}
+    written = set()
+    for line in body.split('\n'):
+        w = ARG_WRITE.match(line)
+        if w:
+            r = arg_names(w.group(1), int(w.group(2)))
+            if r:
+                written.add(r)
+        m = ARG_CALL.search(line)
+        if m:
+            target = int(m.group(1), 16) if m.group(1) else 'indirect'
+            out.setdefault(target, set()).update(written)
+            written = set()
+    return out
+
+
 # ---- the function --------------------------------------------------------------------------------------------
 
 REG = re.compile(r'^(r|f)(\d+):(\d+)$')
 
 
 class Lifter:
-    def __init__(self, info, names, rets, frame, known, sigs):
+    def __init__(self, info, names, rets, frame, known, sigs, setup, livein):
+        self.setup = setup
+        self.livein = livein
         self.known = known
         self.sigs = sigs
         self.info = info
@@ -430,9 +458,6 @@ class Lifter:
             how = 'sub_%08X(ctx, base)' % target[1]
             ret = self.rets.get(target[1])
         elif target[0] == 'fptr':
-            if not (n.args and n.args.exprs):
-                # a call through a pointer passes at least this; with no arguments, Ghidra lost them (824EBB68)
-                raise Reject('call through a pointer with no arguments')
             how = 'PPC_CALL_INDIRECT_FUNC(%s)' % target[1]
             ret = None
         else:
@@ -440,8 +465,6 @@ class Lifter:
         sets = []
         ri, fi = 3, 1
         sig = self.sigs.get(target[1]) if target[0] == 'fn' else None
-        if sig and len(sig) > len(n.args.exprs if n.args else []):
-            raise Reject('call with fewer arguments than the callee takes')  # Ghidra lost some
         for i, arg in enumerate(n.args.exprs if n.args else []):
             v = self.ex(arg)
             if v[0] == 'fn':
@@ -466,6 +489,14 @@ class Lifter:
                     raise Reject('too many arguments')
                 sets.append(reg_write('r', ri, t, code))
                 ri += 1
+        # what the original passes: registers it sets up before the call that the callee reads (livein.py); Ghidra's
+        # C must pass them all (it dropped 82297C38's third and fourth, and 824EBB68's this)
+        key = target[1] if target[0] == 'fn' else 'indirect'
+        reads = set(self.livein.get('%08X' % key, ['r%d' % i for i in range(3, 11)] + ['f%d' % i for i in range(1, 14)])) \
+            if key != 'indirect' else {'r%d' % i for i in range(3, 11)} | {'f%d' % i for i in range(1, 14)}
+        passed = set(re.findall(r'ctx\.([rf]\d+)\.', ' '.join(sets)))
+        if (self.setup.get(key, set()) & reads) - passed:
+            raise Reject('call drops an argument the original passes')
         frame_in = 'ctx.r1.u32 = uint32_t(sp - %d); ' % self.frame if self.frame else ''
         frame_out = ' ctx.r1.u32 = sp;' if self.frame else ''
         body = '%s %s%s;%s' % (' '.join(sets), frame_in, how, frame_out)
@@ -668,6 +699,13 @@ HEADER = ''.join('typedef int %s;\n' % n for n in list(INT) + ['bool', 'code', '
 QUALIFIED = re.compile(r'[A-Za-z_~][\w~]*(?:::[A-Za-z_~][\w~]*)+')
 
 
+# Ghidra's warnings that don't make its C wrong: the register save/restore helpers it's told to treat as nothing
+# (ghidra/ImportFm2Symbols.java), dead blocks dropped, switch tables we supplied, overlapping global names, and a
+# tail jump through a pointer written as a call (which it is, then a return).
+HARMLESS = re.compile(r'replaced with injection: fm2_saverest|Removing unreachable block|Switch is manually overridden'
+                      r'|overlap smaller symbols|Treating indirect jump as call|Could not recover jumptable')
+
+
 def sanitize(name):
     return re.sub(r'[^\w]', '_', name.replace('::~', '__dtor_').replace('::', '__'))
 
@@ -722,6 +760,7 @@ def main(argv):
             out_dir = args.pop(0)
 
     symbols = json.load(open(os.path.join(ROOT, 'out', 'decomp', 'symbols.json')))
+    livein = json.load(open(os.path.join(ROOT, 'out', 'decomp', 'livein.json')))  # livein.py
     img = open(os.path.join(ROOT, 'out', 'tu4', 'image.bin'), 'rb').read()
     funcs = [json.loads(l) for l in open(info_path, encoding='utf-8')]
 
@@ -756,7 +795,7 @@ def main(argv):
     # that go through it (tools/patch_mem.py routes the vector and block ones there): no setjmp/longjmp, and no
     # hooks (the port's C++). Imports and calls through pointers are caught as they happen (the run is abandoned and
     # the function isn't kept); --strict leaves out functions that reach them at all.
-    calls, impure = {}, set()
+    calls, impure, setups = {}, set(), {}
     ppc = os.path.join(ROOT, 'out', 'ppc_tu4')
     for f in os.listdir(ppc):
         if f.startswith('ppc_recomp.') and f.endswith('.cpp'):
@@ -764,6 +803,7 @@ def main(argv):
             for m in re.finditer(r'PPC_FUNC_IMPL\(__imp__sub_([0-9A-F]{8})\) \{(.*?)\n\}', t, re.S):
                 a, body = int(m.group(1), 16), m.group(2)
                 calls[a] = {int(c, 16) for c in re.findall(r'\bsub_([0-9A-F]{8})\(ctx, base\)', body)}
+                setups[a] = call_setup(body)
                 follows = not follow and re.search(r'PPC_CALL_INDIRECT_FUNC|__imp__(?!sub_)\w+\(ctx, base\)', body)
                 # (vector stores, lwarx/stwcx. and dcbz go through the overlay too: tools/patch_mem.py)
                 if re.search(r'setjmp|longjmp|simde_mm_store\w*\(\(\w+\*\)\(base|[^_]memset\(base|memcpy\(base', body) or a in hooked or follows:
@@ -793,8 +833,11 @@ def main(argv):
             if addr in unlogged:
                 raise Reject('hooks or setjmp in its calls')
             c = f['c']
-            if 'halt_baddata' in c or 'WARNING' in c:
-                raise Reject('Ghidra warning')
+            if 'halt_baddata' in c:
+                raise Reject('Ghidra warning: bad instruction data')
+            for w in re.findall(r'WARNING: ([^*]*)\*/', c):
+                if not HARMLESS.search(w):
+                    raise Reject('Ghidra warning: ' + re.sub(r'0x[0-9a-f]+|\d+', 'N', w.strip())[:40])
             if re.search(r'\b(in_|unaff_|extraout_)\w+', c):
                 raise Reject('register input')
             src, found = prepare(c, names_by_raw)
@@ -823,7 +866,7 @@ def main(argv):
                 if w >> 16 == 0x9421:
                     frame = -(w & 0xFFFF) + 0x10000 if w & 0x8000 else 0
                     break
-            lifter = Lifter(f, names, rets, frame, known, sigs)
+            lifter = Lifter(f, names, rets, frame, known, sigs, setups.get(addr, {}), livein)
             code = lifter.lift(fn[0])
             done.append((addr, code, lifter.ret_kind, lifter.nblocks))
             reasons['lifted'] += 1

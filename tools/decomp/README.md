@@ -106,7 +106,9 @@ import, a hook (directly or through a pointer), setjmp/longjmp, faults, or spins
 guest memory yet. `--strict` leaves out functions that call imports or through pointers at all (2,107 kept against
 3,733 with them followed).
 
-Ghidra's C is wrong in ways a sample of calls can miss, so the lifter rejects what has bitten so far: calls with
-fewer arguments than the callee takes, calls through a pointer with none (`this` lost), `void` functions whose r3
-differs (callers use it), and stack locals whose address goes to a callee (Ghidra folded one's value through the
-call). Arguments past a callee's listed parameters go in the registers after them.
+Ghidra's C drops call arguments, so `py -3 tools/decomp/livein.py` works out each function's real inputs (the
+argument registers it reads before writing, by liveness over the recompiled code) and the lifter rejects a call
+that leaves out a register the original sets up and the callee reads (82297C38 lost a memmove's source and
+length, 824EBB68 a virtual call's this). From what else has bitten so far it rejects `void` functions whose r3
+differs (callers use it) and stack locals whose address goes to a callee (Ghidra folded one's value through the
+call), and keeps a function only once every branch of it has run in a passing check.
