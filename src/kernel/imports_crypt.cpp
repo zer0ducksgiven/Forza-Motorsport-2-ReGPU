@@ -2,6 +2,8 @@
 // { u32 count, u32 state[5], u8 buffer[64] }.
 // XeKeys*: the console-bound key functions (below).
 #include "kernel/imports.h"
+#include "log.h"
+#include <string>
 
 #include <windows.h>
 #include <bcrypt.h>
@@ -388,6 +390,16 @@ GUEST_EXPORT(XeKeysAesCbcUsingKey)
     {
         Return(ctx, 0xC0000001);
         return;
+    }
+    // FM2_TRACE_KEYS=1: each key in the clear, with the caller (how the save formats were worked out:
+    // tools/decomp/savecrypt.py)
+    if (static const bool trace = getenv("FM2_TRACE_KEYS") != nullptr; trace)
+    {
+        char hex[33];
+        for (int i = 0; i < 16; i++)
+            snprintf(hex + i * 2, 3, "%02x", key[i]);
+        std::string CurrentHostStack(int maxFrames);
+        Log("crypt: AES-CBC %s key %s, %u bytes: %s", ctx.r8.u32 ? "encrypt" : "decrypt", hex, size, CurrentHostStack(8).c_str());
     }
     std::vector<uint8_t> out(size);
     if (size && !AesRun(key, true, GuestPtr<uint8_t>(ctx.r7.u32), GuestPtr<uint8_t>(ctx.r4.u32), out.data(), size, ctx.r8.u32 != 0))

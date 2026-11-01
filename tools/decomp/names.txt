@@ -1,0 +1,158 @@
+# Names for FM2's functions, by TU4 address: the decompile's hand-kept symbol list. symbols.py applies these over
+# everything it works out itself; ImportFm2Symbols.java puts them in the Ghidra project.
+#   <TU4 address> <name> [# how we know]
+
+# C runtime (decompiled in src/decomp/crt.cpp)
+8242D140 memcpy
+8242D560 memcpy_words           # memcpy copying 4 bytes a turn
+8242E050 memset
+8242E0F0 _stricmp
+8242F778 strncpy
+8242F9C0 memchr
+8242FC70 strncmp
+8242FF58 strstr
+8242FFD8 wcslen
+82430510 strrchr
+8242D9B8 ceil
+8242DBA0 floor
+
+# names (src/decomp/name_hash.cpp)
+827F4280 HashName               # sdbm-style, *65599, top bit set
+827F42C8 HashedName::HashedName # global = HashName(text): the 15,800 start-up constants
+82404EC0 HashedName::~HashedName
+
+# Lua
+8256B068 luaL_checkudata        # src/hooks/lua.cpp (disc 8254E1A0)
+
+# profile (src/hooks/cheats.cpp)
+8247B008 ProfileDb::Lookup      # "Main/Credits": splits the key at '/', recursing (disc 8245FD08)
+82243750 Profile::SetCredits    # disc 8222E3F0
+82221848 App::Forza::AddAllCarsCheat  # disc 8220FD20
+
+# reference counting
+8232DE68 RefPtr::RefPtr         # copy: take the pointer, AddRef (IRefCountedObject slot 1) when not null
+827500C0 d3d::MatVec            # out[i] = sum v[j]*m[i][j], n x n floats (src/decomp/d3d_math.cpp)
+
+# std::string (MSVC: +4 16-byte small buffer or pointer, +0x14 size, +0x18 capacity)
+821E0D30 std::string::_Tidy     # (built, newsize): frees a heap buffer, size = newsize, capacity 15
+821E0E20 std::string::erase     # (pos, count)
+821E1638 std::string::_Grow     # (newsize, trim) -> nonzero when there is room
+821E2588 std::string::assign_sub  # (src, pos, count)
+821E2670 std::string::assign_n  # (ptr, count)
+821E28D0 std::string::assign_cstr
+82213D10 std::string::find      # (chars, pos, count) -> index or -1 (memchr, then compare)
+82443578 std::_Xran             # throws out_of_range
+
+# C runtime (not decompiled)
+8242CA88 memcpy_s               # (dst, dstsize, src, n)
+8237C360 operator_delete
+8242CFB0 _vsnprintf             # (buf, size, fmt, va_list)
+8242EF70 _snprintf
+
+# Lua 5.1 (the game's copy; L is the global at 82A0446C)
+824D1328 lua::index2adr
+824D1AD8 lua_tonumber           # type 3 = LUA_TNUMBER, else luaV_tonumber
+824D7598 luaV_tonumber
+824D20F8 lua_pushboolean
+
+# the game's Lua glue
+822B7BE8 LuaArgs::Get           # (out, args, index): "%d" error past the end
+822B7960 LuaArgs::ReturnBool
+822B7838 LuaArgs::Error
+
+# strings and profile values
+821E0368 FixedString512::Format # _vsnprintf into 512 bytes, always terminated
+8222C878 Profile::GetValue      # (out, profile, "Main/Level"): ProfileDb::Lookup when the profile is loaded
+
+# saves
+8222CE40 Sha1Two                # SHA-1 of (a, alen) then (b, blen) -> out
+8247CED0 Sha1Verify             # SHA-1 of (data, len) == the 20 bytes at expected
+82451F58 IOSys::CSecurityStream::CSecurityStream_Write  # (file, hmacKey, aesKey, iv, ...): obscures the keys
+82451C10 IOSys::CSecurityStream::CSecurityStream_Read   # reads the 40-byte header, checks the HMAC, decrypts
+82452080 IOSys::CSecurityStream::Close                  # pads to 16, AES-CBC, HMAC, writes header + body
+82232A00 Profile::SaveForzaProfile                      # keys from the XUID (tools/decomp/savecrypt.py)
+82236E88 Profile::LoadForzaProfile
+8226AF90 Livery::OpenSecure                             # livery keys (8200D1D0/E0)
+825ED348 Database::OpenStream                           # (out, ?, name, wrap, compressed, keys)
+824455E0 IOSys::CCompressionStream::CCompressionStream  # raw deflate
+8247D400 SecureFile::ReadBlocks                         # per-block SHA-1 table check
+8247E250 SecureFile::Read
+8296B878 XeKeysAesCbcUsingKey
+8296B888 XeKeysHmacShaUsingKey
+8296B898 XeKeysObscureKey
+
+# Lua 5.1 garbage collector (lgc.c) and API
+824D4D10 lua::reallymarkobject
+824D4F48 lua::traversetable
+824D5158 lua::traverseproto
+824D52D8 lua::traverseclosure
+824D5520 lua::propagatemark
+824D57F0 lua::sweeplist
+824D5DB0 lua::singlestep
+824D5F68 luaC_step
+824D29E0 lua_gc
+825FCB58 UI::SceneManager::Update     # steps every scene's Lua GC for a 1.5 ms budget (src/decomp/lua_gc.cpp)
+
+# Lua 5.1 C API (lapi.c): compiled in source order, matched by order and size against the known anchors
+# (index2adr, lua_tonumber, lua_pushboolean, lua_gc) and by which call luaC_checkGC (824D5F68), as in the source.
+824D13F0 lua::getcurrenv
+824D1418 lua_checkstack
+824D14A8 lua_xmove
+824D1508 lua_setlevel?          # or lua_atpanic: both tiny
+824D1518 lua_newthread          # checkGC
+824D1580 lua_gettop
+824D1598 lua_settop
+824D15F8 lua_remove
+824D1650 lua_insert
+824D16B0 lua_replace
+824D17C0 lua_pushvalue
+824D1808 lua_type
+824D1848 lua_typename
+824D1870 lua_iscfunction
+824D18B8 lua_isnumber
+824D1900 lua_isstring
+824D1950 lua_isuserdata
+824D1990 lua_rawequal
+824D19F0 lua_equal
+824D1A70 lua_lessthan
+824D1B28 lua_tointeger
+824D1B78 lua_toboolean
+824D1BC8 lua_tolstring          # checkGC
+824D1C68 lua_objlen
+824D1CF8 lua_tocfunction
+824D1D40 lua_touserdata
+824D1D90 lua_tothread
+824D1DC8 lua_topointer
+824D1E30 lua_pushnil
+824D1E50 lua_pushnumber
+824D1E70 lua_pushinteger
+824D1EA0 lua_pushlstring        # checkGC
+824D1F08 lua_pushstring
+824D1F58 lua_pushvfstring       # checkGC
+824D1FA0 lua_pushfstring        # checkGC
+824D2020 lua_pushcclosure       # checkGC
+824D2128 lua_pushlightuserdata
+824D2148 lua_pushthread
+824D2180 lua_gettable
+824D21C0 lua_getfield
+824D2258 lua_rawget
+824D22A8 lua_rawgeti
+824D2300 lua_createtable        # checkGC
+824D2368 lua_getmetatable
+824D23F0 lua_getfenv
+824D2478 lua_settable
+824D24C8 lua_setfield
+824D2560 lua_rawset
+824D25E8 lua_rawseti
+824D2670 lua_setmetatable
+824D2758 lua_setfenv
+824D2820 lua_call
+824D2888 lua::f_call
+824D2898 lua_pcall
+824D2930 lua::f_Ccall
+824D2998 lua_cpcall
+824D29D8 lua_status
+824D2AD8 lua_error
+824D2B00 lua_next
+824D2B60 lua_concat             # checkGC
+824D2C20 lua_newuserdata        # checkGC
