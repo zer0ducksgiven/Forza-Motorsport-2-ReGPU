@@ -254,13 +254,16 @@ def logs():
 
 
 _log_times = {}  # reports repo -> {id: time}
-LOG_COMMIT = re.compile(r'^Log \d{8}-([0-9a-f]+)\b')
+_log_versions = {}  # reports repo -> {id: version}
+# The Worker's upload commit, "Log <date>-<id> (<version>)" ("Bug report ..." for a report's log)
+LOG_COMMIT = re.compile(r'^(?:Log|Bug report) \d{8}-([0-9a-f]+)\b(?: \(([^)]*)\))?')
 
 
 def log_times():
     """When each log arrived: the Worker's commit "Log <date>-<id> (...)" is the upload. id -> ISO time.
     Pages of commits until one adds nothing new (later calls only read the newest page or two)."""
     times = _log_times.setdefault(issue_repos()['reports'], {})
+    versions = _log_versions.setdefault(issue_repos()['reports'], {})
     page = 1
     while True:
         batch = gh(f'commits?per_page=100&page={page}')
@@ -269,10 +272,18 @@ def log_times():
             m = LOG_COMMIT.match(c['commit']['message'])
             if m and m.group(1) not in times:
                 times[m.group(1)] = c['commit']['committer']['date']
+                if m.group(2) and m.group(2) != 'unknown':
+                    versions[m.group(1)] = m.group(2)
                 new += 1
         if len(batch) < 100 or (not new and page > 1):
             return times
         page += 1
+
+
+def log_versions():
+    """The launcher version each log came from (its upload commit says): id -> version. PGR4's logs don't name it."""
+    log_times()
+    return _log_versions.get(issue_repos()['reports'], {})
 
 
 def delete_log(path, sha=None):
@@ -314,7 +325,7 @@ ERROR = re.compile(r'error|fail|crash|exception|assert|not mappable|dropped|time
 
 def log_summary(text):
     """What a log says about its PC and session: the boot's system lines, errors, fps."""
-    system, errors, fps, swaps = [], [], [], []
+    system, errors, fps, swaps, frames = [], [], [], [], []
     for line in text.splitlines():
         body = line[line.find(']') + 1:].strip() if line.startswith('[') else line
         if body.startswith('system:') and len(system) < 40:
@@ -327,6 +338,9 @@ def log_summary(text):
         m = re.match(r'gpu: VdSwap #(\d+)', body)
         if m and line.startswith('['):
             swaps.append((float(line[1:line.find(']')]), int(m.group(1))))
+        m = re.match(r'renderer: frame (\d+):', body)  # PGR4: every 600th frame
+        if m and line.startswith('['):
+            frames.append((float(line[1:line.find(']')]), int(m.group(1))))
     # Logs without FM2_PERF: the game logs every 60th frame, so the fps of each stretch between them
     # (stretches over 10 s are pauses or a window in the background, not frames). Its first swaps are
     # logged one by one at startup (#1, #2 a fraction of a millisecond apart: "10000 fps"), so only
@@ -335,6 +349,10 @@ def log_summary(text):
     if not fps:
         spans = [(t1 - t0, n1 - n0) for (t0, n0), (t1, n1) in zip(swaps, swaps[1:]) if 0.25 <= t1 - t0 <= 10 and n1 - n0 >= 30]
         fps = [n / t for t, n in spans]
+        if not spans:
+            # PGR4's renderer lines, 600 frames apart: up to a minute between them is still play (10 fps)
+            spans = [(t1 - t0, n1 - n0) for (t0, n0), (t1, n1) in zip(frames, frames[1:]) if 0.25 <= t1 - t0 <= 60 and n1 > n0]
+            fps = [n / t for t, n in spans]
         if spans:
             average = sum(n for _, n in spans) / sum(t for t, _ in spans)
     elif fps:
@@ -356,7 +374,7 @@ def log_summary(text):
         'driver': driver,
         'os': field('os'),
         'wine': field('wine'),
-        'version': field('forza motorsport 2 regpu'),
+        'version': field('forza motorsport 2 regpu') or field('project gotham racing 4 regpu'),
         'settings': field('settings'),
         'zeroCopy': None if 'guest memory' not in text else ('not mappable' not in text),
         'fps': {'samples': len(fps), 'median': round(sorted(fps)[len(fps) // 2], 1) if fps else None,
