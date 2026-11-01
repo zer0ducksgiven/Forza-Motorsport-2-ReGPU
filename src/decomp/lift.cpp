@@ -199,15 +199,29 @@ void Fm2ShadowRead(const uint8_t* base, uint32_t addr, void* out, uint32_t size)
     }
 }
 
+static void ShadowSizeGuard();
+
 void Fm2ShadowWrite(uint32_t addr, const void* in, uint32_t size)
 {
+    ShadowSizeGuard();
     const uint8_t* b = static_cast<const uint8_t*>(in);
     for (uint32_t i = 0; i < size; i++)
         (*t_overlay)[addr + i] = b[i];
 }
 
+// a lifted run that writes this much (an overlay entry a byte) takes too long to check: given up, not kept
+static void ShadowSizeGuard()
+{
+    if (t_overlay->size() > (1u << 20))
+    {
+        t_escapedBy = "big";
+        throw ShadowEscape{};
+    }
+}
+
 void Fm2ShadowStore(uint32_t addr, uint32_t size, uint64_t value)
 {
+    ShadowSizeGuard();
     for (uint32_t i = 0; i < size; i++)
         (*t_overlay)[addr + i] = uint8_t(value >> (8 * (size - 1 - i)));
 }
@@ -284,7 +298,9 @@ void LiftRun(LiftStats& s, PPCContext& ctx, uint8_t* base, PPCFunc* original, PP
         // a fault or a run that spun: wrong, or not checkable, so not kept. An import or a hook only means this
         // call couldn't be followed: live, the lifted code calls it for real, and the paths that lead there have
         // to pass in calls that don't reach it (the branches this one ran don't count)
-        if (!strcmp(t_escapedBy, "a fault") || !strcmp(t_escapedBy, "spinning"))
+        if (!strcmp(t_escapedBy, "big"))
+            s.big = true;
+        else if (!strcmp(t_escapedBy, "a fault") || !strcmp(t_escapedBy, "spinning"))
             s.escaped = true;
         else
             s.unchecked++;

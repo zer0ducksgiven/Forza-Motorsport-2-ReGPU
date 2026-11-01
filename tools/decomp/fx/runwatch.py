@@ -13,12 +13,23 @@ for kv in sys.argv[4:]:  # KEY=VALUE settings for this run (FM2_DECOMP_CHECK=lif
     env[k] = v
     os.environ[k] = v
 
+# The run plays on a fresh copy of the profile (<name>-run): a run killed while the game saves leaves the save empty,
+# and the game then calls the profile tampered with (the Benchmark save was lost that way).
+profiles = os.path.join(os.path.expanduser('~'), 'Documents', 'fm2', 'profiles')
+source = os.path.join(profiles, env['FM2_PROFILE'])
+if os.path.isdir(source) and not env['FM2_PROFILE'].endswith('-run'):
+    import shutil
+    copy = source + '-run'
+    shutil.rmtree(copy, ignore_errors=True)
+    shutil.copytree(source, copy)
+    env['FM2_PROFILE'] = os.path.basename(copy)
 
-def frame():
+
+def frame(cmd='status'):
     try:
         with socket.create_connection(('127.0.0.1', 7341), timeout=2) as c:
             c.settimeout(2)
-            c.sendall(b'status\n')
+            c.sendall(cmd.encode() + b'\n')
             data = b''
             while not data.endswith(b'\n'):
                 data += c.recv(4096)
@@ -37,6 +48,8 @@ while p.poll() is None:
     if cur is not None and cur != last:
         last, seen = cur, time.time()
     elif time.time() - seen > (FREEZE if last else 60):
+        frame('threads')  # every thread's stack into the log first
+        time.sleep(2)
         p.kill()
         p.wait()
         steps = re.findall(r'tour: step [^\n]*', open(log, errors='replace').read())

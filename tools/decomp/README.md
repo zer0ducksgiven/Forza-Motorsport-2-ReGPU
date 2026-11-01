@@ -120,7 +120,10 @@ FM2_LIFT_SHADOW_CS=0 and FM2_LIFT_SHADOW_MSR=0 end runs at those again. `--stric
 3,733 with them followed).
 
 Ghidra's C drops call arguments, so `py -3 tools/decomp/livein.py` works out each function's real inputs (the
-argument registers it reads before writing, by liveness over the recompiled code). `ghidra/apply_params.cmd` writes
+argument registers it reads before writing, by liveness over the recompiled code). A direct call only kills the
+registers the callee can change (its writes and its callees', worked out first): with link-time code generation a
+caller keeps values in registers a callee leaves alone, and passes them on (827F5390 passes its caller's r5 through a
+call to 827F5280; lifted 82802070 didn't set that r5, and the menus froze). `ghidra/apply_params.cmd` writes
 them into the Ghidra project as each function's parameters (32-bit pieces of the registers, custom storage; the
 project before is in D:\ghidra\projects\FM2-before-params), which fixes most of Ghidra's dropped arguments and a
 constant it folded through a call, and makes the C read better. Registers Ghidra still sees no setup for (in_r6,

@@ -80,10 +80,41 @@ def parse(body):
     return instrs, labels
 
 
-VOLATILE = ALL  # a call leaves every argument register undefined (r3 and f1 hold its result)
+VOLATILE = ALL  # a call through a pointer or to an import leaves every argument register undefined
 
 
-def livein(instrs, labels, summary, imports):
+def clobbers(funcs):
+    """{address: argument registers the function can change}, its own writes and its callees'. With link-time code
+    generation a caller relies on a callee leaving the rest as they were (827F5390 keeps its r3 in r6 across a call
+    and passes it on): a direct call kills only these."""
+    own, calls = {}, {}
+    for a, (instrs, _) in funcs.items():
+        w, cs = 0, set()
+        for ins in instrs:
+            w |= ins['writes']
+            if ins['indirect']:
+                w |= VOLATILE
+            for c in ins['calls']:
+                if c.startswith('sub_'):
+                    cs.add(int(c[4:], 16))
+                else:
+                    w |= VOLATILE
+        own[a], calls[a] = w, cs
+    out = dict(own)
+    changed = True
+    while changed:
+        changed = False
+        for a, cs in calls.items():
+            v = out[a]
+            for c in cs:
+                v |= out.get(c, VOLATILE)
+            if v != out[a]:
+                out[a] = v
+                changed = True
+    return out
+
+
+def livein(instrs, labels, summary, imports, clob=None):
     n = len(instrs)
     succ = []
     for i, ins in enumerate(instrs):
@@ -97,9 +128,11 @@ def livein(instrs, labels, summary, imports):
         for c in ins['calls']:
             if c.startswith('sub_'):
                 g |= summary.get(int(c[4:], 16), 0) & ~k
-            elif c.startswith('__imp__') and not c.startswith('__imp__sub_'):
-                g |= imports.get(c[7:], ALL) & ~k
-            k |= VOLATILE
+                k |= clob.get(int(c[4:], 16), VOLATILE) if clob is not None else VOLATILE
+            else:
+                if c.startswith('__imp__') and not c.startswith('__imp__sub_'):
+                    g |= imports.get(c[7:], ALL) & ~k
+                k |= VOLATILE
         if ins['indirect']:
             g |= INTS & ~k
             k |= VOLATILE
@@ -161,12 +194,14 @@ def main():
             for m in re.finditer(r'PPC_FUNC_IMPL\(__imp__sub_([0-9A-F]{8})\) \{(.*?)\n\}', t, re.S):
                 funcs[int(m.group(1), 16)] = parse(m.group(2))
     imports = import_inputs()
-    print('%d functions, %d imports' % (len(funcs), len(imports)), flush=True)
+    clob = clobbers(funcs)
+    print('%d functions, %d imports; a direct call kills %.1f argument registers on average (of 21)'
+          % (len(funcs), len(imports), sum(bin(v).count('1') for v in clob.values()) / max(1, len(clob))), flush=True)
     summary = {}
-    for rnd in range(12):
+    for rnd in range(40):
         changed = 0
         for a, (instrs, labels) in funcs.items():
-            v = livein(instrs, labels, summary, imports)[0]
+            v = livein(instrs, labels, summary, imports, clob)[0]
             if v != summary.get(a, 0):
                 summary[a] = v
                 changed += 1
@@ -183,7 +218,7 @@ def main():
     # they aren't results either); a tail call passes its caller's on
     uses, tails = {}, {}
     for a, (instrs, labels) in funcs.items():
-        for c, vs in livein(instrs, labels, summary, imports)[1].items():
+        for c, vs in livein(instrs, labels, summary, imports, clob)[1].items():
             for v in vs:
                 if v == 'tail':
                     tails.setdefault(a, set()).add(c)

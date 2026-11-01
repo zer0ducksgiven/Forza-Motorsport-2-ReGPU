@@ -245,7 +245,8 @@ void LogGuestThreads()
         GuestThread& t = *object->thread;
         if (t.ctx)
         {
-            Log("  thread %u %-16s %s", t.id, t.name.c_str(), HostStack(t.hostHandle, 10).c_str());
+            Log("  thread %u %-16s kthread %08X lr %08X  %s", t.id, t.name.c_str(), t.kthread, uint32_t(t.ctx->lr),
+                HostStack(t.hostHandle, 14).c_str());
             if (!t.waitingOn.empty())
                 Log("      waits on %s", t.waitingOn.c_str());
         }

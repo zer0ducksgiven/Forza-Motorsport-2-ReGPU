@@ -28,6 +28,7 @@
 #include "log.h"
 #include "memory.h"
 #include "settings.h"
+#include "kernel/thread.h"
 
 #pragma comment(lib, "ws2_32.lib")
 
@@ -499,6 +500,12 @@ std::string Handle(const std::string& line)
         value.erase(0, value.find_first_not_of(' '));
         _putenv_s(name.c_str(), value.c_str());
         SetEnvironmentVariableA(name.c_str(), value.empty() ? nullptr : value.c_str());
+        return Ok();
+    }
+    // threads: every guest thread's host stack into the log (what a frozen game is doing)
+    if (cmd == "threads")
+    {
+        LogGuestThreads();
         return Ok();
     }
     if (cmd == "quit")

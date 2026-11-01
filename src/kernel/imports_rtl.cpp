@@ -144,6 +144,13 @@ GUEST_EXPORT(RtlEnterCriticalSection)
     static LiveSwitch noHandoff("FM2_NO_CS_HANDOFF"); // A/B: no handoff (barging)
     auto& owner = CsOwner(cs);
     CsWaiters(cs).fetch_add(1, std::memory_order_acq_rel);
+    GuestThread* self = CurrentGuestThread();
+    if (self) // for LogGuestThreads (a frozen game: who holds what)
+    {
+        char what[96];
+        snprintf(what, sizeof(what), "critical section %08X owned by kthread %08X", cs, __builtin_bswap32(owner.load()));
+        self->waitingOn = what;
+    }
     for (;;)
     {
         uint32_t expected = kHandoff;
@@ -160,6 +167,8 @@ GUEST_EXPORT(RtlEnterCriticalSection)
             WaitOnAddress(&owner, &seen, 4, noHandoff ? 1 : 10);
     }
     CsWaiters(cs).fetch_sub(1, std::memory_order_acq_rel);
+    if (self)
+        self->waitingOn.clear();
 }
 
 GUEST_EXPORT(RtlTryEnterCriticalSection)
