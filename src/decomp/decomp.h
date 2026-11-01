@@ -32,6 +32,8 @@ struct DecompRegion
 
 bool DecompChecking();
 bool DecompOff(); // FM2_DECOMP_OFF=1: the recompiled originals run instead (A/B tests, and a way out)
+bool LiftChecking(); // FM2_DECOMP_CHECK set at all (=lift: only the lifted functions)
+bool LiftInCheck(); // inside a lifted function's check (lift.cpp): originals only, their stores are logged
 
 // The counts behind the log: a line for the first few differences of each function, and a summary at powers of two.
 struct DecompStats
@@ -51,6 +53,11 @@ void HashedNameInit(PPCContext& ctx, uint8_t* base, PPCFunc* original, uint32_t 
 template <typename Original, typename Decompiled, typename Regions>
 void DecompCheck(DecompStats& stats, PPCContext& ctx, uint8_t* base, Original original, Decompiled decompiled, Regions regions)
 {
+    if (LiftInCheck())
+    {
+        original(ctx, base);
+        return;
+    }
     if (!DecompChecking())
     {
         if (DecompOff())

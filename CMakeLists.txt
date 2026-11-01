@@ -19,6 +19,11 @@ option(FM2_COVERAGE "Record the recompiled functions that run" OFF)
 if(FM2_COVERAGE)
     add_compile_definitions(FM2_COVERAGE=1)
 endif()
+# Logs the recompiled code's stores, for checking lifted functions (src/decomp/lift.h); slower, a build folder of its own.
+option(FM2_STORE_LOG "Log stores for the lifted functions' check" OFF)
+if(FM2_STORE_LOG)
+    add_compile_definitions(FM2_STORE_LOG=1)
+endif()
 
 # Recompiled game code (out/ppc, produced by XenonRecomp from your own
 # default.xex; never committed).
@@ -115,6 +120,14 @@ if(FM2_TITLE_UPDATE)
         DEPENDS "${FM2_TU_DIR}/image.bin" "${FM2_PPC_DIR}/ppc_func_mapping.cpp" "${CMAKE_SOURCE_DIR}/tools/decomp/gen_hashed_names.py"
         COMMENT "Finding the HashedName constants")
     list(APPEND FM2_SOURCES "${FM2_GENERATED}/hashed_names.cpp")
+    # Lifted game functions (tools/decomp/lift.py, into out/lift): C semantics, so wrapping and no FMA. Opt-in while
+    # they're checked only by a sample of calls.
+    option(FM2_LIFTED "Build in the lifted game functions in out/lift" OFF)
+    if(FM2_LIFTED)
+        file(GLOB FM2_LIFTED_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/out/lift/*.cpp")
+        set_source_files_properties(${FM2_LIFTED_SOURCES} PROPERTIES COMPILE_OPTIONS "-fwrapv;-ffp-contract=off;-Wno-everything")
+        list(APPEND FM2_SOURCES ${FM2_LIFTED_SOURCES})
+    endif()
 endif()
 set(FM2_DLSS "${CMAKE_SOURCE_DIR}/thirdparty/dlss")
 if(NOT EXISTS "${FM2_DLSS}/include/nvsdk_ngx.h")

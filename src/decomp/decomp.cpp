@@ -1,7 +1,15 @@
 // Shared pieces of the decompiled functions (decomp.h): the check switch and its log.
 #include "decomp/decomp.h"
 
+// FM2_DECOMP_CHECK=1 checks everything; =lift only the lifted functions (lift.cpp), the others being slow to check
 bool DecompChecking()
+{
+    static const char* v = getenv("FM2_DECOMP_CHECK");
+    static const bool on = v && strcmp(v, "lift") != 0;
+    return on;
+}
+
+bool LiftChecking()
 {
     static const bool on = getenv("FM2_DECOMP_CHECK") != nullptr;
     return on;

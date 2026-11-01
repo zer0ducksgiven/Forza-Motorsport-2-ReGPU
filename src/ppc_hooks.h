@@ -20,6 +20,39 @@ void Fm2Cover(const char* func);
     } while (0)
 #endif
 
+#ifdef FM2_STORE_LOG
+// The lifted functions' check (src/decomp/lift.cpp): while a lifted version runs, the recompiled code it calls
+// reads and writes a private overlay instead of guest memory (g_fm2Shadow); while the original runs, its stores
+// are logged (g_fm2StoreLog). Vector loads and stores and dcbz don't come through here.
+extern thread_local bool g_fm2StoreLog, g_fm2Shadow;
+void Fm2LogStore(uint8_t* base, uint32_t addr, uint32_t size);
+uint64_t Fm2ShadowLoad(const uint8_t* base, uint32_t addr, uint32_t size);
+void Fm2ShadowStore(uint32_t addr, uint32_t size, uint64_t value);
+#define PPC_LOAD_U8(x) (g_fm2Shadow ? uint8_t(Fm2ShadowLoad(base, (x), 1)) : *(volatile uint8_t*)(base + (x)))
+#define PPC_LOAD_U16(x) (g_fm2Shadow ? uint16_t(Fm2ShadowLoad(base, (x), 2)) : __builtin_bswap16(*(volatile uint16_t*)(base + (x))))
+#define PPC_LOAD_U32(x) (g_fm2Shadow ? uint32_t(Fm2ShadowLoad(base, (x), 4)) : __builtin_bswap32(*(volatile uint32_t*)(base + (x))))
+#define PPC_LOAD_U64(x) (g_fm2Shadow ? uint64_t(Fm2ShadowLoad(base, (x), 8)) : __builtin_bswap64(*(volatile uint64_t*)(base + (x))))
+#define FM2_STORE(x, y, n, T, swap)                                                                             \
+    do                                                                                                          \
+    {                                                                                                           \
+        const uint32_t fm2_a = (x);                                                                             \
+        const T fm2_v = T(y);                                                                                   \
+        if (g_fm2Shadow)                                                                                        \
+            Fm2ShadowStore(fm2_a, n, fm2_v);                                                                    \
+        else                                                                                                    \
+        {                                                                                                       \
+            if (g_fm2StoreLog)                                                                                  \
+                Fm2LogStore(base, fm2_a, n);                                                                    \
+            *(volatile T*)(base + fm2_a) = swap(fm2_v);                                                         \
+        }                                                                                                       \
+    } while (0)
+#define FM2_NOSWAP(v) (v)
+#define PPC_STORE_U8(x, y) FM2_STORE(x, y, 1, uint8_t, FM2_NOSWAP)
+#define PPC_STORE_U16(x, y) FM2_STORE(x, y, 2, uint16_t, __builtin_bswap16)
+#define PPC_STORE_U32(x, y) FM2_STORE(x, y, 4, uint32_t, __builtin_bswap32)
+#define PPC_STORE_U64(x, y) FM2_STORE(x, y, 8, uint64_t, __builtin_bswap64)
+#endif
+
 // MSR[EE] cleared -> take the global interrupt lock; set -> release it.
 void PPCMsrChanged(PPCContext& ctx, uint64_t oldMsr);
 #define PPC_MSR_CHANGED(ctx, oldMsr)                       \

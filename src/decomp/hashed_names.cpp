@@ -7,6 +7,11 @@
 
 void HashedNameInit(PPCContext& ctx, uint8_t* base, PPCFunc* original, uint32_t string, uint32_t global)
 {
+    if (LiftInCheck())
+    {
+        original(ctx, base);
+        return;
+    }
     if (!DecompChecking())
     {
         if (DecompOff())

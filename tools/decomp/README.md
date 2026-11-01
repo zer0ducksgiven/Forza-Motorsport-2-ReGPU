@@ -79,3 +79,25 @@ Finding hot functions: `FM2_SAMPLE_THREAD=7` (the render thread; 1 is the main t
 busiest functions every 5 s.
 
 Decompiled code is the game's code: keep exported C (`D:\ghidra\export`) out of the public repository.
+
+## Lifting functions into the port
+
+The road to a build without the recompiled code: game functions turned from Ghidra's C into C++ that replaces
+them, checked against the originals. Lifted code goes to `out/lift` (never committed: it's the game's code).
+
+1. Measure what runs: configure a build folder with `-DFM2_COVERAGE=ON`, run the game, and
+   `py -3 tools/decomp/coverage.py title=a.tsv race=b.tsv` sizes the set and orders it bottom-up.
+2. `ghidra/run_script.cmd LiftInfoFm2.java <addresses.txt> <info.jsonl>`: Ghidra's C plus each parameter's
+   register and each global's type.
+3. `py -3 tools/decomp/lift.py <info.jsonl>` lifts what it can (out/lift/report.tsv counts why the rest isn't),
+   only functions whose call trees a check can see (no kernel imports, calls through pointers, hooks or vector
+   stores).
+4. Build with `-DFM2_STORE_LOG=ON -DFM2_LIFTED=ON` and run with `FM2_DECOMP_CHECK=lift`: each lifted function's
+   first 64 calls run it against an overlay, then the original for real, and compare (src/decomp/lift.h). The
+   game plays as the original. Results: out/lift_check.tsv.
+5. `py -3 tools/decomp/lift.py <info.jsonl> --keep out/lift_check.tsv` keeps the exact ones.
+   `FM2_LIFT_ENABLE=<file of addresses>` runs only some lifted, for bisecting a bad one.
+
+Ghidra's C is wrong in ways a sample of calls can miss, so the lifter rejects what has bitten so far: calls with
+fewer arguments than the callee takes, `void` functions whose r3 differs (callers use it), and stack locals whose
+address goes to a callee (Ghidra folded one's value through the call).
