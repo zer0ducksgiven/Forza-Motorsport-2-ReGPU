@@ -83,13 +83,17 @@ def stats():
     for l in all_logs:
         per_install.setdefault(l['install'], []).append(l)  # newest first
     game = reports.game()
+    try:
+        versions = reports.log_versions()  # for logs that don't name their version (PGR4's)
+    except reports.GhError:
+        versions = {}
     def summary(install_logs):
         reports.use(game)
         for l in install_logs:
             s = reports.log_summary(reports.log_text(l['path']))
             if s['gpu'] or s['os']:
                 return {'install': l['install'], 'date': l['date'], 'path': l['path'], 'gpu': s['gpu'], 'cpu': s['cpu'], 'os': s['os'],
-                        'wine': s['wine'], 'version': s['version'], 'zeroCopy': s['zeroCopy'], 'fps': s['fps']['median'],
+                        'wine': s['wine'], 'version': s['version'] or versions.get(l['id'], ''), 'zeroCopy': s['zeroCopy'], 'fps': s['fps']['median'],
                         'settings': s['settings'], 'errors': len(s['errors'])}
         text = reports.log_text(install_logs[0]['path'])
         fatal = next((line[line.find(']') + 1:].strip() for line in text.splitlines() if 'FATAL' in line), '')
