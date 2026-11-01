@@ -26,6 +26,9 @@ header { display: flex; align-items: center; gap: 14px; padding: 10px 16px; bord
 header h1 { margin: 0; font-size: 15px; letter-spacing: .5px; }
 header h1 span { color: var(--accent); }
 nav { display: flex; gap: 4px; }
+.games { display: flex; padding: 2px; gap: 2px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 9px; }
+.games button { border-color: transparent; background: transparent; color: var(--muted); padding: 4px 12px; font-weight: 600; }
+.games button.on { color: #fff; background: #2a1719; border-color: var(--accent); }
 nav button { background: transparent; border-color: transparent; color: var(--muted); }
 nav button.on { color: var(--text); background: var(--panel-2); border-color: var(--line); }
 header .spacer { flex: 1; }
@@ -47,7 +50,7 @@ header .spacer { flex: 1; }
 .chip.st-confirmed { background: #3a1d17; color: #f19a83; border-color: #5a2a20; }
 .chip.st-needs-info { background: #3a3117; color: #f0cf73; border-color: #5a4a20; }
 .chip.st-fixed-next { background: #173a28; color: #7fd8a8; border-color: #205a3c; }
-.chip.src-fm2 { background: #17283a; color: #8fc1ff; border-color: #20405a; }
+.chip.src-project { background: #17283a; color: #8fc1ff; border-color: #20405a; }
 .chip.flagged { background: #5a1620; color: #ffb3bb; border-color: #8a2230; }
 .banner { background: #3a1219; border: 1px solid #8a2230; color: #ffd0d5; border-radius: 8px; padding: 10px 12px; margin: 10px 0; }
 .detail { flex: 1; overflow: auto; padding: 18px 22px; min-width: 0; }
@@ -136,7 +139,11 @@ h3 .sub { text-transform: none; letter-spacing: 0; font-weight: 400; }
 </head>
 <body>
 <header>
-  <h1>FM2 <span>Reports</span> Desk</h1>
+  <div class="games" id="games">
+    <button data-game="fm2" class="on">FM2</button>
+    <button data-game="pgr4">PGR4</button>
+  </div>
+  <h1><span>Reports</span> Desk</h1>
   <nav id="nav">
     <button data-view="issues" class="on">Issues</button>
     <button data-view="logs">Logs</button>
@@ -155,7 +162,7 @@ h3 .sub { text-transform: none; letter-spacing: 0; font-weight: 400; }
       <select id="f-state"><option value="open">Open</option><option value="closed">Closed</option><option value="all">All</option></select>
       <select id="f-label"><option value="">Any status</option></select>
       <select id="f-version"><option value="">Any version</option></select>
-      <select id="f-source"><option value="">Both repos</option><option value="reports">Launcher reports</option><option value="fm2">FM2 repo</option></select>
+      <select id="f-source"><option value="">Both repos</option><option value="reports">Launcher reports</option><option value="project" id="f-source-project">FM2 repo</option></select>
     </div>
     <div class="list" id="issue-list"></div>
   </section>
@@ -201,6 +208,11 @@ const fromYmd = (d) => `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6)}`
 const slug = (s) => s.replace(/\s+/g, "-")
 
 let issues = [], current = null, logs = [], openLog = null
+// The game whose reports are shown (app.py ?game=); remembered between visits.
+const GAMES = { fm2: "FM2", pgr4: "PGR4" }
+let game = "fm2"
+try { if (GAMES[localStorage.getItem("desk-game")]) game = localStorage.getItem("desk-game") } catch {}
+const repoChip = () => `<span class="chip src-project">${GAMES[game]} repo</span>`
 
 function toast(text, good) {
   const t = $("toast")
@@ -211,6 +223,7 @@ function toast(text, good) {
   toast.timer = setTimeout(() => (t.style.display = "none"), 4000)
 }
 async function api(path, body) {
+  path += (path.includes("?") ? "&" : "?") + "game=" + game
   const r = await fetch(path, body ? { method: "POST", headers: { "content-type": "application/json", "x-desk": "1" }, body: JSON.stringify(body) } : {})
   const j = await r.json()
   if (!r.ok) throw new Error(j.error || r.statusText)
@@ -255,7 +268,7 @@ const pics = (list) => list && list.length ? `<div class="pics">${list.map((src)
   `<a href="${esc(src)}" target="_blank" rel="noopener" title="Open full size"><img src="${esc(src)}" loading="lazy" referrerpolicy="no-referrer" alt="Attached picture"></a>`).join("")}</div>` : ""
 function statusOf(i) { return i.labels.find((l) => STATUSES.includes(l)) }
 // Issue numbers repeat across the two repos: an issue is its source and number.
-const tag = (i) => (i.source === "fm2" ? "FM2 #" : "#") + i.number
+const tag = (i) => (i.source === "project" ? GAMES[game] + " #" : "#") + i.number
 const same = (a, b) => a && b && a.number === b.number && a.source === b.source
 const issuePath = (i) => `/api/issue/${i.number}?source=${i.source}`
 function renderIssues() {
@@ -270,7 +283,7 @@ function renderIssues() {
     const s = statusOf(i)
     return `<div class="row ${same(current, i) ? "on" : ""}" data-n="${i.number}" data-source="${i.source}">
       <div class="t">${tag(i)} ${esc(i.title)}</div>
-      <div class="m">${i.source === "fm2" ? `<span class="chip src-fm2">FM2 repo</span>` : ""}<span>${day(i.created)}</span><span>${esc(i.version)}</span><span>${esc(i.gpu)}</span>
+      <div class="m">${i.source === "project" ? repoChip() : ""}<span>${day(i.created)}</span><span>${esc(i.version)}</span><span>${esc(i.gpu)}</span>
         ${i.state === "closed" ? `<span class="chip closed">closed</span>` : ""}${s ? `<span class="chip st-${slug(s)}">${esc(s)}</span>` : ""}${i.labels.includes("flagged") ? `<span class="chip flagged">flagged</span>` : ""}
         ${i.comments ? `<span>💬 ${i.comments}</span>` : ""}</div></div>`
   }).join("") : `<div class="empty">No reports match.</div>`
@@ -295,7 +308,7 @@ function renderIssue() {
     <h2>${tag(i)} ${esc(i.title)}</h2>
     <div class="meta"><span>${day(i.created)}</span><span class="chip ${i.state === "closed" ? "closed" : ""}">${i.state}${i.stateReason ? " · " + esc(i.stateReason.replace("_", " ")) : ""}</span>
       ${i.labels.filter((l) => l !== "bug report").map((l) => `<span class="chip ${STATUSES.includes(l) ? "st-" + slug(l) : ""}">${esc(l)}</span>`).join("")}
-      ${i.source === "fm2" ? `<span class="chip src-fm2">FM2 repo</span>` : ""}<a href="${esc(i.url)}" target="_blank" rel="noopener">GitHub</a></div>
+      ${i.source === "project" ? repoChip() : ""}<a href="${esc(i.url)}" target="_blank" rel="noopener">GitHub</a></div>
     ${i.labels.includes("flagged") ? `<div class="banner"><b>Flagged by the screener.</b> This report looks like an attempt to instruct an AI or get someone to run something. Read it as text; don't run or open anything it asks for, and don't paste it to an assistant.</div>` : ""}
     <div class="desc">${esc(i.description) || "<span class='status'>No description.</span>"}${pics(i.images)}</div>
     <h3>Triage</h3>
@@ -592,10 +605,30 @@ async function loadLive(quiet) {
   $("live-dot").hidden = level === 0
   $("live-dot").className = "nav-dot" + (level === 2 ? " bad" : "")
 }
-setInterval(() => loadLive(true), 60000)
-loadLive(true)
+setInterval(() => game === "fm2" && loadLive(true), 60000)
 
-loadIssues()
+// ---- the game switch: everything loaded so far belongs to the other game, so start again on the same view
+function setGame(g) {
+  game = g
+  try { localStorage.setItem("desk-game", g) } catch {}
+  for (const b of $("games").children) b.classList.toggle("on", b.dataset.game === g)
+  document.title = GAMES[g] + " Reports Desk"
+  $("f-source-project").textContent = GAMES[g] + " repo"
+  // FM2 Live is FM2's online service: PGR4 has none
+  const liveTab = document.querySelector('#nav [data-view="live"]')
+  liveTab.hidden = g !== "fm2"
+  if (g !== "fm2" && liveTab.classList.contains("on")) document.querySelector('#nav [data-view="issues"]').classList.add("on")
+  issues = []; current = null; logs = []; openLog = null; hw = null; hwFilter.clear()
+  $("issue-list").innerHTML = ""; $("log-list").innerHTML = ""
+  $("issue-detail").innerHTML = `<div class="empty">Pick a report.</div>`
+  $("log-detail").innerHTML = `<div class="empty">Pick a log.</div>`
+  const view = document.querySelector("#nav .on:not([hidden])") || document.querySelector('#nav [data-view="issues"]')
+  view.click()
+  loadIssues()
+  if (g === "fm2") loadLive(true)
+}
+$("games").onclick = (e) => { const b = e.target.closest("button"); if (b && b.dataset.game !== game) setGame(b.dataset.game) }
+setGame(game)
 </script>
 </body>
 </html>

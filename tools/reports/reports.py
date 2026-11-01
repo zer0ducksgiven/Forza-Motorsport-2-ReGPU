@@ -28,10 +28,31 @@ import threading
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import screen as screener  # noqa: E402
 
-REPO = 'zer0ducksgiven/fm2-reports'
-# The project's own repo: issues people open there by hand. The desk lists both.
-FM2_REPO = 'zer0ducksgiven/Forza-Motorsport-2-ReGPU'
-ISSUE_REPOS = {'reports': REPO, 'fm2': FM2_REPO}
+# Each game's reports repo (the Worker files reports there) and its own repo (issues people open there by hand).
+# The desk lists both; the game is set per thread (use), so the desk can serve both games at once.
+GAMES = {
+    'fm2': {'name': 'FM2', 'reports': 'zer0ducksgiven/fm2-reports', 'project': 'zer0ducksgiven/Forza-Motorsport-2-ReGPU'},
+    'pgr4': {'name': 'PGR4', 'reports': 'zer0ducksgiven/pgr4-reports', 'project': 'zer0ducksgiven/PGR4-ReGPU'},
+}
+_game = threading.local()
+
+
+def use(game):
+    if game not in GAMES:
+        raise ValueError('Unknown game.')
+    _game.name = game
+
+
+def game():
+    return getattr(_game, 'name', 'fm2')
+
+
+def issue_repos():
+    """source -> repo for the current game: 'reports' (the launcher's) and 'project' (the game's own)."""
+    g = GAMES[game()]
+    return {'reports': g['reports'], 'project': g['project']}
+
+
 # Triage labels the desk offers (created on first use).
 STATUSES = {
     'needs info': 'fbca04',
@@ -49,10 +70,10 @@ class GhError(Exception):
     pass
 
 
-def gh(path, method='GET', body=None, raw=False, repo=REPO, full=False):
+def gh(path, method='GET', body=None, raw=False, repo=None, full=False):
     """A GitHub API call through gh. path is relative to the repo unless it starts with '/'.
     full: issue bodies also as GitHub's rendered HTML (body_html), whose image links are signed to load without a login."""
-    url = path if path.startswith('/') else f'/repos/{repo}/{path}'
+    url = path if path.startswith('/') else f'/repos/{repo or issue_repos()["reports"]}/{path}'
     cmd = ['gh', 'api', '-X', method, url]
     if raw:
         cmd += ['-H', 'Accept: application/vnd.github.raw']
@@ -69,7 +90,7 @@ def gh(path, method='GET', body=None, raw=False, repo=REPO, full=False):
     return out if raw else (json.loads(out) if out.strip() else None)
 
 
-def gh_pages(path, repo=REPO, full=False):
+def gh_pages(path, repo=None, full=False):
     items, page = [], 1
     while True:
         sep = '&' if '?' in path else '?'
@@ -88,7 +109,7 @@ LOG_LINK = re.compile(r'play\.log: \[([^\]]+)\]')
 
 def parse_issue(i, source='reports'):
     """The Worker's issue body: the quoted description, a table of fields, the log link.
-    An FM2 repo issue is free text: all of its body is the description, its author the contact."""
+    A project repo issue is free text: all of its body is the description, its author the contact."""
     body = i.get('body') or ''
     if source == 'reports':
         fields = {k.strip().lower(): v.strip() for k, v in ROW.findall(body) if k.strip() not in ('', '---')}
@@ -122,14 +143,14 @@ def parse_issue(i, source='reports'):
 
 
 def issues(state='all', source='reports'):
-    return [parse_issue(i, source) for i in gh_pages(f'issues?state={state}', ISSUE_REPOS[source]) if 'pull_request' not in i]
+    return [parse_issue(i, source) for i in gh_pages(f'issues?state={state}', issue_repos()[source]) if 'pull_request' not in i]
 
 
 def all_issues(state='all'):
-    """Both repos' issues, newest first (if the FM2 repo can't be read, just the reports)."""
+    """Both repos' issues, newest first (if the project repo can't be read, just the reports)."""
     out = issues(state, 'reports')
     try:
-        out += issues(state, 'fm2')
+        out += issues(state, 'project')
     except GhError:
         pass
     return sorted(out, key=lambda i: i['created'], reverse=True)
@@ -153,7 +174,7 @@ def images(html):
 
 
 def issue(n, source='reports'):
-    repo = ISSUE_REPOS[source]
+    repo = issue_repos()[source]
     raw = gh(f'issues/{n}', repo=repo, full=True)
     i = parse_issue(raw, source)
     i['images'] = images(raw.get('body_html'))
@@ -164,30 +185,30 @@ def issue(n, source='reports'):
     return i
 
 
-def ensure_label(name, repo=REPO):
+def ensure_label(name, repo=None):
     try:
         gh(f'labels/{name}', repo=repo)
     except GhError:
         gh('labels', 'POST', {'name': name, 'color': STATUSES.get(name, 'ededed')}, repo=repo)
 
 
-def add_label(n, name, repo=REPO):
+def add_label(n, name, repo=None):
     ensure_label(name, repo)
     gh(f'issues/{n}/labels', 'POST', {'labels': [name]}, repo=repo)
 
 
-def remove_label(n, name, repo=REPO):
+def remove_label(n, name, repo=None):
     gh(f'issues/{n}/labels/{name}', 'DELETE', repo=repo)
 
 
-def set_state(n, state, reason=None, repo=REPO):
+def set_state(n, state, reason=None, repo=None):
     body = {'state': state}
     if reason:
         body['state_reason'] = reason  # completed | not_planned
     gh(f'issues/{n}', 'PATCH', body, repo=repo)
 
 
-def comment(n, text, repo=REPO):
+def comment(n, text, repo=None):
     gh(f'issues/{n}/comments', 'POST', {'body': text}, repo=repo)
 
 
@@ -211,7 +232,7 @@ def screen_issue(i, label=True):
 
 # ---- logs
 
-_log_cache = {}
+_log_cache = {}  # (reports repo, path) -> text
 _cache_lock = threading.Lock()
 LOG_NAME = re.compile(r'^logs/(\d{8})/([0-9a-z]+)-([0-9a-f]+)\.log$')
 
@@ -232,24 +253,25 @@ def logs():
     return out
 
 
-_log_times = {}
+_log_times = {}  # reports repo -> {id: time}
 LOG_COMMIT = re.compile(r'^Log \d{8}-([0-9a-f]+)\b')
 
 
 def log_times():
     """When each log arrived: the Worker's commit "Log <date>-<id> (...)" is the upload. id -> ISO time.
     Pages of commits until one adds nothing new (later calls only read the newest page or two)."""
+    times = _log_times.setdefault(issue_repos()['reports'], {})
     page = 1
     while True:
         batch = gh(f'commits?per_page=100&page={page}')
         new = 0
         for c in batch:
             m = LOG_COMMIT.match(c['commit']['message'])
-            if m and m.group(1) not in _log_times:
-                _log_times[m.group(1)] = c['commit']['committer']['date']
+            if m and m.group(1) not in times:
+                times[m.group(1)] = c['commit']['committer']['date']
                 new += 1
         if len(batch) < 100 or (not new and page > 1):
-            return _log_times
+            return times
         page += 1
 
 
@@ -261,7 +283,7 @@ def delete_log(path, sha=None):
         sha = gh(f'contents/{path}')['sha']
     gh(f'contents/{path}', 'DELETE', {'message': f'Delete {path}', 'sha': sha})
     with _cache_lock:
-        _log_cache.pop(path, None)
+        _log_cache.pop((issue_repos()['reports'], path), None)
 
 
 # Words on a line: an unreadable upload has none. The launcher's setup test lines don't count.
@@ -279,11 +301,11 @@ def log_text(path):
     if not LOG_NAME.match(path):
         raise GhError('Not a log path.')
     with _cache_lock:
-        if path in _log_cache:
-            return _log_cache[path]
+        if (issue_repos()['reports'], path) in _log_cache:
+            return _log_cache[(issue_repos()['reports'], path)]
     text = gh(f'contents/{path}', raw=True)
     with _cache_lock:
-        _log_cache[path] = text  # logs never change once stored
+        _log_cache[(issue_repos()['reports'], path)] = text  # logs never change once stored
     return text
 
 
