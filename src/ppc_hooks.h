@@ -51,6 +51,9 @@ void Fm2ShadowStore(uint32_t addr, uint32_t size, uint64_t value);
 #define PPC_STORE_U16(x, y) FM2_STORE(x, y, 2, uint16_t, __builtin_bswap16)
 #define PPC_STORE_U32(x, y) FM2_STORE(x, y, 4, uint32_t, __builtin_bswap32)
 #define PPC_STORE_U64(x, y) FM2_STORE(x, y, 8, uint64_t, __builtin_bswap64)
+// calls through pointers stay in the overlay, unless they reach one of the port's own C++ hooks
+void Fm2ShadowIndirect(uint32_t target);
+#define PPC_CALL_INDIRECT_FUNC(x)                             do                                                        {                                                             const uint32_t fm2_t = (x);                               if (g_fm2Shadow)                                              Fm2ShadowIndirect(fm2_t);                             (PPC_LOOKUP_FUNC(base, fm2_t))(ctx, base);            } while (0)
 #endif
 
 // MSR[EE] cleared -> take the global interrupt lock; set -> release it.

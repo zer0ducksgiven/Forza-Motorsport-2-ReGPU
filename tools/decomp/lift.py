@@ -1,6 +1,6 @@
 """Lifts game functions from Ghidra's decompiled C into C++ that builds into the port (out/lift, never committed).
 
-  py -3 tools/decomp/lift.py <info.jsonl> [--keep out/lift_check.tsv] [--out out/lift]
+  py -3 tools/decomp/lift.py <info.jsonl> [--keep out/lift_check.tsv] [--follow] [--out out/lift]
 
 info.jsonl comes from ghidra/LiftInfoFm2.java (the C plus each parameter's register and each global's type).
 Each function's C is parsed (pycparser) and written out against guest memory: loads and stores go through
@@ -670,6 +670,7 @@ def main(argv):
         return 1
     info_path = args.pop(0)
     keep = None
+    follow = False
     out_dir = os.path.join(ROOT, 'out', 'lift')
     while args:
         a = args.pop(0)
@@ -680,6 +681,8 @@ def main(argv):
                 # ran, never differed, and (void by Ghidra) left r3 as the original did: callers may use it
                 if f[0] != 'address' and int(f[1]) > 0 and int(f[2]) == 0 and int(f[3]) == 0:
                     keep[f[0]] = int(f[1])
+        elif a == '--follow':
+            follow = True
         elif a == '--out':
             out_dir = args.pop(0)
 
@@ -714,8 +717,10 @@ def main(argv):
                     t = open(os.path.join(dd, f), encoding='utf-8', errors='replace').read()
                     taken |= {int(a, 16) for a in re.findall(r'PPC_FUNC\(sub_([0-9A-F]{8})\)', t)}
     taken |= hooked
-    # A check runs a function twice, undoing the first run's stores, so everything it calls has to keep to stores
-    # the log sees: no kernel imports, no calls through pointers (unknown), no hooks, no vector or block stores.
+    # A check runs the lifted version against an overlay, so everything it calls has to keep to loads and stores
+    # that go through it: no vector or block stores, and no hooks (the port's C++). By default no imports or calls
+    # through pointers either; --follow lets those through, to be caught as they happen (the run is abandoned and
+    # the function isn't kept), which lifts more but has made checks less reliable so far.
     calls, impure = {}, set()
     ppc = os.path.join(ROOT, 'out', 'ppc_tu4')
     for f in os.listdir(ppc):
@@ -724,8 +729,8 @@ def main(argv):
             for m in re.finditer(r'PPC_FUNC_IMPL\(__imp__sub_([0-9A-F]{8})\) \{(.*?)\n\}', t, re.S):
                 a, body = int(m.group(1), 16), m.group(2)
                 calls[a] = {int(c, 16) for c in re.findall(r'\bsub_([0-9A-F]{8})\(ctx, base\)', body)}
-                if (re.search(r'simde_mm_store\w*\(\(\w+\*\)\(base|memset\(base|memcpy\(base|PPC_CALL_INDIRECT_FUNC', body)
-                        or re.search(r'\b__imp__(?!sub_)\w+\(ctx, base\)', body) or a in hooked):
+                follows = not follow and re.search(r'PPC_CALL_INDIRECT_FUNC|__imp__(?!sub_)\w+\(ctx, base\)', body)
+                if re.search(r'simde_mm_store\w*\(\(\w+\*\)\(base|memset\(base|memcpy\(base', body) or a in hooked or follows:
                     impure.add(a)
     changed = True
     while changed:
@@ -750,7 +755,7 @@ def main(argv):
             if addr in taken:
                 raise Reject('already replaced')
             if addr in unlogged:
-                raise Reject('calls the check cannot undo')
+                raise Reject('vector stores or hooks in its calls')
             c = f['c']
             if 'halt_baddata' in c or 'WARNING' in c:
                 raise Reject('Ghidra warning')
@@ -803,6 +808,11 @@ def main(argv):
         with open(os.path.join(out_dir, 'lift_%03d.cpp' % (i // per)), 'w', encoding='utf-8') as out:
             out.write('// Lifted by tools/decomp/lift.py from Ghidra\'s C: the game\'s own code, keep out of the repository.\n')
             out.write('#include <bit>\n\n#include "decomp/lift.h"\n#include "ppc_recomp_shared.h"\n\n')
+            if i == 0:
+                # what a check's lifted run can't follow a call through a pointer into: hooks, vector and block
+                # stores, and whatever calls those
+                out.write('static const uint32_t kUnfollowable[] = { %s };\n' % ', '.join('0x%08X' % h for h in sorted(impure)))
+                out.write('static const bool kListed = (LiftRegisterHooked(kUnfollowable, %d), true);\n\n' % len(impure))
             for addr, code, rk in done[i:i + per]:
                 out.write(code + '\n')
                 out.write('PPC_FUNC_IMPL(__imp__sub_%08X);\n' % addr)

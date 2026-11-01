@@ -163,13 +163,20 @@ void CompleteOverlapped(uint32_t overlapped, uint32_t result, uint32_t extendedE
         LOG_ONCE("XOVERLAPPED completion routines are not called yet");
 }
 
+extern thread_local bool g_fm2Shadow;
+
 namespace
 {
 thread_local const char* t_tracedImport = nullptr; // the import whose call was just logged (nesting: the innermost)
 }
 
+void LiftShadowGuard(const char* what); // src/decomp/lift.cpp
+
 void TraceImport(const char* name, PPCContext& ctx)
 {
+    // a lifted function's check runs it against an overlay first, which an import would escape
+    if (g_fm2Shadow)
+        LiftShadowGuard(name);
     static const double after = getenv("FM2_TRACE_IMPORTS") ? atof(getenv("FM2_TRACE_IMPORTS")) : -1;
     if (after < 0)
         return;

@@ -26,6 +26,13 @@ struct Logged
 thread_local std::vector<Logged>* t_log = nullptr;
 thread_local std::unordered_map<uint32_t, uint8_t>* t_overlay = nullptr;
 thread_local int t_depth = 0; // inside a check: everything below runs as the original
+thread_local uint64_t t_shadowLoads = 0;
+
+// A check's lifted run reaching an import, a hook, or memory it can't see: it's abandoned (thrown out of)
+// before anything outside the overlay happens.
+struct ShadowEscape
+{
+};
 
 std::atomic<LiftStats*> g_all{ nullptr };
 
@@ -39,8 +46,8 @@ void Writer()
             fprintf(f, "address\tcalls\twrong\tvoid_r3\twhat\n");
             for (LiftStats* s = g_all.load(); s; s = s->next)
                 if (s->calls)
-                    fprintf(f, "%08X\t%u\t%u\t%u\t%s\n", s->address, s->calls.load(), s->wrong.load() + (s->big ? 1 : 0),
-                            s->voidR3.load(), s->big ? "big" : s->what == 1 ? "memory" : s->what == 2 ? "return" : "");
+                    fprintf(f, "%08X\t%u\t%u\t%u\t%s\n", s->address, s->calls.load(),  s->wrong.load() + (s->big || s->escaped ? 1 : 0),
+                            s->voidR3.load(), s->big ? "big" : s->escaped ? "escaped" : s->what == 1 ? "memory" : s->what == 2 ? "return" : "");
             fclose(f);
             MoveFileExA("out/lift_check.tsv.tmp", "out/lift_check.tsv", MOVEFILE_REPLACE_EXISTING);
         }
@@ -69,6 +76,45 @@ static bool LiftEnabled(uint32_t address)
     return !only || only->count(address);
 }
 
+static std::unordered_map<uint32_t, bool>& Hooked()
+{
+    static std::unordered_map<uint32_t, bool> h;
+    return h;
+}
+
+void LiftRegisterHooked(const uint32_t* addresses, size_t n)
+{
+    for (size_t i = 0; i < n; i++)
+        Hooked()[addresses[i]] = true;
+}
+
+void LiftShadowGuard(const char*)
+{
+    throw ShadowEscape{};
+}
+
+void Fm2ShadowIndirect(uint32_t target)
+{
+    if (Hooked().count(target))
+        throw ShadowEscape{};
+}
+
+// The lifted run of a check, as structured exception handling sees it: an escape (thrown above) or a fault (a wrong
+// lifted function can hand recompiled code a bad pointer) ends it, false. Its own function: __try can't share one
+// with C++ objects.
+static bool RunShadow(PPCFunc* lifted, PPCContext& c, uint8_t* base)
+{
+    __try
+    {
+        lifted(c, base);
+        return true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return false;
+    }
+}
+
 bool LiftInCheck()
 {
     return t_depth > 0;
@@ -86,6 +132,10 @@ void Fm2LogStore(uint8_t* base, uint32_t addr, uint32_t size)
 
 uint64_t Fm2ShadowLoad(const uint8_t* base, uint32_t addr, uint32_t size)
 {
+    // a lifted run that waits on memory it wrote itself (into the overlay, where no other thread can change it)
+    // would never finish: give up on it
+    if (++t_shadowLoads > 20000000)
+        throw ShadowEscape{};
     uint64_t v = 0;
     for (uint32_t i = 0; i < size; i++)
     {
@@ -122,7 +172,7 @@ void LiftRun(LiftStats& s, PPCContext& ctx, uint8_t* base, PPCFunc* original, PP
         return;
     }
     // enough to judge a function; after that it runs as the original, so a check run keeps a playable speed
-    if (s.calls >= 64 || s.big)
+    if (s.calls >= 64 || s.big || s.escaped)
     {
         original(ctx, base);
         return;
@@ -142,9 +192,19 @@ void LiftRun(LiftStats& s, PPCContext& ctx, uint8_t* base, PPCFunc* original, PP
     t_overlay = &overlay;
     g_fm2Shadow = true;
     PPCContext c = ctx;
-    lifted(c, base);
+    t_shadowLoads = 0;
+    const bool escaped = !RunShadow(lifted, c, base);
     g_fm2Shadow = false;
     t_overlay = nullptr;
+    if (escaped)
+    {
+        // it reached an import or a hook, or faulted: not something a check can pass, so it isn't kept
+        t_depth--;
+        original(ctx, base);
+        s.escaped = true;
+        s.calls++;
+        return;
+    }
 
     // the original, for real
     std::vector<Logged> log;

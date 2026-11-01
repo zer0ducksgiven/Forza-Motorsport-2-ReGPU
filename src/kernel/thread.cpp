@@ -323,8 +323,13 @@ uint32_t InterruptLockOwner()
     return owners;
 }
 
+extern thread_local bool g_fm2Shadow;
+void LiftShadowGuard(const char* what); // src/decomp/lift.cpp
+
 void PPCMsrChanged(PPCContext& ctx, uint64_t oldMsr)
 {
+    if (g_fm2Shadow) // a lifted function's check: the interrupt lock is outside its overlay
+        LiftShadowGuard("mtmsrd");
     if (oldMsr & 0x8000)
         Lock(t_interruptDepth ? t_interruptCpu : CpuOf(ctx)); // interrupts now disabled
     else if (t_interruptDepth > 0)

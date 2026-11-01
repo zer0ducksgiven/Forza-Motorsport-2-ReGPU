@@ -97,8 +97,13 @@ struct LiftStats
     std::atomic<uint32_t> calls{ 0 }, wrong{ 0 }, voidR3{ 0 };
     std::atomic<uint8_t> what{ 0 }; // first difference: 1 memory, 2 return register
     std::atomic<bool> big{ false }; // too much written to check
+    std::atomic<bool> escaped{ false }; // reached an import or a hook, which a check can't follow
     LiftStats* next = nullptr;
     LiftStats(uint32_t a, LiftReturn r);
 };
+
+// the functions a check's lifted run can't follow a call through a pointer into (lift.py lists them): the port's
+// own C++ hooks, vector and block stores (they bypass the overlay), and their callers
+void LiftRegisterHooked(const uint32_t* addresses, size_t n);
 
 void LiftRun(LiftStats& s, PPCContext& ctx, uint8_t* base, PPCFunc* original, PPCFunc* lifted);
