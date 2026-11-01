@@ -174,8 +174,10 @@ void LiftShadowGuard(const char* what); // src/decomp/lift.cpp
 
 void TraceImport(const char* name, PPCContext& ctx)
 {
-    // a lifted function's check runs it against an overlay first, which an import would escape
-    if (g_fm2Shadow)
+    // a lifted function's check runs it against an overlay first, which an import would escape, except those that
+    // work on the overlay themselves (the critical sections, imports_rtl.cpp)
+    static const bool csEscape = getenv("FM2_LIFT_SHADOW_CS") && atoi(getenv("FM2_LIFT_SHADOW_CS")) == 0;
+    if (g_fm2Shadow && (csEscape || !strstr(name, "CriticalSection")))
         LiftShadowGuard(name);
     static const double after = getenv("FM2_TRACE_IMPORTS") ? atof(getenv("FM2_TRACE_IMPORTS")) : -1;
     if (after < 0)

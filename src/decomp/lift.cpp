@@ -53,12 +53,12 @@ void Writer()
         std::this_thread::sleep_for(std::chrono::seconds(5));
         if (FILE* f = fopen("out/lift_check.tsv.tmp", "w"))
         {
-            fprintf(f, "address\tcalls\twrong\tvoid_r3\twhat\tbranches\tcovered\n");
+            fprintf(f, "address\tcalls\twrong\tvoid_r3\twhat\tbranches\tcovered\tescaped_by\n");
             for (LiftStats* s = g_all.load(); s; s = s->next)
                 if (s->calls)
-                    fprintf(f, "%08X\t%u\t%u\t%u\t%s\t%u\t%llX\n", s->address, s->calls.load(), s->wrong.load() + (s->big || s->escaped ? 1 : 0),
+                    fprintf(f, "%08X\t%u\t%u\t%u\t%s\t%u\t%llX\t%s\n", s->address, s->calls.load(), s->wrong.load() + (s->big || s->escaped ? 1 : 0),
                             s->voidR3.load(), s->big ? "big" : s->escaped ? "escaped" : s->what == 1 ? "memory" : s->what == 2 ? "return" : "",
-                            s->branches, (unsigned long long)s->covered.load());
+                            s->branches, (unsigned long long)s->covered.load(), s->escapedBy ? s->escapedBy : "");
             fclose(f);
             MoveFileExA("out/lift_check.tsv.tmp", "out/lift_check.tsv", MOVEFILE_REPLACE_EXISTING);
         }
@@ -99,20 +99,26 @@ void LiftRegisterHooked(const uint32_t* addresses, size_t n)
         Hooked()[addresses[i]] = true;
 }
 
-void LiftShadowGuard(const char*)
+thread_local const char* t_escapedBy = nullptr; // why the current lifted run was abandoned
+
+void LiftShadowGuard(const char* what)
 {
+    t_escapedBy = what;
     throw ShadowEscape{};
 }
 
 void Fm2ShadowIndirect(uint32_t target)
 {
     if (Hooked().count(target))
+    {
+        t_escapedBy = "a hook";
         throw ShadowEscape{};
+    }
 }
 
 // The lifted run of a check, as structured exception handling sees it: an escape (thrown above) or a fault (a wrong
 // lifted function can hand recompiled code a bad pointer) ends it, false. Its own function: __try can't share one
-// with C++ objects.
+// with C++ objects. (A filter that logged the fault took the check run down with it: keep it this simple.)
 static bool RunShadow(PPCFunc* lifted, PPCContext& c, uint8_t* base)
 {
     __try
@@ -146,7 +152,10 @@ uint64_t Fm2ShadowLoad(const uint8_t* base, uint32_t addr, uint32_t size)
     // a lifted run that waits on memory it wrote itself (into the overlay, where no other thread can change it)
     // would never finish: give up on it
     if (++t_shadowLoads > 2000000)
+    {
+        t_escapedBy = "spinning";
         throw ShadowEscape{};
+    }
     uint64_t v = 0;
     for (uint32_t i = 0; i < size; i++)
     {
@@ -160,7 +169,10 @@ uint64_t Fm2ShadowLoad(const uint8_t* base, uint32_t addr, uint32_t size)
 void Fm2ShadowRead(const uint8_t* base, uint32_t addr, void* out, uint32_t size)
 {
     if (++t_shadowLoads > 2000000)
+    {
+        t_escapedBy = "spinning";
         throw ShadowEscape{};
+    }
     uint8_t* o = static_cast<uint8_t*>(out);
     for (uint32_t i = 0; i < size; i++)
     {
@@ -226,6 +238,7 @@ void LiftRun(LiftStats& s, PPCContext& ctx, uint8_t* base, PPCFunc* original, PP
     g_fm2Shadow = true;
     PPCContext c = ctx;
     t_shadowLoads = 0;
+    t_escapedBy = "a fault"; // unless an escape says otherwise
     uint64_t branches = 0;
     t_liftBranches = &branches;
     const bool escaped = !RunShadow(lifted, c, base);
@@ -238,6 +251,7 @@ void LiftRun(LiftStats& s, PPCContext& ctx, uint8_t* base, PPCFunc* original, PP
         t_depth--;
         original(ctx, base);
         s.escaped = true;
+        s.escapedBy = t_escapedBy;
         s.calls++;
         return;
     }

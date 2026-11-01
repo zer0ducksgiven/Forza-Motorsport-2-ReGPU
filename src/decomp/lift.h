@@ -112,6 +112,7 @@ struct LiftStats
     std::atomic<uint8_t> what{ 0 }; // first difference: 1 memory, 2 return register
     std::atomic<bool> big{ false }; // too much written to check
     std::atomic<bool> escaped{ false }; // reached an import or a hook, which a check can't follow
+    const char* escapedBy = nullptr;     // the import (or "a hook", "a fault", "spinning")
     uint32_t branches;                   // lift.py marks each one with LIFT_BLOCK
     std::atomic<uint64_t> covered{ 0 };  // the branches checks have seen run, and pass
     LiftStats* next = nullptr;

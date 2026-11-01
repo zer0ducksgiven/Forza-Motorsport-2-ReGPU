@@ -101,9 +101,11 @@ them, checked against the originals. Lifted code goes to `out/lift` (never commi
    `FM2_LIFT_ENABLE=<file of addresses>` runs only some lifted, for bisecting a bad one.
 
 tools/patch_mem.py routes the recompiled code's vector loads and stores, lwarx/stwcx. and dcbz through macros, so
-they use the overlay too. A check's lifted run is abandoned, and the function not kept, if it reaches a kernel
-import, a hook (directly or through a pointer), setjmp/longjmp, faults, or spins (2 million loads): it hasn't touched
-guest memory yet. `--strict` leaves out functions that call imports or through pointers at all (2,107 kept against
+they use the overlay too, and so do the critical sections (src/kernel/imports_rtl.cpp; one held by another thread
+ends the run) and mtmsrd (the interrupt lock is skipped there). A check's lifted run is abandoned, and the function
+not kept, if it reaches any other kernel import, a hook (directly or through a pointer), setjmp/longjmp, faults, or
+spins (2 million loads): it hasn't touched guest memory yet. out/lift_check.tsv says which (escaped_by);
+FM2_LIFT_SHADOW_CS=0 and FM2_LIFT_SHADOW_MSR=0 end runs at those again. `--strict` leaves out functions that call imports or through pointers at all (2,107 kept against
 3,733 with them followed).
 
 Ghidra's C drops call arguments, so `py -3 tools/decomp/livein.py` works out each function's real inputs (the

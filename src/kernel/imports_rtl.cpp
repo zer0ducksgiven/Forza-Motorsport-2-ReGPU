@@ -9,6 +9,14 @@
 #include "live_switch.h"
 #include "loader.h"
 
+// the lifted functions' check (src/decomp/lift.cpp)
+extern thread_local bool g_fm2Shadow;
+uint64_t Fm2ShadowLoad(const uint8_t* base, uint32_t addr, uint32_t size);
+void Fm2ShadowStore(uint32_t addr, uint32_t size, uint64_t value);
+void Fm2ShadowRead(const uint8_t* base, uint32_t addr, void* out, uint32_t size);
+void Fm2ShadowWrite(uint32_t addr, const void* in, uint32_t size);
+void LiftShadowGuard(const char* what);
+
 namespace
 {
 // RTL_CRITICAL_SECTION: DISPATCHER_HEADER (0x10), LockCount 0x10,
@@ -46,6 +54,33 @@ void InitCs(uint32_t cs)
     StoreBE32(cs + kCsLockCount, 0xFFFFFFFF);
 }
 
+// A lifted function's check (src/decomp/lift.h) runs it against a private overlay of guest memory; these
+// sections are only guest memory, so they work there too, as long as nobody else holds them (that run is abandoned,
+// as with any import it can't follow).
+bool ShadowEnterCs(uint32_t cs, uint32_t me, bool wait)
+{
+    uint32_t owner;
+    Fm2ShadowRead(g_base, cs + kCsOwner, &owner, 4);
+    uint32_t recursion = uint32_t(Fm2ShadowLoad(g_base, cs + kCsRecursion, 4));
+    uint32_t lockCount = uint32_t(Fm2ShadowLoad(g_base, cs + kCsLockCount, 4));
+    if (owner == 0)
+    {
+        Fm2ShadowWrite(cs + kCsOwner, &me, 4);
+        Fm2ShadowStore(cs + kCsRecursion, 4, 1);
+        Fm2ShadowStore(cs + kCsLockCount, 4, 0);
+        return true;
+    }
+    if (owner == me)
+    {
+        Fm2ShadowStore(cs + kCsRecursion, 4, recursion + 1);
+        Fm2ShadowStore(cs + kCsLockCount, 4, lockCount + 1);
+        return true;
+    }
+    if (wait)
+        LiftShadowGuard("RtlEnterCriticalSection (held by another thread)");
+    return false;
+}
+
 bool TryEnterCs(uint32_t cs, uint32_t me)
 {
     auto& owner = CsOwner(cs);
@@ -66,14 +101,26 @@ bool TryEnterCs(uint32_t cs, uint32_t me)
 }
 }
 
+static void ShadowInitCs(uint32_t cs)
+{
+    uint8_t zero[0x1C] = { 1 };
+    Fm2ShadowWrite(cs, zero, sizeof(zero));
+    Fm2ShadowStore(cs + kCsLockCount, 4, 0xFFFFFFFF);
+}
+
 GUEST_EXPORT(RtlInitializeCriticalSection)
 {
+    if (g_fm2Shadow)
+        return ShadowInitCs(ctx.r3.u32);
     InitCs(ctx.r3.u32);
 }
 
 GUEST_EXPORT(RtlInitializeCriticalSectionAndSpinCount)
 {
-    InitCs(ctx.r3.u32);
+    if (g_fm2Shadow)
+        ShadowInitCs(ctx.r3.u32);
+    else
+        InitCs(ctx.r3.u32);
     Return(ctx, X_STATUS_SUCCESS);
 }
 
@@ -81,6 +128,11 @@ GUEST_EXPORT(RtlEnterCriticalSection)
 {
     const uint32_t cs = ctx.r3.u32;
     const uint32_t me = Me();
+    if (g_fm2Shadow)
+    {
+        ShadowEnterCs(cs, me, true);
+        return;
+    }
     for (int spin = 0; spin < 64; spin++)
     {
         if (TryEnterCs(cs, me))
@@ -112,12 +164,28 @@ GUEST_EXPORT(RtlEnterCriticalSection)
 
 GUEST_EXPORT(RtlTryEnterCriticalSection)
 {
+    if (g_fm2Shadow)
+        return Return(ctx, ShadowEnterCs(ctx.r3.u32, Me(), false) ? 1 : 0);
     Return(ctx, TryEnterCs(ctx.r3.u32, Me()) ? 1 : 0);
 }
 
 GUEST_EXPORT(RtlLeaveCriticalSection)
 {
     const uint32_t cs = ctx.r3.u32;
+    if (g_fm2Shadow)
+    {
+        const uint32_t recursion = uint32_t(Fm2ShadowLoad(g_base, cs + kCsRecursion, 4)) - 1;
+        Fm2ShadowStore(cs + kCsRecursion, 4, recursion);
+        Fm2ShadowStore(cs + kCsLockCount, 4, uint32_t(Fm2ShadowLoad(g_base, cs + kCsLockCount, 4)) - 1);
+        if (recursion == 0)
+        {
+            static LiveSwitch noHandoff("FM2_NO_CS_HANDOFF");
+            const uint32_t waiters = uint32_t(Fm2ShadowLoad(g_base, cs + kCsWaiters, 4));
+            const uint32_t owner = !noHandoff && waiters ? kHandoff : 0;
+            Fm2ShadowWrite(cs + kCsOwner, &owner, 4);
+        }
+        return;
+    }
     const uint32_t recursion = LoadBE32(cs + kCsRecursion) - 1;
     StoreBE32(cs + kCsRecursion, recursion);
     StoreBE32(cs + kCsLockCount, LoadBE32(cs + kCsLockCount) - 1);
