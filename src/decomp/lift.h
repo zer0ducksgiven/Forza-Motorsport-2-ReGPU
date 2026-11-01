@@ -83,6 +83,20 @@ inline uint32_t Lzcount64(uint64_t v) { return v ? __builtin_clzll(v) : 64; }
 template <typename T> inline uint32_t Popcount(T v) { return __builtin_popcountll(uint64_t(v)); }
 } // namespace lift
 
+// A lifted function's branches, as a check sees them run: a function is kept only once every one has run in a
+// check that passed (lift.py --keep), so a path no check took never runs lifted.
+extern thread_local uint64_t* t_liftBranches;
+#ifdef FM2_STORE_LOG
+#define LIFT_BLOCK(n)                       \
+    do                                      \
+    {                                       \
+        if (t_liftBranches)                 \
+            *t_liftBranches |= 1ull << (n); \
+    } while (0)
+#else
+#define LIFT_BLOCK(n) ((void)0)
+#endif
+
 enum class LiftReturn : uint8_t
 {
     None,
@@ -98,8 +112,10 @@ struct LiftStats
     std::atomic<uint8_t> what{ 0 }; // first difference: 1 memory, 2 return register
     std::atomic<bool> big{ false }; // too much written to check
     std::atomic<bool> escaped{ false }; // reached an import or a hook, which a check can't follow
+    uint32_t branches;                   // lift.py marks each one with LIFT_BLOCK
+    std::atomic<uint64_t> covered{ 0 };  // the branches checks have seen run, and pass
     LiftStats* next = nullptr;
-    LiftStats(uint32_t a, LiftReturn r);
+    LiftStats(uint32_t a, LiftReturn r, uint32_t branches);
 };
 
 // the functions a check's lifted run can't follow a call through a pointer into (lift.py lists them): the port's

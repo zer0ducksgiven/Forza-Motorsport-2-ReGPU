@@ -92,10 +92,12 @@ them, checked against the originals. Lifted code goes to `out/lift` (never commi
 3. `py -3 tools/decomp/lift.py <info.jsonl>` lifts what it can (out/lift/report.tsv counts why the rest isn't),
    only functions whose call trees a check can see (no kernel imports, calls through pointers, hooks or vector
    stores).
-4. Build with `-DFM2_STORE_LOG=ON -DFM2_LIFTED=ON` and run with `FM2_DECOMP_CHECK=lift`: each lifted function's
-   first 64 calls run it against an overlay, then the original for real, and compare (src/decomp/lift.h). The
-   game plays as the original. Results: out/lift_check.tsv.
-5. `py -3 tools/decomp/lift.py <info.jsonl> --keep out/lift_check.tsv` keeps the exact ones.
+4. Build with `-DFM2_STORE_LOG=ON -DFM2_LIFTED=ON` and run with `FM2_DECOMP_CHECK=lift`: a lifted function's
+   calls run it against an overlay, then the original for real, and compare (src/decomp/lift.h), 64 calls once
+   every branch of it has run (lift.py marks them, LIFT_BLOCK), else up to 1,024. The game plays as the original.
+   Results: out/lift_check.tsv.
+5. `py -3 tools/decomp/lift.py <info.jsonl> --keep a.tsv,b.tsv` keeps the functions that never differed and had
+   every branch run in a passing check, across the routes given.
    `FM2_LIFT_ENABLE=<file of addresses>` runs only some lifted, for bisecting a bad one.
 
 tools/patch_mem.py routes the recompiled code's vector loads and stores, lwarx/stwcx. and dcbz through macros, so

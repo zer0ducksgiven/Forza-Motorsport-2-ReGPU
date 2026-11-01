@@ -16,6 +16,7 @@
 
 thread_local bool g_fm2StoreLog = false;
 thread_local bool g_fm2Shadow = false;
+thread_local uint64_t* t_liftBranches = nullptr;
 
 namespace
 {
@@ -52,11 +53,12 @@ void Writer()
         std::this_thread::sleep_for(std::chrono::seconds(5));
         if (FILE* f = fopen("out/lift_check.tsv.tmp", "w"))
         {
-            fprintf(f, "address\tcalls\twrong\tvoid_r3\twhat\n");
+            fprintf(f, "address\tcalls\twrong\tvoid_r3\twhat\tbranches\tcovered\n");
             for (LiftStats* s = g_all.load(); s; s = s->next)
                 if (s->calls)
-                    fprintf(f, "%08X\t%u\t%u\t%u\t%s\n", s->address, s->calls.load(),  s->wrong.load() + (s->big || s->escaped ? 1 : 0),
-                            s->voidR3.load(), s->big ? "big" : s->escaped ? "escaped" : s->what == 1 ? "memory" : s->what == 2 ? "return" : "");
+                    fprintf(f, "%08X\t%u\t%u\t%u\t%s\t%u\t%llX\n", s->address, s->calls.load(), s->wrong.load() + (s->big || s->escaped ? 1 : 0),
+                            s->voidR3.load(), s->big ? "big" : s->escaped ? "escaped" : s->what == 1 ? "memory" : s->what == 2 ? "return" : "",
+                            s->branches, (unsigned long long)s->covered.load());
             fclose(f);
             MoveFileExA("out/lift_check.tsv.tmp", "out/lift_check.tsv", MOVEFILE_REPLACE_EXISTING);
         }
@@ -181,7 +183,7 @@ void Fm2ShadowStore(uint32_t addr, uint32_t size, uint64_t value)
         (*t_overlay)[addr + i] = uint8_t(value >> (8 * (size - 1 - i)));
 }
 
-LiftStats::LiftStats(uint32_t a, LiftReturn r) : address(a), ret(r)
+LiftStats::LiftStats(uint32_t a, LiftReturn r, uint32_t n) : address(a), ret(r), branches(n)
 {
     next = g_all.load();
     while (!g_all.compare_exchange_weak(next, this))
@@ -201,7 +203,9 @@ void LiftRun(LiftStats& s, PPCContext& ctx, uint8_t* base, PPCFunc* original, PP
         return;
     }
     // enough to judge a function; after that it runs as the original, so a check run keeps a playable speed
-    if (s.calls >= 64 || s.big || s.escaped)
+    // checked enough: 64 calls once every branch has been seen, else up to 1,024 waiting for the rest
+    const uint64_t all = s.branches >= 64 ? ~0ull : (1ull << s.branches) - 1;
+    if ((s.calls >= 64 && (s.covered & all) == all) || s.calls >= 1024 || s.big || s.escaped)
     {
         original(ctx, base);
         return;
@@ -222,7 +226,10 @@ void LiftRun(LiftStats& s, PPCContext& ctx, uint8_t* base, PPCFunc* original, PP
     g_fm2Shadow = true;
     PPCContext c = ctx;
     t_shadowLoads = 0;
+    uint64_t branches = 0;
+    t_liftBranches = &branches;
     const bool escaped = !RunShadow(lifted, c, base);
+    t_liftBranches = nullptr;
     g_fm2Shadow = false;
     t_overlay = nullptr;
     if (escaped)
@@ -299,6 +306,8 @@ void LiftRun(LiftStats& s, PPCContext& ctx, uint8_t* base, PPCFunc* original, PP
             Log("lift: %08X differs (%s): at %08X original %02X lifted %02X; r3 %08X / %08X, f1 %g / %g; sp %08X",
                 s.address, memSame ? "return register" : "memory", at, was, now, ctx.r3.u32, c.r3.u32, ctx.f1.f64, c.f1.f64, sp);
     }
+    if (memSame && retSame)
+        s.covered |= branches;
     s.calls++;
     // a function that writes this much is slow to check (an overlay entry a byte): it isn't checked again, and
     // lift.py doesn't keep it

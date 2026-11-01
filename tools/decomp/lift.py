@@ -191,6 +191,7 @@ class Lifter:
             if m:
                 self.globals[sanitize(g['name'])] = (int(m.group(1), 16), g)
         self.tmp = 0
+        self.nblocks = 0
         self.calls = False
         self.addressed = set()
 
@@ -503,13 +504,16 @@ class Lifter:
             self.ret_stmt(n, out, p)
         elif isinstance(n, c_ast.If):
             out.append(p + 'if (%s) {' % self.rv(n.cond)[0])
+            out.append(p + '    ' + self.block())
             self.st(n.iftrue, out, ind + 1)
+            out.append(p + '} else {')
+            out.append(p + '    ' + self.block())
             if n.iffalse:
-                out.append(p + '} else {')
                 self.st(n.iffalse, out, ind + 1)
             out.append(p + '}')
         elif isinstance(n, c_ast.While):
             out.append(p + 'while (%s) {' % self.rv(n.cond)[0])
+            out.append(p + '    ' + self.block())
             self.st(n.stmt, out, ind + 1)
             out.append(p + '}')
         elif isinstance(n, c_ast.DoWhile):
@@ -523,12 +527,14 @@ class Lifter:
             cond = self.rv(n.cond)[0] if n.cond else ''
             nxt = (self.assign(n.next, False)[0] if isinstance(n.next, c_ast.Assignment) else self.rv(n.next)[0]) if n.next else ''
             out.append(p + 'for (%s; %s; %s) {' % (init, cond, nxt))
+            out.append(p + '    ' + self.block())
             self.st(n.stmt, out, ind + 1)
             out.append(p + '}')
         elif isinstance(n, c_ast.Goto):
             out.append(p + 'goto %s;' % n.name)
         elif isinstance(n, c_ast.Label):
             out.append('%s:;' % n.name)
+            out.append(p + self.block())
             self.st(n.stmt, out, ind)
         elif isinstance(n, c_ast.Break):
             out.append(p + 'break;')
@@ -540,16 +546,25 @@ class Lifter:
             out.append(p + '}')
         elif isinstance(n, c_ast.Case):
             out.append(p + 'case %s:' % self.rv(n.expr)[0])
+            out.append(p + '    ' + self.block())
             for s in n.stmts or []:
                 self.st(s, out, ind + 1)
         elif isinstance(n, c_ast.Default):
             out.append(p + 'default:')
+            out.append(p + '    ' + self.block())
             for s in n.stmts or []:
                 self.st(s, out, ind + 1)
         elif isinstance(n, c_ast.EmptyStatement):
             pass
         else:
             raise Reject('statement ' + type(n).__name__)
+
+    def block(self):
+        """a branch's marker: a check records which ran, and lift.py keeps a function only once all have (lift.h)"""
+        if self.nblocks >= 64:
+            raise Reject('more than 64 branches')
+        self.nblocks += 1
+        return 'LIFT_BLOCK(%d);' % (self.nblocks - 1)
 
     def ret_stmt(self, n, out, p):
         r = self.info['ret']
@@ -683,21 +698,24 @@ def main(argv):
     while args:
         a = args.pop(0)
         if a == '--keep':
-            # one check file or several (comma separated): kept if it passed in one and failed in none
+            # one check file or several (comma separated, say from different routes): kept if it never differed, (void
+            # by Ghidra) left r3 as the original did, as callers may use it, and every branch ran in a passing check
             keep = {}
-            failed = set()
+            failed, covered, branches = set(), collections.Counter(), {}
             for path in args.pop(0).split(','):
                 for line in open(path):
                     f = line.rstrip('\n').split('\t')
                     if f[0] == 'address' or int(f[1]) == 0:
                         continue
-                    # ran, never differed, and (void by Ghidra) left r3 as the original did: callers may use it
-                    if int(f[2]) == 0 and int(f[3]) == 0:
-                        keep[f[0]] = int(f[1])
-                    else:
+                    if int(f[2]) or int(f[3]):
                         failed.add(f[0])
-            for a in failed:
-                keep.pop(a, None)
+                    keep[f[0]] = int(f[1])
+                    if len(f) > 6:
+                        branches[f[0]] = int(f[5])
+                        covered[f[0]] |= int(f[6], 16)
+            for a in list(keep):
+                if a in failed or covered[a] != (1 << branches.get(a, 0)) - 1:
+                    del keep[a]
         elif a == '--strict':
             follow = False
         elif a == '--out':
@@ -807,9 +825,7 @@ def main(argv):
                     break
             lifter = Lifter(f, names, rets, frame, known, sigs)
             code = lifter.lift(fn[0])
-            if 'LIFT_' in code:
-                raise Reject('internal')
-            done.append((addr, code, lifter.ret_kind))
+            done.append((addr, code, lifter.ret_kind, lifter.nblocks))
             reasons['lifted'] += 1
         except Reject as e:
             r = str(e)
@@ -831,11 +847,11 @@ def main(argv):
                 # stores, and whatever calls those
                 out.write('static const uint32_t kUnfollowable[] = { %s };\n' % ', '.join('0x%08X' % h for h in sorted(impure)))
                 out.write('static const bool kListed = (LiftRegisterHooked(kUnfollowable, %d), true);\n\n' % len(impure))
-            for addr, code, rk in done[i:i + per]:
+            for addr, code, rk, nb in done[i:i + per]:
                 out.write(code + '\n')
                 out.write('PPC_FUNC_IMPL(__imp__sub_%08X);\n' % addr)
-                out.write('PPC_FUNC(sub_%08X)\n{\n    static LiftStats s(0x%08X, %s);\n    LiftRun(s, ctx, base, __imp__sub_%08X, lifted_%08X);\n}\n\n'
-                          % (addr, addr, rk, addr, addr))
+                out.write('PPC_FUNC(sub_%08X)\n{\n    static LiftStats s(0x%08X, %s, %d);\n    LiftRun(s, ctx, base, __imp__sub_%08X, lifted_%08X);\n}\n\n'
+                          % (addr, addr, rk, nb, addr, addr))
     with open(os.path.join(out_dir, 'report.tsv'), 'w') as rep:
         for r, n in reasons.most_common():
             rep.write('%d\t%s\n' % (n, r))
