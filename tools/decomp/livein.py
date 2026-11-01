@@ -117,7 +117,21 @@ def livein(instrs, labels, summary, imports):
             if v != live[i]:
                 live[i] = v
                 changed = True
-    return live[0] if n else 0
+    # what the code after each direct call reads before writing: the callee's results it uses, beyond r3/f1 often
+    # (with link-time code generation a caller can know which volatile registers a callee leaves set)
+    after = {}
+    for i, ins in enumerate(instrs):
+        for c in ins['calls']:
+            if c.startswith('sub_'):
+                a = int(c[4:], 16)
+                if ins['ends']:  # a tail call: the callee's results are this function's
+                    after.setdefault(a, set()).add('tail')
+                else:
+                    v = 0
+                    for j in succ[i]:
+                        v |= live[j]
+                    after.setdefault(a, set()).add(v)
+    return (live[0] if n else 0), after
 
 
 def import_inputs():
@@ -152,7 +166,7 @@ def main():
     for rnd in range(12):
         changed = 0
         for a, (instrs, labels) in funcs.items():
-            v = livein(instrs, labels, summary, imports)
+            v = livein(instrs, labels, summary, imports)[0]
             if v != summary.get(a, 0):
                 summary[a] = v
                 changed += 1
@@ -165,7 +179,27 @@ def main():
     with open(os.path.join(ROOT, 'out', 'decomp', 'livein.txt'), 'w') as f:
         for a, v in sorted(summary.items()):
             f.write(' '.join(['%08X' % a] + names(v)) + '\n')
-    print('wrote', out, 'and livein.txt')
+    # liveout.json: {callee: registers some caller reads after it returns} (r3 and f1 included: for a void function
+    # they aren't results either); a tail call passes its caller's on
+    uses, tails = {}, {}
+    for a, (instrs, labels) in funcs.items():
+        for c, vs in livein(instrs, labels, summary, imports)[1].items():
+            for v in vs:
+                if v == 'tail':
+                    tails.setdefault(a, set()).add(c)
+                else:
+                    uses[c] = uses.get(c, 0) | v
+    changed = True
+    while changed:
+        changed = False
+        for a, cs in tails.items():
+            for c in cs:
+                v = uses.get(c, 0) | uses.get(a, 0)
+                if v != uses.get(c, 0):
+                    uses[c] = v
+                    changed = True
+    json.dump({'%08X' % a: names(v) for a, v in uses.items() if v}, open(os.path.join(ROOT, 'out', 'decomp', 'liveout.json'), 'w'))
+    print('wrote', out, 'livein.txt and liveout.json')
 
 
 if __name__ == '__main__':

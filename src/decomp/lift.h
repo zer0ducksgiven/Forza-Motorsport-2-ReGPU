@@ -109,14 +109,19 @@ struct LiftStats
     uint32_t address;
     LiftReturn ret;
     std::atomic<uint32_t> calls{ 0 }, wrong{ 0 }, voidR3{ 0 };
-    std::atomic<uint8_t> what{ 0 }; // first difference: 1 memory, 2 return register
+    // checks that couldn't judge a call: it differed, but another thread changed memory it read meanwhile (raced),
+    // or the lifted run reached an import or a hook (unchecked; the call's branches don't count as covered)
+    std::atomic<uint32_t> raced{ 0 }, unchecked{ 0 };
+    std::atomic<uint8_t> what{ 0 }; // first difference: 1 memory, 2 return register, 3 a register callers read
     std::atomic<bool> big{ false }; // too much written to check
-    std::atomic<bool> escaped{ false }; // reached an import or a hook, which a check can't follow
+    std::atomic<bool> escaped{ false }; // faulted or spun in a check: not kept
     const char* escapedBy = nullptr;     // the import (or "a hook", "a fault", "spinning")
     uint32_t branches;                   // lift.py marks each one with LIFT_BLOCK
+    uint32_t outs;                       // other registers callers read after it returns (livein.py's liveout.json):
+                                         // r3-r10 as bits 0-7, f1-f13 as 8-20; r3 and f1 are the return's
     std::atomic<uint64_t> covered{ 0 };  // the branches checks have seen run, and pass
     LiftStats* next = nullptr;
-    LiftStats(uint32_t a, LiftReturn r, uint32_t branches);
+    LiftStats(uint32_t a, LiftReturn r, uint32_t branches, uint32_t outs = 0);
 };
 
 // the functions a check's lifted run can't follow a call through a pointer into (lift.py lists them): the port's

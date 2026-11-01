@@ -223,6 +223,8 @@ class Lifter:
         self.nblocks = 0
         self.calls = False
         self.addressed = set()
+        self.wide = {}  # integer parameter never assigned -> its whole register as it came in
+        self.extended = set()  # registers the original extends from 32 bits itself
 
     def fresh(self):
         self.tmp += 1
@@ -295,6 +297,15 @@ class Lifter:
                 # (float)call(): what's in f1 is the float, whatever integer type Ghidra gave the callee's return
                 code, st = self.call(n.expr, None, as_float=True)[1:]
                 return ('r', '%s(%s)' % (t.cpp(), code), t)
+            if t.kind == 'int' and t.size == 8 and isinstance(n.expr, c_ast.ID):
+                # a 32-bit parameter used as 64 bits: the original's 64-bit instruction reads the whole register,
+                # whose top half Ghidra doesn't know (it sign-extended a pointer in 8237E0D8)
+                w = self.wide.get(n.expr.name)
+                v = self.vars.get(n.expr.name)
+                if w is None and v and v[1] == 'reg' and v[2][0] == 'r' and v[2][1] not in self.extended:
+                    w = 'ctx.r%d.u64' % self.vars[n.expr.name][2][1]
+                if w is not None:
+                    return ('r', '%s(%s)' % (t.cpp(), w), t)
             v = self.ex(n.expr)
             if v[0] == 'fn':
                 return ('r', '0x%08Xu' % v[1], t)
@@ -711,6 +722,22 @@ class Lifter:
         av = Addr()
         av.visit(fn.body)
 
+        class Assigned(c_ast.NodeVisitor):
+            def __init__(s):
+                s.names = set()
+
+            def visit_Assignment(s, a):
+                if isinstance(a.lvalue, c_ast.ID):
+                    s.names.add(a.lvalue.name)
+                s.generic_visit(a)
+
+            def visit_UnaryOp(s, u):
+                if u.op in ('++', '--', 'p++', 'p--') and isinstance(u.expr, c_ast.ID):
+                    s.names.add(u.expr.name)
+                s.generic_visit(u)
+        assigned = Assigned()
+        assigned.visit(fn.body)
+
         head = []
         for p in (decl.args.params if decl.args else []):
             if isinstance(p, c_ast.EllipsisParam):
@@ -730,6 +757,9 @@ class Lifter:
             if not t.scalar():
                 raise Reject('parameter type ' + t.kind)
             head.append('    %s v_%s = %s;' % (t.cpp(), p.name, reg_read(m.group(1), int(m.group(2)), t)))
+            if m.group(1) == 'r' and t.kind in ('int', 'ptr') and p.name not in assigned.names and int(m.group(2)) not in self.extended:
+                head.append('    const uint64_t w_%s = ctx.r%s.u64; (void)w_%s;' % (p.name, m.group(2), p.name))
+                self.wide[p.name] = 'w_' + p.name
         body = fn.body.block_items or []
         stmts = []
         for s in body:
@@ -765,7 +795,7 @@ class Lifter:
         out = []
         for s in stmts:
             self.st(s, out, 1)
-        if self.addressed and self.calls:
+        if self.addressed and self.calls and os.environ.get('LIFT_STACK_CALLS') != '1':
             # a callee can write a local through its address, and Ghidra's C doesn't always allow for that (it folded
             # a local's constant through such a call in 826209B0)
             raise Reject('stack locals and calls')
@@ -822,7 +852,9 @@ def main(argv):
         a = args.pop(0)
         if a == '--keep':
             # one check file or several (comma separated, say from different routes): kept if it never differed, (void
-            # by Ghidra) left r3 as the original did, as callers may use it, and every branch ran in a passing check
+            # by Ghidra) left r3 as the original did, as callers may use it, and every branch ran in a passing check.
+            # Calls a check couldn't judge (raced: another thread changed what the lifted run read; unchecked: it
+            # reached an import or a hook) count neither way
             keep = {}
             failed, covered, branches = set(), collections.Counter(), {}
             for path in args.pop(0).split(','):
@@ -846,6 +878,18 @@ def main(argv):
 
     symbols = json.load(open(os.path.join(ROOT, 'out', 'decomp', 'symbols.json')))
     livein = json.load(open(os.path.join(ROOT, 'out', 'decomp', 'livein.json')))  # livein.py
+    # the registers besides r3 and f1 that callers read after each function returns (livein.py), for the check to
+    # compare: bits r3-r10 0-7, f1-f13 8-20, as LiftStats::outs
+    liveout = {}
+    for a, regs in json.load(open(os.path.join(ROOT, 'out', 'decomp', 'liveout.json'))).items():
+        bits = 0
+        for r in regs:
+            n = int(r[1:])
+            if r[0] == 'r' and 4 <= n <= 10:
+                bits |= 1 << (n - 3)
+            elif r[0] == 'f' and 2 <= n <= 13:
+                bits |= 1 << (8 + n - 1)
+        liveout[int(a, 16)] = bits
     img = open(os.path.join(ROOT, 'out', 'tu4', 'image.bin'), 'rb').read()
     funcs = [json.loads(l) for l in open(info_path, encoding='utf-8')]
 
@@ -880,7 +924,7 @@ def main(argv):
     # that go through it (tools/patch_mem.py routes the vector and block ones there): no setjmp/longjmp, and no
     # hooks (the port's C++). Imports and calls through pointers are caught as they happen (the run is abandoned and
     # the function isn't kept); --strict leaves out functions that reach them at all.
-    calls, impure, setups = {}, set(), {}
+    calls, impure, setups, extended = {}, set(), {}, {}
     ppc = os.path.join(ROOT, 'out', 'ppc_tu4')
     for f in os.listdir(ppc):
         if f.startswith('ppc_recomp.') and f.endswith('.cpp'):
@@ -889,6 +933,9 @@ def main(argv):
                 a, body = int(m.group(1), 16), m.group(2)
                 calls[a] = {int(c, 16) for c in re.findall(r'\bsub_([0-9A-F]{8})\(ctx, base\)', body)}
                 setups[a] = call_setup(body)
+                # registers the original sign- or zero-extends from 32 bits: where Ghidra's C casts one of those to
+                # 64 bits, the cast is that extension (8263E068's extsw), not a read of the register's top half
+                extended[a] = {int(r) for r in re.findall(r'// (?:extsw|clrldi|rldicl) r\d+,r(\d+)', body)}
                 follows = not follow and re.search(r'PPC_CALL_INDIRECT_FUNC|__imp__(?!sub_)\w+\(ctx, base\)', body)
                 # (vector stores, lwarx/stwcx. and dcbz go through the overlay too: tools/patch_mem.py)
                 if re.search(r'setjmp|longjmp|simde_mm_store\w*\(\(\w+\*\)\(base|[^_]memset\(base|memcpy\(base', body) or a in hooked or follows:
@@ -923,9 +970,6 @@ def main(argv):
             if addr in unlogged:
                 raise Reject('hooks or setjmp in its calls')
             c = f['c']
-            # a 32-bit parameter widened to 64: the register's top half, which Ghidra guessed (8237E0D8)
-            if re.search(r'\((u?longlong|undefined8)\)\s*\(?\s*(param_r|in_r)\d+\b', c):
-                raise Reject('a parameter used as 64 bits')
             if len(c) > 150000:  # 82750DE0, the 74 KB D3D function: too big for this lifter to finish
                 raise Reject('too big')
             if 'halt_baddata' in c:
@@ -960,6 +1004,7 @@ def main(argv):
                     frame = -(w & 0xFFFF) + 0x10000 if w & 0x8000 else 0
                     break
             lifter = Lifter(f, names, rets, frame, known, sigs, setups.get(addr, {}), livein)
+            lifter.extended = extended.get(addr, set())
             code = lifter.lift(fn[0])
             done.append((addr, code, lifter.ret_kind, lifter.nblocks))
             reasons['lifted'] += 1
@@ -987,8 +1032,8 @@ def main(argv):
             for addr, code, rk, nb in done[i:i + per]:
                 out.write(code + '\n')
                 out.write('PPC_FUNC_IMPL(__imp__sub_%08X);\n' % addr)
-                out.write('PPC_FUNC(sub_%08X)\n{\n    static LiftStats s(0x%08X, %s, %d);\n    LiftRun(s, ctx, base, __imp__sub_%08X, lifted_%08X);\n}\n\n'
-                          % (addr, addr, rk, nb, addr, addr))
+                out.write('PPC_FUNC(sub_%08X)\n{\n    static LiftStats s(0x%08X, %s, %d, 0x%X);\n    LiftRun(s, ctx, base, __imp__sub_%08X, lifted_%08X);\n}\n\n'
+                          % (addr, addr, rk, nb, liveout.get(addr, 0), addr, addr))
     with open(os.path.join(out_dir, 'reasons.tsv'), 'w') as f:  # each function left out, and why
         for a, r in sorted(why.items()):
             f.write('%s\t%s\n' % (a, r))

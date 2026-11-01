@@ -102,9 +102,18 @@ them, checked against the originals. Lifted code goes to `out/lift` (never commi
 
 tools/patch_mem.py routes the recompiled code's vector loads and stores, lwarx/stwcx. and dcbz through macros, so
 they use the overlay too, and so do the critical sections (src/kernel/imports_rtl.cpp; one held by another thread
-ends the run) and mtmsrd (the interrupt lock is skipped there). A check's lifted run is abandoned, and the function
-not kept, if it reaches any other kernel import, a hook (directly or through a pointer), setjmp/longjmp, faults, or
-spins (2 million loads): it hasn't touched guest memory yet. out/lift_check.tsv says which (escaped_by);
+ends the run) and mtmsrd (the interrupt lock is skipped there). A check's lifted run is abandoned if it reaches any other
+kernel import, a hook (directly or through a pointer), setjmp/longjmp, faults, or spins (2 million loads): it hasn't
+touched guest memory yet. A fault or a spin rules the function out; an import or a hook only leaves that call
+unchecked (its branches don't count as covered; after 16, FM2_LIFT_UNCHECKED, the function isn't checked again).
+out/lift_check.tsv says which (escaped_by, unchecked).
+
+A difference only counts when nothing the lifted run read changed meanwhile: the check records every byte of real
+memory the lifted run reads, and when the results differ, a byte that another thread has since changed (or that the
+original found different before its first store there) makes the call "raced" and not judged. Without this, two
+check rounds on the FX disagreed on 1,894 functions; with it, on 67. Besides memory and r3/f1 the check compares
+the registers callers read after a call returns (livein.py's liveout.json: with link-time code generation a caller
+can rely on a callee leaving r4 or f2 set, and one lifted function that didn't froze the menus).
 FM2_LIFT_SHADOW_CS=0 and FM2_LIFT_SHADOW_MSR=0 end runs at those again. `--strict` leaves out functions that call imports or through pointers at all (2,107 kept against
 3,733 with them followed).
 
@@ -113,9 +122,11 @@ argument registers it reads before writing, by liveness over the recompiled code
 them into the Ghidra project as each function's parameters (32-bit pieces of the registers, custom storage; the
 project before is in D:\ghidra\projects\FM2-before-params), which fixes most of Ghidra's dropped arguments and a
 constant it folded through a call, and makes the C read better. Registers Ghidra still sees no setup for (in_r6,
-extraout_r4) are read where used; a 32-bit parameter widened to 64 bits is left out (Ghidra guesses the top half:
-8237E0D8 froze boot). The lifter also rejects a call that leaves out a register the original sets up and the callee
+extraout_r4) are read where used; where Ghidra casts a 32-bit parameter to 64 bits the lifted code reads the whole
+register (8237E0D8 compares a pointer as 64 bits, and Ghidra's sign extension of it froze boot), unless the original
+extends that register itself (extsw/clrldi/rldicl: then the cast is that extension, as 8263E068's extsw before a
+fcfid). The lifter also rejects a call that leaves out a register the original sets up and the callee
 reads (82297C38 lost a memmove's source and
 length, 824EBB68 a virtual call's this). From what else has bitten so far it rejects `void` functions whose r3
-differs (callers use it) and stack locals whose address goes to a callee (Ghidra folded one's value through the
-call), and keeps a function only once every branch of it has run in a passing check.
+differs (callers use it); stack locals whose address goes to a callee are left to the check (LIFT_STACK_CALLS=1;
+before Ghidra had the real parameters it folded one's value through the call), and it keeps a function only once every branch of it has run in a passing check.

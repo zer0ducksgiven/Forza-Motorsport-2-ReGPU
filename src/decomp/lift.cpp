@@ -5,6 +5,7 @@
 
 #include <chrono>
 #include <cstdio>
+#include <cstring>
 #include <map>
 #include <mutex>
 #include <string>
@@ -28,6 +29,14 @@ struct Logged
 };
 thread_local std::vector<Logged>* t_log = nullptr;
 thread_local std::unordered_map<uint32_t, uint8_t>* t_overlay = nullptr;
+// real memory a lifted run read, each byte as it was read (repeats and all: a map of first reads made checks too
+// slow to boot)
+struct ReadByte
+{
+    uint32_t addr;
+    uint8_t value;
+};
+thread_local std::vector<ReadByte>* t_reads = nullptr;
 thread_local int t_depth = 0; // inside a check: everything below runs as the original
 thread_local uint64_t t_shadowLoads = 0;
 
@@ -53,12 +62,12 @@ void Writer()
         std::this_thread::sleep_for(std::chrono::seconds(5));
         if (FILE* f = fopen("out/lift_check.tsv.tmp", "w"))
         {
-            fprintf(f, "address\tcalls\twrong\tvoid_r3\twhat\tbranches\tcovered\tescaped_by\n");
+            fprintf(f, "address\tcalls\twrong\tvoid_r3\twhat\tbranches\tcovered\tescaped_by\traced\tunchecked\n");
             for (LiftStats* s = g_all.load(); s; s = s->next)
                 if (s->calls)
-                    fprintf(f, "%08X\t%u\t%u\t%u\t%s\t%u\t%llX\t%s\n", s->address, s->calls.load(), s->wrong.load() + (s->big || s->escaped ? 1 : 0),
-                            s->voidR3.load(), s->big ? "big" : s->escaped ? "escaped" : s->what == 1 ? "memory" : s->what == 2 ? "return" : "",
-                            s->branches, (unsigned long long)s->covered.load(), s->escapedBy ? s->escapedBy : "");
+                    fprintf(f, "%08X\t%u\t%u\t%u\t%s\t%u\t%llX\t%s\t%u\t%u\n", s->address, s->calls.load(), s->wrong.load() + (s->big || s->escaped ? 1 : 0),
+                            s->voidR3.load(), s->big ? "big" : s->escaped ? "escaped" : s->what == 1 ? "memory" : s->what == 2 ? "return" : s->what == 3 ? "register" : "",
+                            s->branches, (unsigned long long)s->covered.load(), s->escapedBy ? s->escapedBy : "", s->raced.load(), s->unchecked.load());
             fclose(f);
             MoveFileExA("out/lift_check.tsv.tmp", "out/lift_check.tsv", MOVEFILE_REPLACE_EXISTING);
         }
@@ -161,7 +170,12 @@ uint64_t Fm2ShadowLoad(const uint8_t* base, uint32_t addr, uint32_t size)
     {
         const uint32_t a = addr + i;
         auto it = t_overlay->find(a);
-        v = v << 8 | (it != t_overlay->end() ? it->second : base[a]);
+        uint8_t b;
+        if (it != t_overlay->end())
+            b = it->second;
+        else
+            t_reads->push_back({ a, b = base[a] });
+        v = v << 8 | b;
     }
     return v;
 }
@@ -178,7 +192,10 @@ void Fm2ShadowRead(const uint8_t* base, uint32_t addr, void* out, uint32_t size)
     {
         const uint32_t a = addr + i;
         auto it = t_overlay->find(a);
-        o[i] = it != t_overlay->end() ? it->second : base[a];
+        if (it != t_overlay->end())
+            o[i] = it->second;
+        else
+            t_reads->push_back({ a, o[i] = base[a] });
     }
 }
 
@@ -195,7 +212,7 @@ void Fm2ShadowStore(uint32_t addr, uint32_t size, uint64_t value)
         (*t_overlay)[addr + i] = uint8_t(value >> (8 * (size - 1 - i)));
 }
 
-LiftStats::LiftStats(uint32_t a, LiftReturn r, uint32_t n) : address(a), ret(r), branches(n)
+LiftStats::LiftStats(uint32_t a, LiftReturn r, uint32_t n, uint32_t o) : address(a), ret(r), branches(n), outs(o)
 {
     next = g_all.load();
     while (!g_all.compare_exchange_weak(next, this))
@@ -217,7 +234,9 @@ void LiftRun(LiftStats& s, PPCContext& ctx, uint8_t* base, PPCFunc* original, PP
     // enough to judge a function; after that it runs as the original, so a check run keeps a playable speed
     // checked enough: 64 calls once every branch has been seen, else up to 1,024 waiting for the rest
     const uint64_t all = s.branches >= 64 ? ~0ull : (1ull << s.branches) - 1;
-    if ((s.calls >= 64 && (s.covered & all) == all) || s.calls >= 1024 || s.big || s.escaped)
+    // (and a function whose lifted runs keep reaching imports isn't run lifted again: each costs a whole shadow run)
+    static const uint32_t maxUnchecked = getenv("FM2_LIFT_UNCHECKED") ? uint32_t(atoi(getenv("FM2_LIFT_UNCHECKED"))) : 16;
+    if ((s.calls >= 64 && (s.covered & all) == all) || s.calls >= 1024 || s.big || s.escaped || s.unchecked >= maxUnchecked)
     {
         original(ctx, base);
         return;
@@ -234,7 +253,9 @@ void LiftRun(LiftStats& s, PPCContext& ctx, uint8_t* base, PPCFunc* original, PP
     // the lifted version, against the overlay
     t_depth++;
     std::unordered_map<uint32_t, uint8_t> overlay;
+    std::vector<ReadByte> reads;
     t_overlay = &overlay;
+    t_reads = &reads;
     g_fm2Shadow = true;
     PPCContext c = ctx;
     t_shadowLoads = 0;
@@ -245,14 +266,20 @@ void LiftRun(LiftStats& s, PPCContext& ctx, uint8_t* base, PPCFunc* original, PP
     t_liftBranches = nullptr;
     g_fm2Shadow = false;
     t_overlay = nullptr;
+    t_reads = nullptr;
     if (escaped)
     {
-        // it reached an import or a hook, or faulted: not something a check can pass, so it isn't kept
         t_depth--;
         original(ctx, base);
-        s.escaped = true;
         s.escapedBy = t_escapedBy;
         s.calls++;
+        // a fault or a run that spun: wrong, or not checkable, so not kept. An import or a hook only means this
+        // call couldn't be followed: live, the lifted code calls it for real, and the paths that lead there have
+        // to pass in calls that don't reach it (the branches this one ran don't count)
+        if (!strcmp(t_escapedBy, "a fault") || !strcmp(t_escapedBy, "spinning"))
+            s.escaped = true;
+        else
+            s.unchecked++;
         return;
     }
 
@@ -296,6 +323,22 @@ void LiftRun(LiftStats& s, PPCContext& ctx, uint8_t* base, PPCFunc* original, PP
         retSame = ctx.f1.u64 == c.f1.u64;
     else if (ctx.r3.u32 != c.r3.u32)
         s.voidR3++;
+    // registers a caller reads after the call, which the lifted code has to leave as the original does (with
+    // link-time code generation a caller can know a callee leaves r4 or f2 set; the menus froze on one)
+    int outDiff = -1;
+    for (int i = 0; i < 21 && outDiff < 0; i++)
+        if (s.outs >> i & 1)
+        {
+            static PPCRegister PPCContext::* const regs[21] = { &PPCContext::r3, &PPCContext::r4, &PPCContext::r5,
+                &PPCContext::r6, &PPCContext::r7, &PPCContext::r8, &PPCContext::r9, &PPCContext::r10, &PPCContext::f1,
+                &PPCContext::f2, &PPCContext::f3, &PPCContext::f4, &PPCContext::f5, &PPCContext::f6, &PPCContext::f7,
+                &PPCContext::f8, &PPCContext::f9, &PPCContext::f10, &PPCContext::f11, &PPCContext::f12, &PPCContext::f13 };
+            const bool same = (ctx.*regs[i]).u64 == (c.*regs[i]).u64;
+            if (!same)
+                outDiff = i;
+        }
+    if (outDiff >= 0)
+        retSame = false;
     // FM2_LIFT_TRACE=<hex address>: everything a check of that function compared, the first few times it differs
     static const uint32_t trace = getenv("FM2_LIFT_TRACE") ? uint32_t(strtoul(getenv("FM2_LIFT_TRACE"), nullptr, 16)) : 0;
     if (trace == s.address && !memSame && s.wrong < 2)
@@ -314,9 +357,31 @@ void LiftRun(LiftStats& s, PPCContext& ctx, uint8_t* base, PPCFunc* original, PP
     }
     if (!(memSame && retSame))
     {
+        // another thread changed memory the lifted run read, between its read and the end of the original (both
+        // ran on what they found): the inputs differed, so the results can too. The value the original found
+        // where it stored is the one from before its first store
+        std::unordered_map<uint32_t, uint8_t> first;
+        for (const Logged& e : log)
+            for (uint32_t i = 0; i < e.size; i++)
+                first.emplace(e.addr + i, e.old[i]);
+        for (const ReadByte& r : reads)
+        {
+            auto it = first.find(r.addr);
+            if ((it != first.end() ? it->second : base[r.addr]) != r.value)
+            {
+                s.raced++;
+                s.calls++;
+                return;
+            }
+        }
+    }
+    if (!(memSame && retSame))
+    {
         uint8_t none = 0;
-        s.what.compare_exchange_strong(none, memSame ? 2 : 1);
-        if (++s.wrong <= 3)
+        s.what.compare_exchange_strong(none, !memSame ? 1 : outDiff >= 0 ? 3 : 2);
+        if (++s.wrong <= 3 && memSame && outDiff >= 0)
+            Log("lift: %08X differs (%s%d, which a caller reads)", s.address, outDiff < 8 ? "r" : "f", outDiff < 8 ? outDiff + 3 : outDiff - 7);
+        else if (s.wrong <= 3)
             Log("lift: %08X differs (%s): at %08X original %02X lifted %02X; r3 %08X / %08X, f1 %g / %g; sp %08X",
                 s.address, memSame ? "return register" : "memory", at, was, now, ctx.r3.u32, c.r3.u32, ctx.f1.f64, c.f1.f64, sp);
     }
