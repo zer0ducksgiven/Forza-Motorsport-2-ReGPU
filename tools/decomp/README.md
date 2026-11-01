@@ -111,7 +111,9 @@ out/lift_check.tsv says which (escaped_by, unchecked).
 A difference only counts when nothing the lifted run read changed meanwhile: the check records every byte of real
 memory the lifted run reads, and when the results differ, a byte that another thread has since changed (or that the
 original found different before its first store there) makes the call "raced" and not judged. Without this, two
-check rounds on the FX disagreed on 1,894 functions; with it, on 67. Besides memory and r3/f1 the check compares
+check rounds on the FX disagreed on 1,894 functions; with it, on 67. A lifted function called during another check's original run is checked there too (its stores go into the outer
+check's log as well; FM2_LIFT_NESTED=0 turns it off): checks can last a whole route, and 2,192 functions only ever
+called inside them were never checked. Besides memory and r3/f1 the check compares
 the registers callers read after a call returns (livein.py's liveout.json: with link-time code generation a caller
 can rely on a callee leaving r4 or f2 set, and one lifted function that didn't froze the menus).
 FM2_LIFT_SHADOW_CS=0 and FM2_LIFT_SHADOW_MSR=0 end runs at those again. `--strict` leaves out functions that call imports or through pointers at all (2,107 kept against

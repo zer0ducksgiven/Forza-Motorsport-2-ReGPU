@@ -221,7 +221,11 @@ LiftStats::LiftStats(uint32_t a, LiftReturn r, uint32_t n, uint32_t o) : address
 
 void LiftRun(LiftStats& s, PPCContext& ctx, uint8_t* base, PPCFunc* original, PPCFunc* lifted)
 {
-    if (t_depth > 0)
+    // inside a check: in its lifted run everything below runs as the original (against the overlay); in its
+    // original run a lifted function is checked too, its stores going into the outer check's log as well (else
+    // functions only ever called inside other checks, which can last a whole route, were never checked: 2,192)
+    static const bool nested = !getenv("FM2_LIFT_NESTED") || atoi(getenv("FM2_LIFT_NESTED"));
+    if (t_depth > 0 && (g_fm2Shadow || !g_fm2StoreLog || !nested))
     {
         original(ctx, base);
         return;
@@ -249,9 +253,12 @@ void LiftRun(LiftStats& s, PPCContext& ctx, uint8_t* base, PPCFunc* original, PP
     static std::once_flag once;
     std::call_once(once, [] { std::thread(Writer).detach(); });
     const uint32_t sp = ctx.r1.u32;
+    std::vector<Logged>* const outerLog = t_log; // the check this one is inside, if any
+    const bool outerLogging = g_fm2StoreLog;
 
     // the lifted version, against the overlay
     t_depth++;
+    g_fm2StoreLog = false;
     std::unordered_map<uint32_t, uint8_t> overlay;
     std::vector<ReadByte> reads;
     t_overlay = &overlay;
@@ -265,6 +272,7 @@ void LiftRun(LiftStats& s, PPCContext& ctx, uint8_t* base, PPCFunc* original, PP
     const bool escaped = !RunShadow(lifted, c, base);
     t_liftBranches = nullptr;
     g_fm2Shadow = false;
+    g_fm2StoreLog = outerLogging;
     t_overlay = nullptr;
     t_reads = nullptr;
     if (escaped)
@@ -288,8 +296,10 @@ void LiftRun(LiftStats& s, PPCContext& ctx, uint8_t* base, PPCFunc* original, PP
     t_log = &log;
     g_fm2StoreLog = true;
     original(ctx, base);
-    g_fm2StoreLog = false;
-    t_log = nullptr;
+    g_fm2StoreLog = outerLogging;
+    t_log = outerLog;
+    if (outerLog)
+        outerLog->insert(outerLog->end(), log.begin(), log.end());
     t_depth--;
 
     // dead on return: the stack below r1, and the parameter save area above it, which is the callee's to use
