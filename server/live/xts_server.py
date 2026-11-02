@@ -328,16 +328,28 @@ def client(c, a):
                 params = take(plen)
                 cls, method = bmsg.get('url', b''), bmsg.get('mname', b'')
                 log('call %d (sub %d): %s . %s header %s params %s' % (rid, sub, cls.decode(), method.decode(), h.hex(), params[:96].hex()))
+                # Test switch: XTS_DROP_CREATE=1 closes the connection on a Create, before storing or answering it
+                # (a player's connection dropping mid-Create, report #53)
+                if method == b'Create' and os.environ.get('XTS_DROP_CREATE') == '1':
+                    log('dropping the connection on Create (XTS_DROP_CREATE)')
+                    c.close()
+                    return
                 if method == b'Reconcile':
                     # The reply the transaction got, kept by its id (a 20-byte reply header and results), as the
                     # WebRequestPayload; cbMaxAvailable its size
                     tx = params[:16].hex()
                     payload = bytes.fromhex(TRANSACTIONS.get(tx, ''))
-                    log('reconcile %s: %s' % (tx, '%d bytes' % len(payload) if payload else 'unknown: answered as done'))
+                    log('reconcile %s: %s' % (tx, '%d bytes' % len(payload) if payload else 'unknown'))
                     if not payload:
-                        # One this server never saw (or lost): done, so the game stops waiting on it. A Create's
-                        # result is the auction id; 0 here.
-                        payload = struct.pack('>IIIQ', 0, 0, 0, 0) + s32(0)
+                        # One this server never saw (or lost): failed (status 80004005), so the game puts the car or
+                        # credits back (report #53). XTS_UNKNOWN=done answers as the old server did (done, auction 0:
+                        # a lost Create took the car); another hex value is that status.
+                        unknown = os.environ.get('XTS_UNKNOWN', '80004005')
+                        if unknown == 'done':
+                            payload = struct.pack('>IIIQ', 0, 0, 0, 0) + s32(0)
+                        else:
+                            payload = struct.pack('>IIIQ', int(unknown, 16), 0, 0, 0)
+                        log('  answered as %s' % unknown)
                     res = u32(len(payload)) + payload + s32(len(payload))
                 else:
                     res = results(cls, method, params, who)

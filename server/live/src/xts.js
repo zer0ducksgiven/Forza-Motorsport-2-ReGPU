@@ -180,10 +180,12 @@ class Session {
   async call(sub, id, transaction, cls, method, params) {
     let results;
     if (method === "Reconcile") {
-      // the reply the transaction got (kept by its id); one this server never saw reads as done
+      // the reply the transaction got (kept by its id). One this server never saw (the connection dropped before
+      // the call arrived) reads as failed (status 80004005): the game puts the car or credits back. Read as done,
+      // a lost Create took the player's car for good (report #53).
       const tx = hex(params.subarray(0, 16));
       const row = await this.db.prepare("SELECT payload FROM transactions WHERE id = ?1").bind(tx).first();
-      const payload = row ? new Uint8Array(row.payload) : new Writer().u32(0).u32(0).u32(0).i64(0).i32(0).done();
+      const payload = row ? new Uint8Array(row.payload) : new Writer().u32(0x80004005).u32(0).u32(0).i64(0).done();
       results = new Writer().blob(payload).i32(payload.length).done();
     } else {
       results = cls.startsWith("Xts.Titles.Forza2.WebServices.Gifting")
