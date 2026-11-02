@@ -326,6 +326,7 @@ void LiftRun(LiftStats& s, PPCContext& ctx, uint8_t* base, PPCFunc* original, PP
     static std::once_flag once;
     std::call_once(once, [] { std::thread(Writer).detach(); });
     const uint32_t sp = ctx.r1.u32;
+    const PPCContext entry = ctx; // for the original's own run against an overlay (the twin)
     std::vector<Logged>* const outerLog = t_log; // the check this one is inside, if any
     const bool outerLogging = g_fm2StoreLog;
 
@@ -388,6 +389,44 @@ void LiftRun(LiftStats& s, PPCContext& ctx, uint8_t* base, PPCFunc* original, PP
         return;
     }
 
+    // The twin: the original against an overlay of its own, straight after. Both runs read nearly the same memory,
+    // so another thread's writes (audio, streaming) no longer read as the lifted function's doing, and what each read
+    // says whether the two saw the same inputs. If the original's run can't be followed (an import, a hook) the check
+    // falls back to comparing with the original's real run below. FM2_LIFT_TWIN=0: always that.
+    static const bool useTwin = !getenv("FM2_LIFT_TWIN") || atoi(getenv("FM2_LIFT_TWIN"));
+    std::unordered_map<uint32_t, uint8_t> twinOverlay, twinBefore;
+    std::vector<ReadByte> twinReads;
+    PPCContext o = entry;
+    bool twin = false;
+    if (useTwin)
+    {
+        std::vector<uint32_t> twinJmpbufs;
+        const bool logging = g_fm2StoreLog;
+        g_fm2StoreLog = false;
+        t_overlay = &twinOverlay;
+        t_reads = &twinReads;
+        t_jmpbufs = &twinJmpbufs;
+        g_fm2Shadow = true;
+        t_shadowLoads = 0;
+        t_escapedBy = "a fault";
+        twin = RunShadow(original, o, base);
+        g_fm2Shadow = false;
+        g_fm2StoreLog = logging;
+        t_overlay = nullptr;
+        t_reads = nullptr;
+        t_jmpbufs = nullptr;
+        // what was there before, where only one of the two wrote (the real original is about to change it)
+        if (twin)
+        {
+            for (const auto& [a, v] : overlay)
+                if (!twinOverlay.count(a))
+                    twinBefore.emplace(a, base[a]);
+            for (const auto& [a, v] : twinOverlay)
+                if (!overlay.count(a))
+                    twinBefore.emplace(a, base[a]);
+        }
+    }
+
     // the original, for real
     std::vector<Logged> log;
     t_log = &log;
@@ -403,13 +442,48 @@ void LiftRun(LiftStats& s, PPCContext& ctx, uint8_t* base, PPCFunc* original, PP
     auto dead = [sp](uint32_t a) { return a < sp + 0x60 && a >= sp - 0x10000; };
     bool memSame = true;
     uint32_t at = 0, was = 0, now = 0; // the first difference, for the log
-    for (const auto& [a, v] : overlay)
-        if (!dead(a) && base[a] != v)
+    if (twin)
+    {
+        // the two runs read different values somewhere (another thread wrote in between, or during one run):
+        // their inputs differed, so the call isn't judged
+        std::unordered_map<uint32_t, uint8_t> seen;
+        for (const std::vector<ReadByte>* rs : { &reads, &twinReads })
+            for (const ReadByte& r : *rs)
+                if (auto [it, fresh] = seen.emplace(r.addr, r.value); !fresh && it->second != r.value)
+                {
+                    s.raced++;
+                    s.calls++;
+                    return;
+                }
+        auto value = [&](const std::unordered_map<uint32_t, uint8_t>& m, uint32_t a) {
+            auto it = m.find(a);
+            if (it != m.end())
+                return it->second;
+            auto r = seen.find(a);
+            return r != seen.end() ? r->second : twinBefore[a];
+        };
+        for (const auto* m : { &overlay, &twinOverlay })
         {
-            memSame = false, at = a, was = base[a], now = v;
-            break;
+            for (const auto& [a, v] : *m)
+                if (!dead(a) && value(overlay, a) != value(twinOverlay, a))
+                {
+                    memSame = false, at = a, was = value(twinOverlay, a), now = value(overlay, a);
+                    break;
+                }
+            if (!memSame)
+                break;
         }
-    if (memSame)
+    }
+    else
+    {
+        for (const auto& [a, v] : overlay)
+            if (!dead(a) && base[a] != v)
+            {
+                memSame = false, at = a, was = base[a], now = v;
+                break;
+            }
+    }
+    if (memSame && !twin)
     {
         // stored by the original only: it must have left the value from before its first store there
         std::unordered_map<uint32_t, uint8_t> before;
@@ -424,11 +498,12 @@ void LiftRun(LiftStats& s, PPCContext& ctx, uint8_t* base, PPCFunc* original, PP
             }
     }
     bool retSame = true;
+    const PPCContext& ref = twin ? o : ctx; // the original's registers: its twin run's, else its real run's
     if (s.ret == LiftReturn::Int)
-        retSame = ctx.r3.u32 == c.r3.u32;
+        retSame = ref.r3.u32 == c.r3.u32;
     else if (s.ret == LiftReturn::Float)
-        retSame = ctx.f1.u64 == c.f1.u64;
-    else if (ctx.r3.u32 != c.r3.u32)
+        retSame = ref.f1.u64 == c.f1.u64;
+    else if (ref.r3.u32 != c.r3.u32)
         s.voidR3++;
     // registers a caller reads after the call, which the lifted code has to leave as the original does (with
     // link-time code generation a caller can know a callee leaves r4 or f2 set; the menus froze on one)
@@ -441,9 +516,9 @@ void LiftRun(LiftStats& s, PPCContext& ctx, uint8_t* base, PPCFunc* original, PP
                 &PPCContext::r6, &PPCContext::r7, &PPCContext::r8, &PPCContext::r9, &PPCContext::r10, &PPCContext::f1,
                 &PPCContext::f2, &PPCContext::f3, &PPCContext::f4, &PPCContext::f5, &PPCContext::f6, &PPCContext::f7,
                 &PPCContext::f8, &PPCContext::f9, &PPCContext::f10, &PPCContext::f11, &PPCContext::f12, &PPCContext::f13 };
-            const bool same = (ctx.*regs[i]).u64 == (c.*regs[i]).u64;
+            const bool same = (ref.*regs[i]).u64 == (c.*regs[i]).u64;
             if (!same)
-                outDiff = i, outWas = (ctx.*regs[i]).u64, outNow = (c.*regs[i]).u64;
+                outDiff = i, outWas = (ref.*regs[i]).u64, outNow = (c.*regs[i]).u64;
         }
     if (outDiff >= 0)
         retSame = false;
@@ -463,7 +538,7 @@ void LiftRun(LiftStats& s, PPCContext& ctx, uint8_t* base, PPCFunc* original, PP
                 line += Hex(e.addr, 8) + ":" + std::to_string(e.size) + " ";
         Log("lift trace %08X: original stored %s", s.address, line.c_str());
     }
-    if (!(memSame && retSame))
+    if (!(memSame && retSame) && !twin)
     {
         // another thread changed memory the lifted run read, between its read and the end of the original (both
         // ran on what they found): the inputs differed, so the results can too. The value the original found
@@ -492,7 +567,7 @@ void LiftRun(LiftStats& s, PPCContext& ctx, uint8_t* base, PPCFunc* original, PP
                 outDiff < 8 ? outDiff + 3 : outDiff - 7, (unsigned long long)outWas, (unsigned long long)outNow);
         else if (s.wrong <= 3)
             Log("lift: %08X differs (%s): at %08X original %02X lifted %02X; r3 %08X / %08X, f1 %g / %g; sp %08X",
-                s.address, memSame ? "return register" : "memory", at, was, now, ctx.r3.u32, c.r3.u32, ctx.f1.f64, c.f1.f64, sp);
+                s.address, memSame ? "return register" : "memory", at, was, now, ref.r3.u32, c.r3.u32, ref.f1.f64, c.f1.f64, sp);
     }
     if (memSame && retSame)
         s.covered |= branches;

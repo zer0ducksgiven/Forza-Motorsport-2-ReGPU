@@ -116,6 +116,12 @@ the guest address it touched; C++ exceptions other than the check's own escapes 
 function is kept only if at least one call was judged and passed (not raced, not unchecked): three without branches
 whose every call reached an import were kept unchecked, and crashed boot.
 
+The original runs against an overlay of its own straight after the lifted version (the twin), and the two
+overlays and register sets are compared: both read nearly the same memory, so another thread's writes in between
+(audio, streaming) no longer read as the lifted function's doing, and a byte the two runs read differently makes
+the call "raced". Memory differences on the FX: 810 -> 428. If the original's run can't be followed (an import, a
+hook), that call is compared with the original's real run as below; FM2_LIFT_TWIN=0 always does that.
+
 A difference only counts when nothing the lifted run read changed meanwhile: the check records every byte of real
 memory the lifted run reads, and when the results differ, a byte that another thread has since changed (or that the
 original found different before its first store there) makes the call "raced" and not judged. Without this, two
