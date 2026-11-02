@@ -1,0 +1,211 @@
+using System.IO.Compression;
+using System.Net.Http.Headers;
+using System.Net.Http.Json;
+using System.Text;
+using System.Text.Json;
+using System.Text.RegularExpressions;
+
+namespace FM4Launcher;
+
+/// <summary>
+/// Bug reports and opted-in play.logs, sent to the reports server (server\reports: a Cloudflare Worker
+/// that files them in a private GitHub repo). Everything sent goes through Redact first, and the
+/// Report tab shows the redacted text before it goes.
+/// </summary>
+public static class Reports
+{
+    // The deployed Worker's /v1/report address (server\reports). FM4's isn't deployed yet: until it is, nothing is
+    // sent and the Report tab says so. FM4_REPORTS_URL points the launcher at one (wrangler dev for testing).
+    const string DeployedEndpoint = "";
+    static readonly string Endpoint = Environment.GetEnvironmentVariable("FM4_REPORTS_URL") is { Length: > 0 } url ? url : DeployedEndpoint;
+    public static bool Configured => Endpoint.Length > 0;
+    const int MaxLogBytes = 4 << 20; // the tail of a longer log
+
+    static readonly HttpClient Http = MakeClient();
+
+    static HttpClient MakeClient()
+    {
+        var h = new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
+        h.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("FM4Launcher", Updater.InstalledVersion()));
+        return h;
+    }
+
+    static string LogFile => Path.Combine(Paths.Root, "out", "play-fm4.log");
+
+    /// <summary>The launcher's own reporting choices (not the game's settings.ini).</summary>
+    public sealed class Options
+    {
+        // On unless turned off (the Report tab); the launcher says so in a window on its first start, and
+        // nothing is sent before that window has been shown.
+        public bool ShareLogs { get; set; } = true;
+        public bool NoticeShown { get; set; }
+        public string InstallId { get; set; } = "";
+        public DateTime LastSentLog { get; set; }
+        // The last time a log wasn't sent, and why (shown on the Report tab)
+        public string LastSendError { get; set; } = "";
+
+        static string File => Path.Combine(Paths.User, "reporting.json");
+
+        public static Options Load()
+        {
+            Options o;
+            try { o = JsonSerializer.Deserialize<Options>(System.IO.File.ReadAllText(File)) ?? new(); }
+            catch { o = new(); }
+            if (o.InstallId.Length == 0)
+            {
+                // Random, so reports from one PC can be grouped without saying who it is.
+                o.InstallId = Guid.NewGuid().ToString("N")[..12];
+                // Only sessions played from now on: logs already on the PC stay there.
+                o.LastSentLog = DateTime.UtcNow;
+                o.Save();
+            }
+            return o;
+        }
+
+        public void Save()
+        {
+            Directory.CreateDirectory(Paths.User);
+            System.IO.File.WriteAllText(File, JsonSerializer.Serialize(this));
+        }
+    }
+
+    /// <summary>
+    /// The Windows user and PC names out of a log: paths (C:\Users\name, Wine's Z:\home\name and
+    /// /home/name), and the names anywhere else they appear.
+    /// </summary>
+    public static string Redact(string text)
+    {
+        text = Regex.Replace(text, @"(?i)([A-Z]:[\\/](?:Users|Documents and Settings)[\\/])[^\\/\r\n""]+", "$1<user>");
+        text = Regex.Replace(text, @"(?i)((?:[A-Z]:)?[\\/]home[\\/])[^\\/\r\n""]+", "$1<user>");
+        foreach (var (name, mark) in new[] { (Environment.UserName, "<user>"), (Environment.MachineName, "<pc>") })
+            if (name.Length >= 3) // shorter names would hit ordinary words
+                text = Regex.Replace(text, @"(?i)(?<![A-Za-z0-9])" + Regex.Escape(name) + @"(?![A-Za-z0-9])", mark);
+        return text;
+    }
+
+    /// <summary>The play.log as it would be sent (redacted, the tail when long); null when there is none.</summary>
+    public static string? LogPreview()
+    {
+        if (!System.IO.File.Exists(LogFile)) return null;
+        using var f = new FileStream(LogFile, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        if (f.Length > MaxLogBytes) f.Seek(-MaxLogBytes, SeekOrigin.End);
+        using var r = new StreamReader(f, Encoding.UTF8);
+        return Redact(r.ReadToEnd());
+    }
+
+    /// <summary>The game's pipelines.manifest (which shader and render-state combinations it has built: hashes only),
+    /// gzipped; null when there is none. Sent with shared logs so the next release can build them all on the first boot.</summary>
+    static string? Pipelines()
+    {
+        try
+        {
+            var path = Path.Combine(Paths.User, "pipelines.manifest");
+            if (!System.IO.File.Exists(path) || new FileInfo(path).Length > (2 << 20)) return null;
+            return Gzip64(System.IO.File.ReadAllText(path));
+        }
+        catch { return null; }
+    }
+
+    static string Gzip64(string text)
+    {
+        using var ms = new MemoryStream();
+        using (var gz = new GZipStream(ms, CompressionLevel.SmallestSize))
+            gz.Write(Encoding.UTF8.GetBytes(text));
+        return Convert.ToBase64String(ms.ToArray());
+    }
+
+    static object SystemInfo() => SystemCheck.Get();
+
+    static async Task<string> SendAsync(object payload)
+    {
+        if (!Configured) throw new InvalidOperationException("Reporting isn't set up for FM4 yet: there is no reports server to send to.");
+        using var res = await Http.PostAsJsonAsync(Endpoint, payload);
+        var body = await res.Content.ReadAsStringAsync();
+        if (!res.IsSuccessStatusCode)
+        {
+            string? error = null;
+            try { error = JsonDocument.Parse(body).RootElement.GetProperty("error").GetString(); } catch { }
+            throw new InvalidOperationException(error ?? $"The reports server answered {(int)res.StatusCode}.");
+        }
+        return JsonDocument.Parse(body).RootElement.GetProperty("id").GetString() ?? "";
+    }
+
+    /// <summary>Sends a bug report; returns its id on the server.</summary>
+    public static Task<string> SendBugAsync(string title, string description, string contact, bool withLog)
+    {
+        if (string.IsNullOrWhiteSpace(title)) throw new ArgumentException("Give the report a short title.");
+        if (string.IsNullOrWhiteSpace(description)) throw new ArgumentException("Say what happened.");
+        var log = withLog ? LogPreview() : null;
+        return SendAsync(new
+        {
+            kind = "bug",
+            title = Redact(title.Trim()),
+            description = Redact(description.Trim()),
+            contact = contact.Trim(),
+            version = Updater.InstalledVersion(),
+            installId = Options.Load().InstallId,
+            system = SystemInfo(),
+            log = log is null ? null : Gzip64(log),
+        });
+    }
+
+    /// <summary>
+    /// With log sharing on (and its notice shown), sends the last session's play.log once (at launcher start: the game has
+    /// closed by then). Never throws: a failed send just tries again next time.
+    /// </summary>
+    public static async Task SendLastLogAsync()
+    {
+        await SendLock.WaitAsync();
+        Options? o = null;
+        try
+        {
+            o = Options.Load();
+            if (!Configured || !o.ShareLogs || !o.NoticeShown || !System.IO.File.Exists(LogFile)) return;
+            var written = System.IO.File.GetLastWriteTimeUtc(LogFile);
+            if (written <= o.LastSentLog) return;
+            if (Game.Running) return; // still being written: sent when the game closes
+            var log = LogPreview();
+            if (log is null) return;
+            await SendAsync(new
+            {
+                kind = "log",
+                version = Updater.InstalledVersion(),
+                installId = o.InstallId,
+                system = SystemInfo(),
+                log = Gzip64(log),
+                pipelines = Pipelines(),
+            });
+            o.LastSentLog = written;
+            o.LastSendError = "";
+            o.Save();
+        }
+        catch (Exception ex)
+        {
+            try
+            {
+                if (o is not null)
+                {
+                    o.LastSendError = $"{DateTime.Now:g}: {ex.Message}";
+                    o.Save();
+                }
+            }
+            catch { }
+        }
+        finally { SendLock.Release(); }
+    }
+
+    static readonly SemaphoreSlim SendLock = new(1, 1);
+
+    /// <summary>Waits for the game started by Game.Launch to close, then sends its log.</summary>
+    public static async Task SendAfterExitAsync(System.Diagnostics.Process game)
+    {
+        try
+        {
+            await game.WaitForExitAsync();
+            // cmd.exe has gone; wait out an fm4.exe still closing
+            for (int i = 0; i < 30 && Game.Running; i++) await Task.Delay(1000);
+            await SendLastLogAsync();
+        }
+        catch { }
+    }
+}

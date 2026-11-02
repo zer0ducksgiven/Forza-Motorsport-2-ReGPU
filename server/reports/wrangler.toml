@@ -1,0 +1,14 @@
+name = "fm4-reports"
+main = "src/index.js"
+compatibility_date = "2025-06-01"
+
+[vars]
+# The private repo reports are filed in ("owner/name"): not chosen yet for FM4. Set it, and the
+# GITHUB_TOKEN secret (wrangler secret put GITHUB_TOKEN), before deploying.
+REPORTS_REPO = "OWNER/fm4-reports"
+
+# 10 reports a minute per address (bug reports and logs together).
+[[ratelimits]]
+name = "LIMITER"
+namespace_id = "1002"
+simple = { limit = 10, period = 60 }

@@ -128,16 +128,17 @@ $("tabs").onclick = (e) => {
   const b = e.target.closest("button")
   if (!b) return
   for (const t of $("tabs").children) t.classList.toggle("on", t === b)
-  for (const p of ["play", "profiles", "graphics", "settings", "updates", "about"]) $("page-" + p).hidden = p !== b.dataset.tab
+  for (const p of ["play", "profiles", "graphics", "settings", "report", "updates", "about"]) $("page-" + p).hidden = p !== b.dataset.tab
   $("tabs").dataset.shown = b.dataset.tab
   if (b.dataset.tab === "profiles") loadProfiles()
+  else if (b.dataset.tab === "report") loadReport()
   else if (b.dataset.tab !== "play" && b.dataset.tab !== "graphics") refresh()
 }
 
 // The title opens the About page (no tab of its own).
 $("brand").onclick = () => {
   for (const t of $("tabs").children) t.classList.remove("on")
-  for (const p of ["play", "profiles", "graphics", "settings", "updates"]) $("page-" + p).hidden = true
+  for (const p of ["play", "profiles", "graphics", "settings", "report", "updates"]) $("page-" + p).hidden = true
   $("page-about").hidden = false
   $("tabs").dataset.shown = "about"
 }
@@ -515,9 +516,58 @@ $("prof-backups-open").onclick = () => guarded(() => call("profiles.openBackups"
 
 $("photos-open").onclick = () => guarded(() => call("photos.open"))
 
+// ---- report a bug (Reports.cs, as PGR4's launcher)
+
+async function loadReport() {
+  const r = await call("report.state")
+  $("report-offline").hidden = r.configured
+  $("bug-send").disabled = !r.configured
+  $("share-logs").classList.toggle("on", r.shareLogs)
+  $("share-status").textContent = !r.configured || !r.shareLogs ? "" : r.lastError ? "Last try didn't send: " + r.lastError
+    : r.lastSent && !r.lastSent.startsWith("0001") ? "Last log sent " + new Date(r.lastSent).toLocaleString() : ""
+  const log = await call("report.preview")
+  // the end matters most (where it went wrong); the whole log is sent
+  $("log-preview").textContent = log ? (log.length > 60000 ? "…\n" + log.slice(-60000) : log) : "No play.log yet: it's written when the game runs."
+  if (log) $("log-preview").scrollTop = $("log-preview").scrollHeight
+}
+$("bug-log").onclick = () => $("bug-log").classList.toggle("on")
+$("share-logs").onclick = () => guarded(async () => {
+  const r = await call("report.shareLogs", !$("share-logs").classList.contains("on"))
+  $("share-logs").classList.toggle("on", r.shareLogs)
+  toast(r.shareLogs ? "Thanks! Your play.log will be sent after each session." : "Log sharing is off.", true)
+})
+$("bug-send").onclick = () => guarded(async () => {
+  $("bug-send").disabled = true
+  $("bug-status").textContent = "Sending…"
+  try {
+    const r = await call("report.send", { title: $("bug-title").value, description: $("bug-text").value, contact: $("bug-contact").value, withLog: $("bug-log").classList.contains("on") })
+    $("bug-title").value = $("bug-text").value = ""
+    $("bug-status").textContent = `Sent: report ${r.id}. Thanks!`
+    toast("Report sent. Thanks!", true)
+  } catch (e) {
+    $("bug-status").textContent = ""
+    throw e
+  } finally {
+    $("bug-send").disabled = false
+  }
+})
+
+// First start: log sharing is on unless turned off, so say so before anything is sent (once there's a server to send to).
+async function sharingNotice() {
+  const r = await call("report.state")
+  if (r.noticeShown || !r.configured) return
+  // Shown is what counts: closing the launcher with the box up mustn't keep sharing off for good
+  const asked = askBox("Sharing play.log",
+    "To help find bugs on PCs like yours, the launcher sends each session's play.log to the developers: your hardware, drivers, settings, frame rates and errors, and the list of graphics pipelines the game built (hashes only, so later versions can build them on the first start). Your Windows user name and PC name are removed first. " +
+    "This is on by default. To opt out, open the Report tab and switch off \"Share play.log after each session\".",
+    "Got it", { no: "Open Report tab" })
+  await call("report.noticeShown")
+  if ((await asked) === null) document.querySelector("[data-tab=report]").click()
+}
+
 async function refresh() {
   await guarded(async () => { state = await call("state"); render(); renderUpdate() })
 }
 
-refresh().then(() => checkUpdates(true))
+refresh().then(() => guarded(sharingNotice)).then(() => checkUpdates(true))
 setInterval(() => { if (!document.hidden && $("confirm").hidden && !["SELECT", "INPUT"].includes(document.activeElement.tagName)) refresh() }, 5000)
