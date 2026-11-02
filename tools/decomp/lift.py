@@ -854,9 +854,10 @@ def main(argv):
             # one check file or several (comma separated, say from different routes): kept if it never differed, (void
             # by Ghidra) left r3 as the original did, as callers may use it, and every branch ran in a passing check.
             # Calls a check couldn't judge (raced: another thread changed what the lifted run read; unchecked: it
-            # reached an import or a hook) count neither way
+            # reached an import or a hook) count neither way, so at least one call has to have been judged (and passed):
+            # three functions without branches whose every call reached an import were kept unchecked, and crashed boot
             keep = {}
-            failed, covered, branches = set(), collections.Counter(), {}
+            failed, covered, branches, judged = set(), collections.Counter(), {}, collections.Counter()
             for path in args.pop(0).split(','):
                 for line in open(path):
                     f = line.rstrip('\n').split('\t')
@@ -865,11 +866,12 @@ def main(argv):
                     if int(f[2]) or int(f[3]):
                         failed.add(f[0])
                     keep[f[0]] = int(f[1])
+                    judged[f[0]] += int(f[1]) - (int(f[8]) + int(f[9]) if len(f) > 9 else 0)
                     if len(f) > 6:
                         branches[f[0]] = int(f[5])
                         covered[f[0]] |= int(f[6], 16)
             for a in list(keep):
-                if a in failed or covered[a] != (1 << branches.get(a, 0)) - 1:
+                if a in failed or covered[a] != (1 << branches.get(a, 0)) - 1 or judged[a] <= 0:
                     del keep[a]
         elif a == '--strict':
             follow = False

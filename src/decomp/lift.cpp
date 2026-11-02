@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <exception>
 #include <map>
 #include <mutex>
 #include <string>
@@ -130,14 +131,55 @@ void Fm2ShadowIndirect(uint32_t target)
 // The lifted run of a check, as structured exception handling sees it: an escape (thrown above) or a fault (a wrong
 // lifted function can hand recompiled code a bad pointer) ends it, false. Its own function: __try can't share one
 // with C++ objects. (A filter that logged the fault took the check run down with it: keep it this simple.)
-static bool RunShadow(PPCFunc* lifted, PPCContext& c, uint8_t* base)
+// the last fault in a lifted run, for the log: only copied in the filter (logging there crashed check runs)
+thread_local uint32_t t_faultCode = 0;
+thread_local uint64_t t_faultRip = 0, t_faultAddress = 0;
+
+static int NoteFault(EXCEPTION_POINTERS* e)
 {
-    __try
+    t_faultCode = e->ExceptionRecord->ExceptionCode;
+    t_faultRip = uint64_t(e->ExceptionRecord->ExceptionAddress);
+    t_faultAddress = e->ExceptionRecord->NumberParameters >= 2 ? e->ExceptionRecord->ExceptionInformation[1] : 0;
+    return EXCEPTION_EXECUTE_HANDLER;
+}
+
+// C++ exceptions other than the escapes, by what they say (std::exception) or "unknown"
+thread_local const char* t_cppException = nullptr;
+thread_local std::string t_cppWhat;
+
+static bool RunShadowCpp(PPCFunc* lifted, PPCContext& c, uint8_t* base)
+{
+    try
     {
         lifted(c, base);
         return true;
     }
-    __except (EXCEPTION_EXECUTE_HANDLER)
+    catch (const ShadowEscape&)
+    {
+        return false;
+    }
+    catch (const std::exception& e)
+    {
+        t_cppWhat = e.what();
+        t_cppException = t_cppWhat.c_str();
+        return false;
+    }
+    catch (...)
+    {
+        t_cppException = "unknown";
+        return false;
+    }
+}
+
+static bool RunShadow(PPCFunc* lifted, PPCContext& c, uint8_t* base)
+{
+    t_cppException = nullptr;
+    t_faultCode = 0, t_faultRip = 0, t_faultAddress = 0;
+    __try
+    {
+        return RunShadowCpp(lifted, c, base);
+    }
+    __except (NoteFault(GetExceptionInformation()))
     {
         return false;
     }
@@ -311,17 +353,36 @@ void LiftRun(LiftStats& s, PPCContext& ctx, uint8_t* base, PPCFunc* original, PP
     t_jmpbufs = nullptr;
     if (escaped)
     {
+        // why, and where it faulted, before the original runs: lifted functions it calls start checks of their own,
+        // which reset these (escapes at imports were taken for faults, and their functions left out)
+        const char* const why = t_escapedBy;
+        const uint32_t faultCode = t_faultCode;
+        const uint64_t faultRip = t_faultRip, faultAddress = t_faultAddress;
+        const std::string threw = t_cppException ? t_cppException : "";
         t_depth--;
         original(ctx, base);
-        s.escapedBy = t_escapedBy;
+        s.escapedBy = why;
         s.calls++;
         // a fault or a run that spun: wrong, or not checkable, so not kept. An import or a hook only means this
         // call couldn't be followed: live, the lifted code calls it for real, and the paths that lead there have
         // to pass in calls that don't reach it (the branches this one ran don't count)
-        if (!strcmp(t_escapedBy, "big"))
+        if (!strcmp(why, "big"))
             s.big = true;
-        else if (!strcmp(t_escapedBy, "a fault") || !strcmp(t_escapedBy, "spinning"))
+        else if (!strcmp(why, "a fault") || !strcmp(why, "spinning"))
+        {
+            if (!s.escaped && !strcmp(why, "a fault"))
+            {
+                // where: the host address as an offset in the exe (llvm-symbolizer), the guest address it touched
+                const uint64_t image = uint64_t(GetModuleHandleA(nullptr));
+                if (!threw.empty())
+                    Log("lift: %08X threw: %s", s.address, threw.c_str());
+                else
+                    Log("lift: %08X faulted: code %08X at exe+%llX, address %llX (guest %08llX)", s.address, faultCode,
+                        (unsigned long long)(faultRip - image), (unsigned long long)faultAddress,
+                        (unsigned long long)(faultAddress - uint64_t(base)));
+            }
             s.escaped = true;
+        }
         else
             s.unchecked++;
         return;

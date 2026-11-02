@@ -111,6 +111,11 @@ touched guest memory yet. A fault or a spin rules the function out; an import or
 unchecked (its branches don't count as covered; after 16, FM2_LIFT_UNCHECKED, the function isn't checked again).
 out/lift_check.tsv says which (escaped_by, unchecked).
 
+A fault in a lifted run is logged with its exception code, the host address (exe+offset, for llvm-symbolizer) and
+the guest address it touched; C++ exceptions other than the check's own escapes are logged by what they say. A
+function is kept only if at least one call was judged and passed (not raced, not unchecked): three without branches
+whose every call reached an import were kept unchecked, and crashed boot.
+
 A difference only counts when nothing the lifted run read changed meanwhile: the check records every byte of real
 memory the lifted run reads, and when the results differ, a byte that another thread has since changed (or that the
 original found different before its first store there) makes the call "raced" and not judged. Without this, two
