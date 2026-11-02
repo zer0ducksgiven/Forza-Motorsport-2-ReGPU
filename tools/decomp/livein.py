@@ -11,6 +11,7 @@ until nothing changes. Kernel imports read what their C++ in src/kernel reads; a
 r3-r10 (anything could be behind it, but a float argument passed through untouched is rare, and counting them all
 made a third of the game's functions take 21 parameters).
 """
+import collections
 import json
 import os
 import re
@@ -114,7 +115,7 @@ def clobbers(funcs):
     return out
 
 
-def livein(instrs, labels, summary, imports, clob=None):
+def livein(instrs, labels, summary, imports, clob=None, indirect_reads=INTS):
     n = len(instrs)
     succ = []
     for i, ins in enumerate(instrs):
@@ -134,7 +135,7 @@ def livein(instrs, labels, summary, imports, clob=None):
                     g |= imports.get(c[7:], ALL) & ~k
                 k |= VOLATILE
         if ins['indirect']:
-            g |= INTS & ~k
+            g |= indirect_reads & ~k
             k |= VOLATILE
         gen.append(g)
         kill.append(k)
@@ -214,11 +215,15 @@ def main():
     with open(os.path.join(ROOT, 'out', 'decomp', 'livein.txt'), 'w') as f:
         for a, v in sorted(summary.items()):
             f.write(' '.join(['%08X' % a] + names(v)) + '\n')
-    # liveout.json: {callee: registers some caller reads after it returns} (r3 and f1 included: for a void function
-    # they aren't results either); a tail call passes its caller's on
+    # liveout.json: {callee: registers some caller's own instructions read after it returns} (r3 and f1 included: for
+    # a void function they aren't results either); a tail call passes its caller's on. Only the caller's own reads:
+    # registers a later callee reads before writing are mostly scratch it saves or passes on (0x829F0000 left by a
+    # lis), and comparing those failed 2,400 lifted functions on the race route over nothing. (A callee that needs a
+    # value passed through a call is the input side: the lifter's dropped-argument rule, from livein.json.)
+    no_reads = collections.defaultdict(int)
     uses, tails = {}, {}
     for a, (instrs, labels) in funcs.items():
-        for c, vs in livein(instrs, labels, summary, imports, clob)[1].items():
+        for c, vs in livein(instrs, labels, no_reads, no_reads, clob, 0)[1].items():
             for v in vs:
                 if v == 'tail':
                     tails.setdefault(a, set()).add(c)

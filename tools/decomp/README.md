@@ -122,7 +122,8 @@ original found different before its first store there) makes the call "raced" an
 check rounds on the FX disagreed on 1,894 functions; with it, on 67. A lifted function called during another check's original run is checked there too (its stores go into the outer
 check's log as well; FM2_LIFT_NESTED=0 turns it off): checks can last a whole route, and 2,192 functions only ever
 called inside them were never checked. Besides memory and r3/f1 the check compares
-the registers callers read after a call returns (livein.py's liveout.json: with link-time code generation a caller
+the registers callers' own instructions read after a call returns (livein.py's liveout.json; registers only a later
+callee reads are mostly scratch it saves or passes on, and comparing them failed 2,400 functions over nothing: with link-time code generation a caller
 can rely on a callee leaving r4 or f2 set, and one lifted function that didn't froze the menus).
 FM2_LIFT_SHADOW_CS=0 and FM2_LIFT_SHADOW_MSR=0 end runs at those again. `--strict` leaves out functions that call imports or through pointers at all (2,107 kept against
 3,733 with them followed).

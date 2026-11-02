@@ -433,6 +433,7 @@ void LiftRun(LiftStats& s, PPCContext& ctx, uint8_t* base, PPCFunc* original, PP
     // registers a caller reads after the call, which the lifted code has to leave as the original does (with
     // link-time code generation a caller can know a callee leaves r4 or f2 set; the menus froze on one)
     int outDiff = -1;
+    uint64_t outWas = 0, outNow = 0;
     for (int i = 0; i < 21 && outDiff < 0; i++)
         if (s.outs >> i & 1)
         {
@@ -442,7 +443,7 @@ void LiftRun(LiftStats& s, PPCContext& ctx, uint8_t* base, PPCFunc* original, PP
                 &PPCContext::f8, &PPCContext::f9, &PPCContext::f10, &PPCContext::f11, &PPCContext::f12, &PPCContext::f13 };
             const bool same = (ctx.*regs[i]).u64 == (c.*regs[i]).u64;
             if (!same)
-                outDiff = i;
+                outDiff = i, outWas = (ctx.*regs[i]).u64, outNow = (c.*regs[i]).u64;
         }
     if (outDiff >= 0)
         retSame = false;
@@ -487,7 +488,8 @@ void LiftRun(LiftStats& s, PPCContext& ctx, uint8_t* base, PPCFunc* original, PP
         uint8_t none = 0;
         s.what.compare_exchange_strong(none, !memSame ? 1 : outDiff >= 0 ? 3 : 2);
         if (++s.wrong <= 3 && memSame && outDiff >= 0)
-            Log("lift: %08X differs (%s%d, which a caller reads)", s.address, outDiff < 8 ? "r" : "f", outDiff < 8 ? outDiff + 3 : outDiff - 7);
+            Log("lift: %08X differs (%s%d, which a caller reads): original %016llX lifted %016llX", s.address, outDiff < 8 ? "r" : "f",
+                outDiff < 8 ? outDiff + 3 : outDiff - 7, (unsigned long long)outWas, (unsigned long long)outNow);
         else if (s.wrong <= 3)
             Log("lift: %08X differs (%s): at %08X original %02X lifted %02X; r3 %08X / %08X, f1 %g / %g; sp %08X",
                 s.address, memSame ? "return register" : "memory", at, was, now, ctx.r3.u32, c.r3.u32, ctx.f1.f64, c.f1.f64, sp);
