@@ -20,6 +20,7 @@
 thread_local bool g_fm2StoreLog = false;
 thread_local bool g_fm2Shadow = false;
 thread_local uint64_t* t_liftBranches = nullptr;
+thread_local bool t_liftBail = false;
 
 namespace
 {
@@ -305,7 +306,17 @@ void LiftRun(LiftStats& s, PPCContext& ctx, uint8_t* base, PPCFunc* original, PP
     }
     if (!LiftChecking())
     {
-        (DecompOff() || !LiftEnabled(s.address) ? original : lifted)(ctx, base);
+        if (DecompOff() || !LiftEnabled(s.address))
+            original(ctx, base);
+        else
+        {
+            lifted(ctx, base);
+            if (t_liftBail) // a branch no check ran: the original makes the call (nothing was changed yet)
+            {
+                t_liftBail = false;
+                original(ctx, base);
+            }
+        }
         return;
     }
     // enough to judge a function; after that it runs as the original, so a check run keeps a playable speed
@@ -345,7 +356,14 @@ void LiftRun(LiftStats& s, PPCContext& ctx, uint8_t* base, PPCFunc* original, PP
     t_escapedBy = "a fault"; // unless an escape says otherwise
     uint64_t branches = 0;
     t_liftBranches = &branches;
-    const bool escaped = !RunShadow(lifted, c, base);
+    t_liftBail = false;
+    bool escaped = !RunShadow(lifted, c, base);
+    if (!escaped && t_liftBail) // (a kept build's LIFT_BAIL in a check run: that call isn't judged)
+    {
+        t_liftBail = false;
+        escaped = true;
+        t_escapedBy = "a branch no check ran";
+    }
     t_liftBranches = nullptr;
     g_fm2Shadow = false;
     g_fm2StoreLog = outerLogging;

@@ -812,6 +812,28 @@ class Lifter:
         return '\n'.join(lines)
 
 
+# A branch no check ran can still be kept out of the way: if nothing the caller could see has happened before it (no
+# store, no call, no register written; not in a loop, where an earlier pass could have), the lifted function returns
+# there and the original runs the call from the start instead (LIFT_BAIL, src/decomp/lift.h). Guard clauses at the top
+# of a function are the common case.
+EFFECT = re.compile(r'lift::Store|\bsub_[0-9A-F]{8}\(ctx, base\)|ctx\.[rf]\d+\.\w+ = |PPC_CALL_INDIRECT|\b(while|for|do)\b|goto ')
+
+
+def bail_unchecked(code, covered, nblocks):
+    if nblocks > 64:
+        raise Reject('not every branch ran')
+    body = code[code.index('{'):]
+    for i in range(nblocks):
+        if covered >> i & 1:
+            continue
+        marker = 'LIFT_BLOCK(%d);' % i
+        k = body.find(marker)
+        if k < 0 or EFFECT.search(body[:k]):
+            raise Reject('not every branch ran')
+        body = body.replace(marker, 'LIFT_BAIL(%d);' % i, 1)
+    return code[:code.index('{')] + body
+
+
 # ---- input --------------------------------------------------------------------------------------------------
 
 HEADER = ''.join('typedef int %s;\n' % n for n in list(INT) + ['bool', 'code', 'float10', 'undefined3', 'undefined5',
@@ -854,6 +876,7 @@ def main(argv):
         return 1
     info_path = args.pop(0)
     keep = None
+    partial = {}  # kept functions with branches no check ran: address -> the ones that did
     follow = True
     out_dir = os.path.join(ROOT, 'out', 'lift')
     while args:
@@ -879,8 +902,12 @@ def main(argv):
                         branches[f[0]] = int(f[5])
                         covered[f[0]] |= int(f[6], 16)
             for a in list(keep):
-                if a in failed or covered[a] != (1 << branches.get(a, 0)) - 1 or judged[a] <= 0:
+                if a in failed or judged[a] <= 0:
                     del keep[a]
+                elif covered[a] != (1 << branches.get(a, 0)) - 1:
+                    # some branches never ran in a check: kept only if each is reached before anything the caller
+                    # could see (bail_safe, below), and turned into a hand-back to the original (LIFT_BAIL)
+                    partial[a] = covered[a]
         elif a == '--strict':
             follow = False
         elif a == '--out':
@@ -948,7 +975,7 @@ def main(argv):
                 # registers the original sign- or zero-extends from 32 bits: where Ghidra's C casts one of those to
                 # 64 bits, the cast is that extension (8263E068's extsw), not a read of the register's top half
                 extended[a] = {int(r) for r in re.findall(r'// (?:extsw|clrldi|rldicl) r\d+,r(\d+)', body)}
-                follows = not follow and re.search(r'PPC_CALL_INDIRECT_FUNC|__imp__(?!sub_)\w+\(ctx, base\)', body)
+                follows = not follow and re.search(r'PPC_CALL_INDIRECT_FUNC|\b__imp__(?!sub_)\w+\(ctx, base\)', body)
                 # (vector stores, lwarx/stwcx. and dcbz go through the overlay too: tools/patch_mem.py)
                 if re.search(r'setjmp|longjmp|simde_mm_store\w*\(\(\w+\*\)\(base|[^_]memset\(base|memcpy\(base', body) or (a in hooked and a not in passthrough) or follows:
                     impure.add(a)
@@ -1018,6 +1045,8 @@ def main(argv):
             lifter = Lifter(f, names, rets, frame, known, sigs, setups.get(addr, {}), livein)
             lifter.extended = extended.get(addr, set())
             code = lifter.lift(fn[0])
+            if f['addr'] in partial:
+                code = bail_unchecked(code, partial[f['addr']], lifter.nblocks)
             done.append((addr, code, lifter.ret_kind, lifter.nblocks))
             reasons['lifted'] += 1
         except Reject as e:

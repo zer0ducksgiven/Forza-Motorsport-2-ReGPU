@@ -97,7 +97,10 @@ them, checked against the originals. Lifted code goes to `out/lift` (never commi
    every branch of it has run (lift.py marks them, LIFT_BLOCK), else up to 1,024. The game plays as the original.
    Results: out/lift_check.tsv.
 5. `py -3 tools/decomp/lift.py <info.jsonl> --keep a.tsv,b.tsv` keeps the functions that never differed and had
-   every branch run in a passing check, across the routes given.
+   every branch run in a passing check, across the routes given. A function whose unchecked branches are each
+   reached before anything the caller could see (no store, call or register write, not in a loop) is kept too:
+   those branches become LIFT_BAIL, where the lifted function returns and the original makes the call (441
+   functions, mostly guards and asserts that never fired).
    `FM2_LIFT_ENABLE=<file of addresses>` runs only some lifted, for bisecting a bad one.
 
 tools/patch_mem.py routes the recompiled code's vector loads and stores, lwarx/stwcx., dcbz and setjmp/longjmp

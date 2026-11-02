@@ -97,6 +97,11 @@ extern thread_local uint64_t* t_liftBranches;
 #define LIFT_BLOCK(n) ((void)0)
 #endif
 
+// A branch no check ran, in a kept function, reached before anything the caller could see (lift.py bail_unchecked):
+// the lifted function returns at once, and LiftRun runs the original for the call instead.
+extern thread_local bool t_liftBail;
+#define LIFT_BAIL(n)           do                         {                              t_liftBail = true;         return;                } while (0)
+
 enum class LiftReturn : uint8_t
 {
     None,
