@@ -141,6 +141,8 @@ register (8237E0D8 compares a pointer as 64 bits, and Ghidra's sign extension of
 extends that register itself (extsw/clrldi/rldicl: then the cast is that extension, as 8263E068's extsw before a
 fcfid). The lifter also rejects a call that leaves out a register the original sets up and the callee
 reads (82297C38 lost a memmove's source and
-length, 824EBB68 a virtual call's this). From what else has bitten so far it rejects `void` functions whose r3
+length, 824EBB68 a virtual call's this). A name Ghidra lists as a global at a function's address (lua_Save, an undefined byte) is that function: its
+address, not a byte loaded from there. A float assigned to one of Ghidra's undefinedN (828E1A00's double into an
+undefined8) keeps its bits, as a cast between them does. From what else has bitten so far it rejects `void` functions whose r3
 differs (callers use it); stack locals whose address goes to a callee are left to the check (LIFT_STACK_CALLS=1;
 before Ghidra had the real parameters it folded one's value through the call), and it keeps a function only once every branch of it has run in a passing check.

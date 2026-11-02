@@ -281,6 +281,9 @@ class Lifter:
                 return ('var', 'v_' + name, t)
             if name in self.names:
                 return ('fn', self.names[name], T('func'))
+            if name in self.globals and self.globals[name][0] in self.known:
+                # a function Ghidra lists as a global (an undefined byte at its address): used as a value, its address
+                return ('fn', self.globals[name][0], T('func'))
             if name in self.globals:
                 addr, g = self.globals[name]
                 t = self.gtype(g)
@@ -455,6 +458,11 @@ class Lifter:
             rc, rt = self.call(n.rvalue, t)[1:]
         else:
             rc, rt = self.rv(n.rvalue)
+        if (t.kind == 'int' and t.raw and rt.kind == 'float') or (t.kind == 'float' and rt.kind == 'int' and rt.raw):
+            # Ghidra's undefinedN holds bits: a float stored into one (828E1A00's double into an undefined8) keeps them
+            if t.size != rt.size:
+                raise Reject('reinterpret between sizes')
+            rc, rt = 'std::bit_cast<%s>(%s(%s))' % (t.cpp(), rt.cpp(), rc), t
         if n.op != '=':
             op = n.op[:-1]
             if t.kind == 'ptr' and op in ('+', '-'):
