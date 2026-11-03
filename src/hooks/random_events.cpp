@@ -344,11 +344,13 @@ std::string RandomEventsLuaSource(const char* text, uint32_t size)
                                " ELSE Description END AS Description, BadgePath");
     // Random Events first in the list
     changed |= Replace(out, kTypesOrder, "FROM CareerEventTypes ORDER BY id<>" + std::to_string(kCategory) + ", id");
+    // The game's query, with a line for these events after it. Written with substr(..., -3) the query came back
+    // empty in the game, for every event, leaving First Place Prize blank (report #51); ScaledPrizes rounds the
+    // credits to hundreds, so the thousands' digits are one digit and "00".
     changed |= Replace(out, kPrize,
-                       "SELECT COALESCE((SELECT ModelShort FROM Rewards_CareerEvents INNER JOIN Data_Car ON Data_Car.Id=CarId "
-                       "WHERE EventId=e.Id), (s.Credits / 1000) || ',' || substr('00' || (s.Credits % 1000), -3) || ' CR' || " +
-                           Quoted(prize) + ") AS ModelName FROM Events e LEFT JOIN EventScoring s ON s.Event_ID=e.Id AND s.place=1 "
-                           "WHERE e.Id=[Events.Id]");
+                       std::string(kPrize) + " UNION ALL SELECT (Credits / 1000) || ',' || (Credits % 1000 / 100) || '00 CR' || " +
+                           Quoted(prize) + " FROM EventScoring WHERE Event_ID=[Events.Id] AND place=1 AND Event_ID>=" + std::to_string(kFirstEvent) +
+                           " AND Event_ID<=" + std::to_string(kLastEvent));
     std::string descriptions = "CASE Id";
     for (const auto& [id, description] : Descriptions())
         descriptions += " WHEN " + std::to_string(id) + " THEN " +
