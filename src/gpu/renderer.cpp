@@ -73,7 +73,7 @@ bool CameraAspectWidened(); // hooks/camera_aspect.cpp: the game is setting its 
 // after it, which squeezed those screens.
 bool g_depthThisFrame = false, g_depthLastFrame = false;
 bool RaceView() { return g_depthLastFrame && CameraAspectWidened(); }
-void DealerCarDraw(uint64_t vs, const float c[256][4], float squash[4][4], bool body); // hooks/dealer.cpp: the easter egg, per car draw
+void DealerCarDraw(uint64_t vs, const float c[256][4], float squash[4][4], bool body, int originRow); // hooks/dealer.cpp: the easter egg, per car draw
 
 bool MusicToast(std::wstring& title, std::wstring& artist, float& age); // audio/music.cpp
 bool LiveNotice(std::wstring& title, std::wstring& line, float& age);   // kernel/net.cpp
@@ -320,7 +320,8 @@ struct CompiledShader
     const CompiledShader* hlslSource = nullptr; // canonical variants: the shader whose code (and HLSL) this reuses
     mutable const CompiledShader* motion = nullptr; // its motion-vector variant, once looked up
     bool carBody = false; // a car-body vertex shader (ApplyDirtSeamFix): takes the easter egg's squash
-    bool carPart = false; // another car-mesh vertex shader (tyres, brakes): moves with its car in the egg
+    bool carPart = false; // another car-mesh vertex shader (tyres, brakes, the driver): moves with its car in the egg
+    uint8_t carOriginRow = 3; // the constant holding a car part's origin on screen (31 for the driver)
     bool IsReady() const { return state.load(std::memory_order_acquire) == Ready; }
 };
 
@@ -2810,11 +2811,22 @@ bool AddCarSquash(std::string& hlsl)
     return true;
 }
 
-// Other car meshes (tyres, brake discs): their positions are dequantised like the body's (q * w + vc[191]).
-bool MarkCarPart(std::string& hlsl)
+// Other car meshes: their positions are dequantised like the body's, q * w + vc[191] (tyres), or + vc[184] in
+// a lit shader (brake discs and calipers, number plates; the unlit ones draw shadow maps, in the light's view).
+// The driver is skinned (bones from vc[60 + a0], c8-c11 into the world, c28-c31 onto the screen): `originRow`
+// 31 tells dealer.cpp where its origin is.
+bool MarkCarPart(std::string& hlsl, uint8_t& originRow)
 {
-    static const std::regex dequant(R"(\(r\[\d+\]\.\w+\), \(r\[\d+\]\.wwww\)\) \+ \(vc\[191\])");
-    return std::regex_search(hlsl, dequant) && AddCarSquash(hlsl);
+    if (hlsl.find("(vc[(60 + a0) & 255]") != std::string::npos && hlsl.find(" + (vc[31].xyzw); opos.xyzw") != std::string::npos &&
+        hlsl.find("vc[32]") != std::string::npos)
+    {
+        originRow = 31;
+        return AddCarSquash(hlsl);
+    }
+    static const std::regex tyre(R"(\(r\[\d+\]\.\w+\), \(r\[\d+\]\.wwww\)\) \+ \(vc\[191\])");
+    static const std::regex part(R"(\(r\[\d+\]\.\w+\), \(r\[\d+\]\.wwww\)\) \+ \(vc\[184\])");
+    const bool car = std::regex_search(hlsl, tyre) || (std::regex_search(hlsl, part) && hlsl.find("vc[32]") != std::string::npos);
+    return car && AddCarSquash(hlsl);
 }
 
 // Returns true for a car-body vertex shader (it also gets the easter egg's bounce: see dealer.cpp).
@@ -2921,6 +2933,7 @@ const CompiledShader& GetShaderLocked(uint64_t hash, const std::vector<uint32_t>
                 cs.hlslSource = &base;
                 cs.carBody = base.carBody;
                 cs.carPart = base.carPart;
+                cs.carOriginRow = base.carOriginRow;
                 cs.state = CompiledShader::Ready;
                 g_stats.shadersCached++;
                 path = "variant";
@@ -2952,7 +2965,7 @@ const CompiledShader& GetShaderLocked(uint64_t hash, const std::vector<uint32_t>
         return cs;
     }
     cs.carBody = ApplyDirtSeamFix(cs.info.hlsl, pixel);
-    cs.carPart = !pixel && !cs.carBody && MarkCarPart(cs.info.hlsl);
+    cs.carPart = !pixel && !cs.carBody && MarkCarPart(cs.info.hlsl, cs.carOriginRow);
     if (cs.carBody)
         Log("renderer: vs %016llx is a car body", (unsigned long long)hash);
     if (g_dumpHlsl)
@@ -8478,11 +8491,11 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
     memset(vc->vsquash, 0, sizeof(vc->vsquash));
     if (vs.carBody || vs.carPart)
     {
-        DealerCarDraw(C().vsHash, vc->c, vc->vsquash, vs.carBody);
+        DealerCarDraw(C().vsHash, vc->c, vc->vsquash, vs.carBody, vs.carOriginRow);
         LiveSwitch &traceCar = g_sw_FM2_TRACE_CAR_DRAWS;
         if (traceCar)
-            Log("car draw: vs %016llx ps %016llx origin %.3f %.3f %.3f %.3f x %.3f %.3f %.3f", (unsigned long long)C().vsHash, (unsigned long long)C().psHash,
-                vc->c[3][0], vc->c[3][1], vc->c[3][2], vc->c[3][3], vc->c[0][0], vc->c[0][1], vc->c[0][2]);
+            Log("car draw: vs %016llx ps %016llx origin %.3f %.3f %.3f %.3f x %.3f %.3f %.3f squash %d", (unsigned long long)C().vsHash, (unsigned long long)C().psHash,
+                vc->c[3][0], vc->c[3][1], vc->c[3][2], vc->c[3][3], vc->c[0][0], vc->c[0][1], vc->c[0][2], int(vc->vsquash[3][3] > 0));
     }
     pc->info[1] = (gpureg::Get(SQ_PROGRAM_CNTL) >> 18) & 1 ? (gpureg::Get(SQ_CONTEXT_MISC) >> 8) & 0xFF : 0xFF;
 
