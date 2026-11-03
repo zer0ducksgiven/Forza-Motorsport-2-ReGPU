@@ -164,12 +164,38 @@ uint32_t LayoutKey(uint32_t surface)
 }
 std::atomic<uint32_t>& NativeSlot(uint32_t key) { return g_nativeMsaa[(key ^ key >> 12) & 0xFFF]; }
 std::atomic<uint32_t> g_nativeMsaaGeneration{ 0 }; // bumped when an entry changes (BigPassSize's memo)
+// A livery surface's layout: 2080 samples wide (the composite), or 1040 (the 1024x1024 target).
+bool LiveryLayoutKey(uint32_t key) { return key >> 12 == 2080 || key >> 12 == 1040; }
 void SetNativeMsaa(uint32_t key, uint32_t msaa)
 {
+    if (const uint32_t old = NativeSlot(key).load(std::memory_order_relaxed); old && old >> 2 != key && LiveryLayoutKey(old >> 2))
+    {
+        static std::atomic<int> logged{ 0 };
+        if (logged.fetch_add(1, std::memory_order_relaxed) < 20)
+            Log("livery: layout %08X mode %u overwritten by %08X mode %u", old >> 2, old & 3, key, msaa);
+    }
     if (NativeSlot(key).exchange(key << 2 | msaa, std::memory_order_relaxed) != (key << 2 | msaa))
         g_nativeMsaaGeneration.fetch_add(1, std::memory_order_relaxed);
 }
 // The surface's MSAA layout when the current view is another one of an MSAA surface, else -1.
+int ForeignNativeMsaa();
+bool TallView();
+// A livery stencil clear (a texture-less rectangle through a 4x view) that isn't mapped onto its surface: the
+// stencil stays set and layers land in the wrong places, parts of a car's texture map (report #50). Logged, as
+// it comes and goes and is rare: which of the layout table, or the tall pass, was missing.
+void NoteLiveryClear()
+{
+    const uint32_t surface = gpureg::Get(0x2000 /* RB_SURFACE_INFO */), msaa = (surface >> 16) & 3, key = LayoutKey(surface);
+    if (msaa != 2 || !LiveryLayoutKey(key) || (key >> 12 == 2080 ? ForeignNativeMsaa() >= 0 : TallView() || !g_tallHeight))
+        return;
+    // (A surface really drawn at 4x, with this layout, is no view: the menus have one.)
+    if (NativeSlot(key).load(std::memory_order_relaxed) == (key << 2 | 2))
+        return;
+    static int logged = 0;
+    if (logged++ < 20)
+        Log("livery: clear not mapped: surface %08X, table slot %08X, tall %08X height %u key %08X", surface,
+            NativeSlot(key).load(std::memory_order_relaxed), g_tallInfo, g_tallHeight, g_tallKey);
+}
 int ForeignNativeMsaa()
 {
     static LiveSwitch off("FM2_NO_FOREIGN_MSAA"); // A/B
@@ -8405,6 +8431,8 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
     // render in, a pixel of a 2x surface 1x2. Scale those clear rectangles to match.
     LiveSwitch &noMsaaScale = g_sw_FM2_NO_MSAA_SCALE;
     Sub(3);
+    if ((initiator & 0x3F) == 8 && !ps.info.usedTextureSlots && !vs.info.usedTextureSlots)
+        NoteLiveryClear();
     if (!noMsaaScale && (initiator & 0x3F) == 8 && (gpureg::Get(RB_COLOR_MASK) & 0xF) == 0 && (gpureg::Get(RB_SURFACE_INFO) & 0x3FFF) < 1000)
     {
         const uint32_t msaa = (gpureg::Get(RB_SURFACE_INFO) >> 16) & 3;
