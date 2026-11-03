@@ -104,7 +104,8 @@ async function find(db, name) {
 // rows of a 1,000-player board read 100,000): a page's ranks are its offset plus its order, and only one player's
 // rank (around, xuids) is counted, once.
 const COLS = `xuid, name, CAST(rating AS TEXT) AS rating, ${COLUMNS.map((c) => `CAST(${c} AS TEXT) AS ${c}`).join(", ")}`;
-const PAGE = `SELECT ${COLS} FROM stats WHERE view = ?1 ORDER BY rating DESC, updated LIMIT ?2 OFFSET ?3`;
+// s.rating, the integer column: a bare "rating" is the text alias above, which sorted -33058 above -30962
+const PAGE = `SELECT ${COLS} FROM stats s WHERE view = ?1 ORDER BY s.rating DESC, s.updated LIMIT ?2 OFFSET ?3`;
 const ONE = `SELECT ${COLS},
   (SELECT count(*) FROM stats o WHERE o.view = s.view AND (o.rating > s.rating OR (o.rating = s.rating AND o.updated < s.updated))) + 1 AS rank
   FROM stats s WHERE view = ?1 AND xuid = ?2`;
