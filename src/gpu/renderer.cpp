@@ -3683,10 +3683,21 @@ bool GameSettled()
     return !never && g_lastLongHold.time_since_epoch().count() != 0 && std::chrono::steady_clock::now() - g_lastLongHold > std::chrono::seconds(4);
 }
 
+// Set by the draw: a rectangle list or a draw of six vertices or fewer (a screen pass: tonemap, exposure,
+// bloom, blur, HUD panels). Skipped while its pipeline built, a post pass left that whole frame washed out
+// (PGR4 first sessions); these wait for their pipeline instead, a one-off hitch on first use.
+// FM2_SKIP_SCREEN_PASSES=1: skippable like the rest, as before.
+thread_local bool g_screenPassDraw = false;
+bool ScreenPassMustDraw()
+{
+    static LiveSwitch skipScreenPasses("FM2_SKIP_SCREEN_PASSES");
+    return g_screenPassDraw && !skipScreenPasses;
+}
+
 bool SkippableDraw(bool depthOnly, uint32_t blend)
 {
     static LiveSwitch noSkip("FM2_NO_SKIP_BLENDED");
-    if (noSkip || depthOnly)
+    if (noSkip || depthOnly || ScreenPassMustDraw())
         return false;
     const bool opaque = (blend & 0xFF1F1F1F) == 0x00010001 || (blend & 0x1F) == 1 && ((blend >> 8) & 0x1F) == 0;
     return !opaque || GameSettled();
@@ -4949,7 +4960,13 @@ void BlitResolve(bool depth, uint32_t base, uint32_t width, uint32_t height, DXG
     const float* destRange = nullptr)
 {
     ResolvedTexture& dest = g_r.resolved[base];
-    const uint32_t hostWidth = uint32_t(HostX(LONG(width))), hostHeight = uint32_t(HostY(LONG(height)));
+    // Rounded down, not to nearest: only the rows (and columns) whose pixel centres the draws covered hold
+    // the image. At a scale that leaves a fraction (1080p is 1.5x 720p) a 32x1 image became a 2-row texture
+    // whose second row was never drawn, and sampling it blended in garbage (PGR4's exposure chain).
+    // FM2_ROUND_RESOLVE_SIZE=1: to nearest, as before (A/B).
+    static LiveSwitch roundSize("FM2_ROUND_RESOLVE_SIZE");
+    const uint32_t hostWidth = roundSize ? uint32_t(HostX(LONG(width))) : std::max(1u, uint32_t(double(width) * ScaleX() + 1e-3));
+    const uint32_t hostHeight = roundSize ? uint32_t(HostY(LONG(height))) : std::max(1u, uint32_t(double(height) * ScaleY() + 1e-3));
     EnsureResolved(dest, width, height, hostWidth, hostHeight, format);
     // What memory holds under the image, for the stale check (ResolveCurrent): once per frame, as tiles
     // land in the same image. An image resolved every frame (shadow maps, bloom) only needs it every
@@ -7981,6 +7998,7 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
     Section(1);
     LiveSwitch &asyncShaders = g_sw_FM2_ASYNC_SHADERS;
     const bool shadersPending = vs.state.load(std::memory_order_acquire) == CompiledShader::Pending || ps.state.load(std::memory_order_acquire) == CompiledShader::Pending;
+    g_screenPassDraw = (initiator & 0x3F) == 8 || (initiator >> 16) <= 6; // (before both skip checks)
     if (shadersPending && SkippableDraw(edramMode == 5, gpureg::Get(RB_BLENDCONTROL0)))
     {
         g_skippedPipeline++;
