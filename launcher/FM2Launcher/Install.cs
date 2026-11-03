@@ -353,6 +353,18 @@ public static class Game
                 try { File.AppendAllText(log, File.ReadAllText(Path.Combine(Paths.Root, "fm2.log"))); } catch (IOException) { }
             _ = Reports.SendLastLogAsync();
         };
+        // Windows can refuse fm2.exe itself (Smart App Control, a Device Guard policy: report #45). cmd.exe still
+        // starts, so that looked like a started game: gone in moments, with no line of the game's in its log.
+        if (!Platform.Linux && game.WaitForExit(2000))
+        {
+            string said;
+            try { said = File.ReadAllText(log).Trim(); } catch (IOException) { said = ""; }
+            if (!said.Contains("fm2: "))
+                throw new InvalidOperationException("The game didn't start." + (said.Length > 0 ? " Windows said: " + said : "") +
+                    (said.Contains("Device Guard") || said.Contains("policy")
+                        ? " This is Windows blocking an unsigned program, usually Smart App Control (Windows Security > App & browser control)."
+                        : ""));
+        }
     }
 
     // robocopy /XC /XN /XO in install-content.cmd: what is already there is left alone. A DLC package the game has

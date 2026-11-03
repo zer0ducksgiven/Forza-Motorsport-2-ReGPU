@@ -64,7 +64,7 @@ public sealed class Bridge
             case "launch":
                 a?["settings"].Deserialize<GameSettings>(Json)?.Save();
                 if (Game.Running) throw new InvalidOperationException("The game is already running.");
-                Game.Launch();
+                await Task.Run(() => Game.Launch(false));
                 return null;
             case "tu.add":
                 {
@@ -78,7 +78,7 @@ public sealed class Bridge
                 return State();
             case "shaders.rebuild":
                 ShaderCache.Delete();
-                Game.Launch();
+                await Task.Run(() => Game.Launch(false));
                 return State();
             case "dlc.toggle":
                 Dlc.SetEnabled(a!["id"]!.GetValue<string>(), a["enabled"]!.GetValue<bool>());
