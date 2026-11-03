@@ -18,6 +18,11 @@ void LeaderboardsWrite(uint64_t xuid, uint32_t viewCount, uint32_t viewPtr);
 void LeaderboardsFill(uint32_t out, uint32_t size, const std::vector<LeaderboardSpec>& specs, const std::string& query,
                       const std::vector<uint64_t>& xuids);
 
+// The same in the background, the overlapped completing when the rows are in: a read holds the game's thread
+// for as long as the server takes (a freeze of seconds choosing an event or crossing the line, report #48).
+void LeaderboardsFillAsync(uint32_t overlapped, uint32_t out, uint32_t size, std::vector<LeaderboardSpec> specs, std::string query,
+                           std::vector<uint64_t> xuids);
+
 // A POST to the FM2 Live server (FM2_STATS_URL): its reply, or empty on failure.
 std::string LiveServerPost(const wchar_t* path, const std::string& body);
 

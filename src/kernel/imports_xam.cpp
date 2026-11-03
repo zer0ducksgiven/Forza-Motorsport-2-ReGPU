@@ -1435,8 +1435,19 @@ GUEST_EXPORT(XamEnumerate)
         // row counts and pointers and copied gigabytes over its own heap (the crash leaving Arcade under
         // FM2_LIVE: sub_824FF3F0 copying XUSER_STATS_ROWs).
         const uint32_t buffer = ctx.r5.u32, size = ctx.r6.u32;
+        const uint32_t overlapped = ctx.r8.u32;
         if (buffer && size >= 8 + e->statSpecs.size() * 0x10 && e->next == 0)
+        {
+            if (overlapped)
+            {
+                e->next++;
+                StoreIfNonNull(ctx.r7.u32, 1);
+                LeaderboardsFillAsync(overlapped, buffer, size, e->statSpecs, e->statQuery, {});
+                Return(ctx, X_ERROR_IO_PENDING);
+                return;
+            }
             LeaderboardsFill(buffer, size, e->statSpecs, e->statQuery, {});
+        }
         count = e->next++ == 0 ? 1 : 0;
         StoreIfNonNull(ctx.r7.u32, count);
         FinishUi(ctx, ctx.r8.u32, count ? X_ERROR_SUCCESS : X_ERROR_NO_MORE_FILES);
@@ -1555,6 +1566,16 @@ void XMsgRequest(PPCContext& ctx, const char* call)
     }
     LogXMsg(call, app, message, buffer, size, ctx.lr);
     uint32_t result = X_ERROR_FUNCTION_FAILED;
+    if (app == 0xFB && message == 0x000B0021 && overlapped) // XUserReadStats: it waits for the server
+    {
+        Log("leaderboards: stats read in the background");
+        result = SessionsReadStats(buffer, overlapped);
+        if (result == X_ERROR_IO_PENDING)
+            Return(ctx, result);
+        else
+            FinishUi(ctx, overlapped, result);
+        return;
+    }
     if (app == 0xFB && OnlineXgiMessage(message, buffer, size, result))
     {
         FinishUi(ctx, overlapped, result);

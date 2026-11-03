@@ -58,6 +58,8 @@ inline std::string ObjectAttributesName(uint32_t attributes, uint32_t* root = nu
 }
 
 // XOVERLAPPED completion: result in InternalLow, then signal hEvent.
+// Marks an overlapped as in progress, for a request that completes later (CompleteOverlapped).
+void BeginOverlapped(uint32_t overlapped);
 void CompleteOverlapped(uint32_t overlapped, uint32_t result, uint32_t extendedError = 0, uint32_t length = 0);
 
 uint32_t TscFrequency();

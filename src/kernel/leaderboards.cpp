@@ -18,6 +18,7 @@
 #include <thread>
 #include <vector>
 
+#include "kernel/imports.h"
 #include "log.h"
 #include "memory.h"
 #include "settings.h"
@@ -292,4 +293,14 @@ void LeaderboardsFill(uint32_t out, uint32_t size, const std::vector<Leaderboard
         rowsTotal += rows;
     }
     Log("leaderboards: read (%s) %u views, %u rows", query.c_str(), n, rowsTotal);
+}
+
+void LeaderboardsFillAsync(uint32_t overlapped, uint32_t out, uint32_t size, std::vector<LeaderboardSpec> specs, std::string query,
+                           std::vector<uint64_t> xuids)
+{
+    BeginOverlapped(overlapped);
+    std::thread([=, specs = std::move(specs), query = std::move(query), xuids = std::move(xuids)] {
+        LeaderboardsFill(out, size, specs, query, xuids);
+        CompleteOverlapped(overlapped, X_ERROR_SUCCESS);
+    }).detach();
 }

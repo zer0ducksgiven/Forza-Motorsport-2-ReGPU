@@ -140,6 +140,19 @@ uint64_t Fm2Timebase()
     return uint64_t(ticks) + kGuestTimebaseHz; // (a console's timebase is never 0 at boot + 1 s)
 }
 
+void BeginOverlapped(uint32_t overlapped)
+{
+    StoreBE32(overlapped + 0x00, X_ERROR_IO_PENDING);
+    StoreBE32(overlapped + 0x04, 0);
+    if (const uint32_t event = LoadBE32(overlapped + 0x0C))
+        if (auto object = GetHandle(event); object && object->kind == KernelObject::Kind::Event)
+        {
+            std::lock_guard lock(g_objectMutex);
+            static_cast<EventObject&>(*object).signaled = false;
+            SyncGuestSignalState(*object);
+        }
+}
+
 void CompleteOverlapped(uint32_t overlapped, uint32_t result, uint32_t extendedError, uint32_t length)
 {
     if (!overlapped)

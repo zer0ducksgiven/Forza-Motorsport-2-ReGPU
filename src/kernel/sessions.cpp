@@ -289,7 +289,7 @@ uint32_t Details(uint32_t buffer)
 
 // XGI_XUSER_READ_STATS { title, XUID count, XUIDs*, spec count, specs*, results size, results* }:
 // those players' rows from the FM2 Live server (kernel/leaderboards.cpp).
-uint32_t ReadStats(uint32_t buffer)
+uint32_t ReadStats(uint32_t buffer, uint32_t overlapped)
 {
     const uint32_t specs = LoadBE32(buffer + 12), specPtr = LoadBE32(buffer + 16), size = LoadBE32(buffer + 20),
                    out = LoadBE32(buffer + 24);
@@ -300,6 +300,11 @@ uint32_t ReadStats(uint32_t buffer)
     std::vector<uint64_t> xuids;
     for (uint32_t i = 0, n = LoadBE32(buffer + 4), p = LoadBE32(buffer + 8); i < n && p && i < 100; i++)
         xuids.push_back(LoadBE64(p + i * 8));
+    if (overlapped)
+    {
+        LeaderboardsFillAsync(overlapped, out, size, LeaderboardSpecs(specPtr, specs), "xuids - 0", std::move(xuids));
+        return X_ERROR_IO_PENDING;
+    }
     LeaderboardsFill(out, size, LeaderboardSpecs(specPtr, specs), "xuids - 0", xuids);
     return X_ERROR_SUCCESS;
 }
@@ -404,6 +409,8 @@ void OnlineSelfXnAddr(uint32_t xnaddr)
     NetSelfXnAddr(xnaddr);
 }
 
+uint32_t SessionsReadStats(uint32_t buffer, uint32_t overlapped) { return ReadStats(buffer, overlapped); }
+
 bool OnlineXgiMessage(uint32_t message, uint32_t buffer, uint32_t size, uint32_t& result)
 {
     if (message == 0x000B0016 || message == 0x000B001C) // XSessionSearch(Ex): waits for the server
@@ -503,7 +510,7 @@ bool OnlineXgiMessage(uint32_t message, uint32_t buffer, uint32_t size, uint32_t
         result = X_ERROR_SUCCESS;
         return true;
     case 0x000B0021: // XUserReadStats
-        result = ReadStats(buffer);
+        result = ReadStats(buffer, 0);
         return true;
     default:
         return false;

@@ -8,6 +8,8 @@ uint32_t OnlineSessionCreateHandle();
 uint32_t OnlineSessionObject(uint32_t handle);
 // One of the XGI app's (0xFB) messages; false if it isn't a session or stats message.
 bool OnlineXgiMessage(uint32_t message, uint32_t buffer, uint32_t size, uint32_t& result);
+// XUserReadStats with an overlapped: X_ERROR_IO_PENDING, or the error.
+uint32_t SessionsReadStats(uint32_t buffer, uint32_t overlapped);
 // This PC's XNADDR (0x24 bytes at a guest address).
 void OnlineSelfXnAddr(uint32_t xnaddr);
 // The XUID of a local player (imports_xam.cpp).
