@@ -29,6 +29,11 @@ const TARGETS = [
   { key: "down", name: "D-pad down" },
   { key: "left", name: "D-pad left" },
   { key: "right", name: "D-pad right" },
+  { group: "Right stick (camera)" },
+  { key: "lookleft", name: "Right stick left", role: "A key or button (keyboard default J)" },
+  { key: "lookright", name: "Right stick right", role: "A key or button (keyboard default L)" },
+  { key: "lookup", name: "Right stick up", role: "A key or button (keyboard default I)" },
+  { key: "lookdown", name: "Right stick down", role: "A key or button (keyboard default K)" },
 ]
 
 // Besides SDL's devices (wheels, pedals, shifters, button boxes): the keyboard and mouse ("keyboard/k<virtual key>",
@@ -51,7 +56,7 @@ const isKeyboard = (src) => src.startsWith("keyboard/")
 // The game's own keys (src/kernel/imports_xam.cpp). A row without keys bound keeps its key, shown as a chip, unless
 // another row has that key bound: a key does one thing, so binding it takes it from wherever it was.
 const KEY_DEFAULTS = { steerleft: 65, steerright: 68, throttle: 87, brake: 83, a: 13, b: 8, x: 32, y: 89, lb: 81, rb: 69,
-  back: 9, start: 27, up: 38, down: 40, left: 37, right: 39 }
+  back: 9, start: 27, up: 38, down: 40, left: 37, right: 39, lookleft: 74, lookright: 76, lookup: 73, lookdown: 75 }
 const boundKeys = () => new Set(Object.values(bindings).flat().filter(isKeyboard))
 
 // A Windows virtual key's name, for the chips.

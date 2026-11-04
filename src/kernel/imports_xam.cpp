@@ -752,6 +752,13 @@ void RemapPad(PadState& s)
                     steer = sign, steerBound = true; // only while held: the stick steers otherwise
     if (steerBound)
         s.lx = int16_t(std::lround(std::clamp(steer, -1.0f, 1.0f) * 32767.0f));
+    // The right stick's directions, by button (only while held, like steering).
+    for (const auto& [target, axis, value16] : { std::tuple{ "lookleft", &s.rx, int16_t(-32767) }, { "lookright", &s.rx, int16_t(32767) },
+             { "lookdown", &s.ry, int16_t(-32767) }, { "lookup", &s.ry, int16_t(32767) } })
+        if (const auto it = bound.find(target); it != bound.end())
+            for (const PadSource& p : it->second.pad)
+                if (value(p) >= 0.5f)
+                    *axis = value16;
 }
 
 void AddKeyboardNow(PadState& s)
@@ -781,10 +788,10 @@ void AddKeyboardNow(PadState& s)
         s.leftTrigger = 255;
     if (const bool l = Pressed("steerleft", 'A'), r = Pressed("steerright", 'D'); l != r)
         s.lx = l ? -32767 : 32767;
-    if (Key('J') != Key('L'))
-        s.rx = Key('J') ? -32767 : 32767;
-    if (Key('I') != Key('K'))
-        s.ry = Key('K') ? -32767 : 32767;
+    if (const bool l = Pressed("lookleft", 'J'), r = Pressed("lookright", 'L'); l != r)
+        s.rx = l ? -32767 : 32767;
+    if (const bool u = Pressed("lookup", 'I'), d = Pressed("lookdown", 'K'); u != d)
+        s.ry = d ? -32767 : 32767;
 }
 
 int g_xinputPads = 0; // connected XInput pads (PadSlot): SDL's pads (GamepadRead) are the players after them

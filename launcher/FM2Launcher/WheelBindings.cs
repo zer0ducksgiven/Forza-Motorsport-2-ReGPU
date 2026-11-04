@@ -12,7 +12,7 @@ namespace FM2Launcher;
 public static class WheelBindings
 {
     public static readonly string[] Targets =
-        ["steer", "steerleft", "steerright", "throttle", "brake", "a", "b", "x", "y", "lb", "rb", "back", "start", "ls", "rs", "up", "down", "left", "right"];
+        ["steer", "steerleft", "steerright", "throttle", "brake", "a", "b", "x", "y", "lb", "rb", "back", "start", "ls", "rs", "up", "down", "left", "right", "lookleft", "lookright", "lookup", "lookdown"];
 
     static string File => Path.Combine(Paths.User, "wheel_bindings.ini");
 
