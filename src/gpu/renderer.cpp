@@ -8468,6 +8468,14 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
         const float extent = wideView ? ViewExtent() : 1.0f;
         const bool gameWidened = CameraAspectWidened();
         vc->vwide[0] = gameWidened ? 1.0f : 1.0f / extent;
+        // A 3D model on the HUD (the car diagram, report #52): the game scissors it to a part of the screen, unlike the
+        // scene. It belongs in the centred 16:9 area with the 2D HUD; left wide it sat off to the side, cut by that scissor.
+        {
+            const uint32_t tl = gpureg::Get(PA_SC_WINDOW_SCISSOR_TL), br = gpureg::Get(PA_SC_WINDOW_SCISSOR_BR);
+            const uint32_t left = tl & 0x7FFF, right = br & 0x7FFF;
+            if (wideView && gameWidened && !g_sw_FM2_NO_HUD_SQUEEZE && (left > 0 || right < kWidth))
+                vc->vwide[0] = 1.0f / wide;
+        }
         vc->vwide[1] = wide / extent;
         LiveSwitch &noSqueeze = g_sw_FM2_NO_HUD_SQUEEZE; // A/B: 2D stretched with the view
         vc->vwide[2] = noSqueeze ? 1.0f : 1.0f / wide;
