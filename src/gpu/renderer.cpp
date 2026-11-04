@@ -358,6 +358,7 @@ struct CachedTexture
     uint64_t checkedFrame = ~0ull; // content already validated in this frame
     uint32_t unchanged = 0;        // checks in a row that found the same content
     uint32_t changes = 0;          // times the content changed after the first upload
+    uint64_t lastUsed = 0;         // renderer frame of the last draw that asked for it (EvictTextures)
     uint32_t width = 0, height = 0;
     DXGI_FORMAT format = DXGI_FORMAT_R8G8B8A8_UNORM; // cubes: matches their faces
     bool native = false; // block-compressed on the GPU: the shader applies the fetch swizzle
@@ -714,10 +715,21 @@ struct TexturePool
     };
     std::vector<ComPtr<ID3D12Heap>> heaps;
     uint64_t used = kHeapBytes; // in heaps.back()
+    uint64_t liveBytes = 0;
     std::unordered_map<uint64_t, std::vector<Block>> free; // by size
     std::unordered_map<ID3D12Resource*, Block> live;
     std::deque<std::pair<uint64_t, Block>> retired; // frame retired, block
 } g_texturePool;
+
+std::unordered_map<uint64_t, std::vector<TexturePool::Block>>::iterator SmallestFreeAbove(uint64_t size)
+{
+    auto& free = g_texturePool.free;
+    auto best = free.end();
+    for (auto it = free.begin(); it != free.end(); ++it)
+        if (it->first > size && !it->second.empty() && (best == free.end() || it->first < best->first))
+            best = it;
+    return best;
+}
 
 // A texture in the pool (or committed, if it does not fit a heap). Starts in `state`.
 ComPtr<ID3D12Resource> CreateTexture(const D3D12_RESOURCE_DESC& desc, D3D12_RESOURCE_STATES state, const char* kind)
@@ -735,6 +747,14 @@ ComPtr<ID3D12Resource> CreateTexture(const D3D12_RESOURCE_DESC& desc, D3D12_RESO
         {
             block = list.back();
             list.pop_back();
+        }
+        else if (auto larger = SmallestFreeAbove(size); larger != pool.free.end())
+        {
+            // Split a larger free block, so memory freed by one size of texture serves the others.
+            const TexturePool::Block whole = larger->second.back();
+            larger->second.pop_back();
+            block = { whole.heap, whole.offset, size };
+            pool.free[whole.size - size].push_back({ whole.heap, whole.offset + size, whole.size - size });
         }
         else
         {
@@ -757,6 +777,7 @@ ComPtr<ID3D12Resource> CreateTexture(const D3D12_RESOURCE_DESC& desc, D3D12_RESO
         if (SUCCEEDED(g_r.device->CreatePlacedResource(block.heap, block.offset, &desc, state, nullptr, IID_PPV_ARGS(&r))))
         {
             pool.live[r.Get()] = block;
+            pool.liveBytes += block.size;
             return r;
         }
         pool.free[size].push_back(block);
@@ -781,6 +802,7 @@ void RetireTexture(ComPtr<ID3D12Resource>&& r)
     if (auto it = g_texturePool.live.find(r.Get()); it != g_texturePool.live.end())
     {
         g_texturePool.retired.push_back({ g_r.frame, it->second });
+        g_texturePool.liveBytes -= it->second.size;
         g_texturePool.live.erase(it);
     }
     Frame().garbage.push_back(std::move(r));
@@ -794,6 +816,39 @@ void ReclaimTextureBlocks()
         g_texturePool.free[retired.front().second.size].push_back(retired.front().second);
         retired.pop_front();
     }
+}
+
+// The texture cache only ever grew: every texture the game had loaded stayed in video memory after the game
+// had replaced it (report #41: 1 GB to 3 GB over six races). Over the cap, the textures unused longest go; one
+// used again is uploaded again. The age keeps this off anything the current track may still need on its next lap.
+void EvictTextures()
+{
+    static const uint64_t cap = uint64_t(getenv("FM2_TEXTURE_CACHE_MB") ? atoi(getenv("FM2_TEXTURE_CACHE_MB")) : 1024) << 20;
+    static const uint64_t minAge = getenv("FM2_TEXTURE_MIN_AGE") ? strtoull(getenv("FM2_TEXTURE_MIN_AGE"), nullptr, 10) : 3600; // frames
+    constexpr size_t kMaxPerPass = 256; // releases are not free: spread them over frames
+    if (g_r.frame % 16 != 8)
+        return;
+    std::lock_guard textureLock(g_textureMutex);
+    if (g_texturePool.liveBytes <= cap)
+        return;
+    std::vector<std::pair<uint64_t, uint64_t>> old; // last used, key
+    for (const auto& [key, cached] : g_r.textures)
+        if (cached.lastUsed + minAge < g_r.frame)
+            old.push_back({ cached.lastUsed, key });
+    std::sort(old.begin(), old.end());
+    size_t evicted = 0;
+    for (const auto& [lastUsed, key] : old)
+    {
+        if (evicted == kMaxPerPass || g_texturePool.liveBytes <= cap)
+            break;
+        RetireTexture(std::move(g_r.textures[key].resource));
+        g_r.textures.erase(key);
+        evicted++;
+    }
+    static uint64_t logged = 0;
+    if (evicted && logged++ < 20)
+        Log("renderer: texture memory over its cap: %zu textures released, %llu MB in use, %zu heaps", evicted,
+            (unsigned long long)(g_texturePool.liveBytes >> 20), g_texturePool.heaps.size());
 }
 
 // Bumped by every resolve: the per-slot texture bindings below are only reused while no
@@ -2016,6 +2071,7 @@ void BeginFrameIfNeeded()
     }
     f.descriptorsUsed = 2;
     EvictBindless();
+    EvictTextures();
     ReclaimTextureBlocks();
     ID3D12DescriptorHeap* heaps[] = { g_r.srvHeap.Get(), g_r.samplerHeap.Get() };
     C().list->SetDescriptorHeaps(2, heaps);
@@ -4341,6 +4397,7 @@ ID3D12Resource* GetTextureLocked(const TextureFetch& fetch, DXGI_FORMAT& format,
         }
     const uint32_t w = fetch.Width(), h = fetch.Height();
     auto& cached = g_r.textures[TextureKey(fetch.Address(), fetch.Format(), w, h)];
+    cached.lastUsed = g_r.frame;
     LiveSwitch &dumpAll = g_sw_FM2_DUMP_TEXTURES;
     const bool forceDecode = dumpAll && RendererTracing();
     if (cached.resource && cached.checkedFrame == g_r.frame && !forceDecode)
@@ -9916,8 +9973,9 @@ void RendererOnSwapImpl(uint64_t frameNumber, uint32_t frontBuffer)
     lastFrameAt = frameAt;
     if (frameNumber % 600 == 0)
     {
-        Log("renderer: frame %llu: %u draws, %u skipped, %zu shaders, %zu pipelines, %zu textures", (unsigned long long)frameNumber,
-            g_r.drawsThisFrame.load(), g_r.skippedThisFrame.load(), g_r.shaders.size(), g_r.pipelines.size(), g_r.textures.size());
+        Log("renderer: frame %llu: %u draws, %u skipped, %zu shaders, %zu pipelines, %zu textures (%llu MB, %zu heaps)", (unsigned long long)frameNumber,
+            g_r.drawsThisFrame.load(), g_r.skippedThisFrame.load(), g_r.shaders.size(), g_r.pipelines.size(), g_r.textures.size(),
+            (unsigned long long)(g_texturePool.liveBytes >> 20), g_texturePool.heaps.size());
         double sum = 0;
         for (float ms : frameMs)
             sum += ms;
