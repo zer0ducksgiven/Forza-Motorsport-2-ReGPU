@@ -330,6 +330,7 @@ public static class Game
         if (!File.Exists(Paths.Exe)) throw new InvalidOperationException($"fm2.exe isn't at {Paths.Exe}.");
         CopyMissing(Path.Combine(Paths.Root, "update"), Paths.Update);
         CopyMissing(Path.Combine(Paths.Root, "dlc"), Paths.Dlc, Paths.DlcDisabled);
+        Dlc.UnpackLoose();
         CareerMod.RandomEvents.Rotate();
         Directory.CreateDirectory(Path.Combine(Paths.Root, "out"));
         var log = Path.Combine(Paths.Root, "out", "play.log");
@@ -510,6 +511,48 @@ public static class Dlc
             var dst = Path.Combine(to, name);
             if (Directory.Exists(src)) Directory.Move(src, dst);
             else if (File.Exists(src)) File.Move(src, dst, true);
+        }
+    }
+
+    static bool LooksLikePackage(string file)
+    {
+        try
+        {
+            using var f = File.OpenRead(file);
+            var magic = new byte[4];
+            return f.Read(magic, 0, 4) == 4 && Encoding.ASCII.GetString(magic) is "LIVE" or "PIRS" or "CON ";
+        }
+        catch (IOException) { return false; }
+    }
+
+    /// <summary>The game only reads unpacked packages, and the setup's DLC step or a file dropped into the folder leaves
+    /// them as files: the launcher listed them and the game never saw them (reports #39, #44). Anything that isn't a
+    /// package stays where it is.</summary>
+    public static void UnpackLoose()
+    {
+        foreach (var dir in new[] { Paths.Dlc, Paths.DlcDisabled })
+        {
+            if (!Directory.Exists(dir)) continue;
+            foreach (var file in Directory.GetFiles(dir))
+            {
+                if (Path.GetExtension(file) is ".title" or ".license" or ".mod") continue;
+                if (!LooksLikePackage(file)) continue;
+                // Aside first: the unpacked folder takes the file's name.
+                var aside = Path.Combine(dir, ".unpacking");
+                var moved = Path.Combine(aside, Path.GetFileName(file));
+                try
+                {
+                    Directory.CreateDirectory(aside);
+                    File.Move(file, moved, true);
+                    Stfs.Install(moved, dir, File.Exists(file + ".mod"));
+                    File.Delete(moved);
+                }
+                catch (Exception e) when (e is InvalidDataException or IOException or UnauthorizedAccessException)
+                {
+                    try { if (File.Exists(moved) && !File.Exists(file)) File.Move(moved, file); } catch (IOException) { }
+                }
+                try { Directory.Delete(aside); } catch (IOException) { }
+            }
         }
     }
 

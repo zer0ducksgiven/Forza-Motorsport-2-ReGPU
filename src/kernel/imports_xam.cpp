@@ -1379,7 +1379,12 @@ GUEST_EXPORT(XamContentCreateEnumerator)
         {
             const std::string fileName = package.path().filename().string();
             if (!package.is_directory() || fileName.size() > 42)
+            {
+                const std::string extension = package.path().extension().string();
+                if (extension != ".title" && extension != ".license" && extension != ".mod")
+                    Log("content: DLC %s ignored: %s", fileName.c_str(), package.is_directory() ? "folder name over 42 characters" : "a file, not an unpacked package");
                 continue;
+            }
             UnpackDlcPatches(package.path());
             ContentItem item{ 2, {}, fileName };
             std::ifstream in(DlcDir() / (fileName + ".title"), std::ios::binary);
