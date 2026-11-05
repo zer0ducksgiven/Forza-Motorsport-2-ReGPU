@@ -121,28 +121,16 @@ PPC_FUNC(TU_SUB(825037C8))
 // scoreboards" screen waited for it forever.
 namespace
 {
-// The file: profiles\<name>\live_storage\<path>, the path being a UTF-16 string. The auction connector passes one
-// (its journal's name); the XTS client's own call at sign-in passes a pointer to other data, stored as "unnamed".
-std::filesystem::path StorageFile(uint32_t path, uint32_t caller)
+// The file: profiles\<name>\live_storage\<path>, the path being a UTF-16 string from XStorageBuildServerPath
+// (kernel/imports_xam.cpp). The auction connector's transaction journal is the path "Profile" (empty if building it
+// failed), kept in the file it has always had, "unnamed": players' journals are there. Nothing else may use that
+// file: a race's ghost overwrote it, after which auctions could fail with "Transaction failed", and the ban lists
+// read it at sign-in.
+const char* const kJournalFile = "unnamed";
+
+std::filesystem::path StorageFile(uint32_t path)
 {
-    // A race's leaderboard ghost and its thumbnail (the calls from the scoreboard code) have files of their own, by
-    // path. They used to share "unnamed" with the auction journal and overwrote it, after which auctions could fail
-    // with "Transaction failed".
     const std::filesystem::path folder = ContentDir().parent_path() / "live_storage";
-    if (caller >= 0x82230000 && caller < 0x82240000)
-    {
-        uint64_t hash = 0xCBF29CE484222325ull;
-        for (uint32_t i = 0; i < 100; i++)
-        {
-            const uint16_t c = *GuestPtr<uint16_t>(path + 2 * i);
-            if (c == 0)
-                break;
-            hash = (hash ^ c) * 0x100000001B3ull;
-        }
-        char name[32];
-        snprintf(name, sizeof(name), "ghost-%016llX", (unsigned long long)hash);
-        return folder / name;
-    }
     std::string name;
     for (uint32_t i = 0; i < 100; i++)
     {
@@ -150,13 +138,23 @@ std::filesystem::path StorageFile(uint32_t path, uint32_t caller)
         if (c == 0)
             break;
         if (c < 0x20 || c > 0x7E)
-        {
-            name.clear();
-            break;
-        }
+            return folder / "unreadable-path";
         name += (isalnum(int(c)) || c == '.' || c == '-') ? char(c) : '_';
     }
-    return folder / (name.empty() ? "unnamed" : name);
+    return folder / (name.empty() || name == "Profile" ? kJournalFile : name);
+}
+
+// The journal as the game reads it (less its SHA-1): 0x14 bytes of hash, version 1, a count, then 0x1C
+// bytes per entry. Older builds left ghosts (whose header differs by race) and stats made from ghost bytes in its file.
+bool IsJournal(const std::vector<uint8_t>& data)
+{
+    const auto be32 = [&](size_t i) {
+        return uint32_t(data[i]) << 24 | uint32_t(data[i + 1]) << 16 | uint32_t(data[i + 2]) << 8 | data[i + 3];
+    };
+    if (data.size() < 0x1C || be32(0x14) != 1)
+        return false;
+    const uint32_t count = be32(0x18);
+    return count <= 100 && data.size() == 0x1C + size_t(count) * 0x1C;
 }
 
 // A player's stats (the leaderboards' player card: racing time, finishes, races) are a 0x40-byte Xbox Live storage
@@ -203,7 +201,7 @@ PPC_FUNC(sub_823E40A0)
         __imp__sub_823E40A0(ctx, base);
         return;
     }
-    const std::filesystem::path file = StorageFile(ctx.r4.u32, uint32_t(ctx.lr));
+    const std::filesystem::path file = StorageFile(ctx.r4.u32);
     const uint32_t size = ctx.r5.u32;
     std::error_code error;
     std::filesystem::create_directories(file.parent_path(), error);
@@ -232,7 +230,7 @@ PPC_FUNC(sub_823E3DC0)
         __imp__sub_823E3DC0(ctx, base);
         return;
     }
-    const std::filesystem::path file = StorageFile(ctx.r4.u32, uint32_t(ctx.lr));
+    const std::filesystem::path file = StorageFile(ctx.r4.u32);
     const uint32_t size = ctx.r5.u32, buffer = ctx.r6.u32, results = ctx.r8.u32, overlapped = ctx.r9.u32;
     std::vector<uint8_t> data;
     bool missing = true;
@@ -244,10 +242,11 @@ PPC_FUNC(sub_823E3DC0)
             data.insert(data.end(), chunk, chunk + n);
         fclose(f);
     }
-    // A ghost left in the journal's file by an older build (they start 0F 04 08 00): no journal, a fresh start.
-    if (file.filename() == "unnamed" && data.size() >= 4 && !memcmp(data.data(), " ", 4))
+    // Something else in the journal's file: no journal, a fresh start.
+    if (!missing && file.filename() == kJournalFile && !IsJournal(data))
     {
-        Log("live storage: the auction journal held a ghost, removed");
+        Log("live storage: the auction journal held other data (%02X %02X %02X %02X, %u bytes), removed", data.size() > 0 ? data[0] : 0,
+            data.size() > 1 ? data[1] : 0, data.size() > 2 ? data[2] : 0, data.size() > 3 ? data[3] : 0, uint32_t(data.size()));
         std::error_code removeError;
         std::filesystem::remove(file, removeError);
         data.clear();

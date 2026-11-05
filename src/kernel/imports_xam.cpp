@@ -1528,12 +1528,14 @@ GUEST_EXPORT(XMsgInProcessCall)
     const uint32_t app = ctx.r3.u32, message = ctx.r4.u32, args = ctx.r5.u32;
     if (LiveTrace())
         LogXMsg("XMsgInProcessCall", app, message, args, 16, ctx.lr);
-    if (app == 0xFC && message == 0x00058035 && LoadBE32(args) == 254)
+    if (app == 0xFC && message == 0x00058035)
     {
-        // XStorageBuildServerPathByXuid { max path, pad, u64 xuid, facility, ?, ?, file name*, path*, path size* }:
-        // left unanswered, the title used an uninitialised path and everyone's stats, game clips and more shared one
-        // file (hooks/live_services.cpp keeps them by this name).
+        // XStorageBuildServerPath { user index, or 254 for ...ByXuid, pad, u64 xuid, facility, info*, info size, file
+        // name*, path*, path size* }: left unanswered, the title used an uninitialised path and the auction journal,
+        // ban lists, everyone's stats and race ghosts shared one file (hooks/live_services.cpp keeps them by this
+        // name). A ghost (facility 1, game clips) has one per leaderboard, the info being the leaderboard's id.
         const uint64_t xuid = LoadBE64(args + 8);
+        const uint32_t facility = LoadBE32(args + 16), info = LoadBE32(args + 20), infoSize = LoadBE32(args + 24);
         const uint32_t name = LoadBE32(args + 28), path = LoadBE32(args + 32), sizePtr = LoadBE32(args + 36);
         std::string text;
         for (uint32_t i = 0; name && i < 64; i++)
@@ -1543,9 +1545,17 @@ GUEST_EXPORT(XMsgInProcessCall)
                 break;
             text += char(c);
         }
-        char id[20];
-        snprintf(id, sizeof(id), "-%016llX", (unsigned long long)xuid);
-        text += id;
+        char id[32];
+        if (LoadBE32(args) == 254)
+        {
+            snprintf(id, sizeof(id), "-%016llX", (unsigned long long)xuid);
+            text += id;
+        }
+        if (facility == 1 && info && infoSize >= 4)
+        {
+            snprintf(id, sizeof(id), "-%08X", LoadBE32(info));
+            text += id;
+        }
         if (!path || !sizePtr || LoadBE32(sizePtr) < text.size() + 1)
         {
             Return(ctx, 0x8007007A); // ERROR_INSUFFICIENT_BUFFER
