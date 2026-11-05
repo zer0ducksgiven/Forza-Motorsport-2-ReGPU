@@ -48,6 +48,7 @@
 #include "input/wheel.h"
 #include "gpu/ps_glyphs.h"
 #include "gpu/pipeline_seed.h"
+#include "gpu/shader_seed.h"
 #include "settings.h"
 #include "gpu/regs.h"
 #include "gpu/texture.h"
@@ -3151,6 +3152,9 @@ const CompiledShader& GetShaderLocked(uint64_t hash, const std::vector<uint32_t>
         }
     }
     cs.cacheKey = Fnv(cs.info.hlsl.data(), cs.info.hlsl.size(), CacheSeed(pixel));
+    static LiveSwitch shaderKeys("FM2_SHADER_KEYS"); // for tools/shader_seed.py
+    if (shaderKeys)
+        Log("shader key: %s %016llx %016llx", pixel ? "ps" : "vs", (unsigned long long)hash, (unsigned long long)cs.cacheKey);
     if (auto b = g_bytecode.find(cs.cacheKey); b != g_bytecode.end())
     {
         cs.code = b->second;
@@ -3171,6 +3175,19 @@ const CompiledShader& GetShaderLocked(uint64_t hash, const std::vector<uint32_t>
             return cs;
         }
     }
+    // Shaders the game makes at run time (so the first boot's scan can't find them) that nearly every player
+    // compiles, up to 28 s each: they come with the game. A translator change just misses here and compiles.
+    for (const SeedShader& seed : kSeedShaders)
+        if (seed.key == cs.cacheKey && SUCCEEDED(D3DCreateBlob(seed.dwords * 4, &cs.code)))
+        {
+            memcpy(cs.code->GetBufferPointer(), seed.code, seed.dwords * 4);
+            std::ofstream(ShaderCachePath(cs.cacheKey), std::ios::binary)
+                .write(static_cast<const char*>(cs.code->GetBufferPointer()), std::streamsize(cs.code->GetBufferSize()));
+            cs.state = CompiledShader::Ready;
+            g_bytecode.emplace(cs.cacheKey, cs.code);
+            g_stats.shadersCached++;
+            return cs;
+        }
     g_compiler.Push(&cs, background);
     return cs;
 }
