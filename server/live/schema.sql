@@ -12,6 +12,13 @@ CREATE TABLE IF NOT EXISTS stats (
 );
 CREATE INDEX IF NOT EXISTS stats_order ON stats (view, rating DESC, updated);
 
+-- The leaderboards' player card, as the game's 0x40-byte Player_Stats file (hex; big-endian racing time, finishes, races).
+CREATE TABLE IF NOT EXISTS player_stats (
+    xuid TEXT PRIMARY KEY,
+    data TEXT NOT NULL,
+    updated INTEGER NOT NULL
+);
+
 -- The auction house (src/xts.js; the game reaches it through the port's title server WebSocket). XUIDs as 16 hex
 -- digits; credits and times (ms) as integers; the car blobs exactly as the game's Auction.Create sent them.
 -- status: 0 active, 1 expired (no bids), 2 sold, 3 cancelled.

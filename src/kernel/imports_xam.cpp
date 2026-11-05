@@ -1528,6 +1528,35 @@ GUEST_EXPORT(XMsgInProcessCall)
     const uint32_t app = ctx.r3.u32, message = ctx.r4.u32, args = ctx.r5.u32;
     if (LiveTrace())
         LogXMsg("XMsgInProcessCall", app, message, args, 16, ctx.lr);
+    if (app == 0xFC && message == 0x00058035 && LoadBE32(args) == 254)
+    {
+        // XStorageBuildServerPathByXuid { max path, pad, u64 xuid, facility, ?, ?, file name*, path*, path size* }:
+        // left unanswered, the title used an uninitialised path and everyone's stats, game clips and more shared one
+        // file (hooks/live_services.cpp keeps them by this name).
+        const uint64_t xuid = LoadBE64(args + 8);
+        const uint32_t name = LoadBE32(args + 28), path = LoadBE32(args + 32), sizePtr = LoadBE32(args + 36);
+        std::string text;
+        for (uint32_t i = 0; name && i < 64; i++)
+        {
+            const uint16_t c = __builtin_bswap16(*GuestPtr<uint16_t>(name + 2 * i));
+            if (c == 0)
+                break;
+            text += char(c);
+        }
+        char id[20];
+        snprintf(id, sizeof(id), "-%016llX", (unsigned long long)xuid);
+        text += id;
+        if (!path || !sizePtr || LoadBE32(sizePtr) < text.size() + 1)
+        {
+            Return(ctx, 0x8007007A); // ERROR_INSUFFICIENT_BUFFER
+            return;
+        }
+        for (size_t i = 0; i <= text.size(); i++)
+            *GuestPtr<uint16_t>(path + uint32_t(2 * i)) = __builtin_bswap16(uint16_t(i < text.size() ? text[i] : 0));
+        StoreBE32(sizePtr, uint32_t(text.size() + 1));
+        Return(ctx, 0);
+        return;
+    }
     if (app == 0xFC)
     {
         // XLiveBase: the title's profile manager starts with a request here (00058004) and

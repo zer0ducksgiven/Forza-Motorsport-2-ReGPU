@@ -11,6 +11,8 @@
 //                     ("-" for a column never written).
 // POST /players/find  a gamertag (profile name; any case) -> "player <xuid hex> <seen ms> <gamertag>", or "none"
 // POST /players/check "<gamertag>" then "<xuid hex>" -> "free", "yours" or "taken" (names are one player's)
+// POST /players/stats/write "<xuid hex>" then the player card's 0x40 bytes in hex (the game's Player_Stats file)
+// POST /players/stats/read  "<xuid hex>" -> those hex digits, or "none"
 // POST /players/online XUIDs, one a line -> the ones signed in to FM2 Live now, one a line
 
 import { authorised, logActivity, status } from "./activity.js";
@@ -38,6 +40,8 @@ export default {
     try {
       if (url.pathname === "/stats/write") return text(await write(env.DB, body));
       if (url.pathname === "/stats/read") return text(await read(env.DB, body));
+      if (url.pathname === "/players/stats/write") return text(await writePlayerStats(env.DB, body));
+      if (url.pathname === "/players/stats/read") return text(await readPlayerStats(env.DB, body.trim()));
       if (url.pathname === "/players/find") return text(await find(env.DB, body.trim().slice(0, 15)));
       if (url.pathname === "/players/check") {
         const [tag, xuid] = body.split("\n").map((l) => l.trim());
@@ -93,6 +97,21 @@ async function write(db, body) {
     await logActivity(db, "posted a leaderboard result", xuid, name, `${statements.length} board${statements.length > 1 ? "s" : ""}`);
   }
   return `ok ${statements.length}\n`;
+}
+
+async function writePlayerStats(db, body) {
+  const [xuid, data] = body.split("\n").map((l) => l.trim());
+  if (!XUID.test(xuid) || !/^[0-9A-F]{128}$/.test(data || "")) throw new Error("bad stats");
+  await db
+    .prepare("INSERT INTO player_stats (xuid, data, updated) VALUES (?1, ?2, ?3) ON CONFLICT (xuid) DO UPDATE SET data = excluded.data, updated = excluded.updated")
+    .bind(xuid, data, Date.now())
+    .run();
+  return "ok\n";
+}
+
+async function readPlayerStats(db, xuid) {
+  const row = XUID.test(xuid) && (await db.prepare("SELECT data FROM player_stats WHERE xuid = ?1").bind(xuid).first());
+  return row ? `${row.data}\n` : "none\n";
 }
 
 async function find(db, name) {
