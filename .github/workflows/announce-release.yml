@@ -1,0 +1,26 @@
+name: Announce release
+on:
+  release:
+    types: [published]
+
+jobs:
+  discord:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Post to Discord
+        env:
+          WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          NAME: ${{ github.event.release.name || github.event.release.tag_name }}
+          URL: ${{ github.event.release.html_url }}
+          BODY: ${{ github.event.release.body }}
+        run: |
+          jq -n --arg name "$NAME" --arg url "$URL" --arg body "$BODY" '{
+            content: "@everyone Forza Motorsport 2: ReGPU \($name) is out!",
+            allowed_mentions: { parse: ["everyone"] },
+            embeds: [{
+              title: $name,
+              url: $url,
+              description: ($body | .[0:4000]),
+              color: 5814783
+            }]
+          }' | curl -sf -H "Content-Type: application/json" -d @- "$WEBHOOK"
