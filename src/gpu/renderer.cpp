@@ -90,15 +90,26 @@ constexpr UINT kWidth = 1280, kHeight = 720;
 // ultrawide; every other pass (reflection faces, shadow maps, reduced-size post passes)
 // scales uniformly, so square targets stay square. Draws, clears and resolves of a pass
 // all read the same pitch, so they agree.
+// (Changed while the game runs by the graphics options, at a frame start: ApplySettingsChange.)
+std::atomic<uint32_t> g_outputWidth{ 0 }, g_outputHeight{ 0 };
+void LoadOutputSize()
+{
+    uint32_t w, h;
+    RenderSize(w, h);
+    g_outputWidth = w;
+    g_outputHeight = h;
+}
 uint32_t OutputWidth()
 {
-    static const uint32_t w = [] { uint32_t w, h; RenderSize(w, h); return w; }();
-    return w;
+    if (!g_outputWidth.load(std::memory_order_relaxed))
+        LoadOutputSize();
+    return g_outputWidth.load(std::memory_order_relaxed);
 }
 uint32_t OutputHeight()
 {
-    static const uint32_t h = [] { uint32_t w, h; RenderSize(w, h); return h; }();
-    return h;
+    if (!g_outputHeight.load(std::memory_order_relaxed))
+        LoadOutputSize();
+    return g_outputHeight.load(std::memory_order_relaxed);
 }
 // Upscaling: the 3D scene of a frame renders at this fraction of the output (1 otherwise);
 // after the scene is upscaled (UpscaleScene), the rest of the frame renders at full size.
@@ -300,6 +311,9 @@ constexpr UINT kMaxSurfaces = 64; // EDRAM bases with host surfaces
 // Samples per pixel of the scene surfaces (anti-aliasing, Settings::msaa). The blits that
 // read them use multisampled shaders when this is above 1.
 uint32_t g_msaa = 1;
+std::atomic<uint32_t> g_pipelineGen{ 0 }; // bumped when every pipeline is replaced (a new MSAA level): GetPipeline's caches start over
+D3D12_SAMPLER_DESC g_filteredSampler{};   // the anisotropic surface sampler's description, as made
+D3D12_CPU_DESCRIPTOR_HANDLE g_filteredSamplerHandle{};
 constexpr uint32_t RB_SURFACE_INFO = 0x2000, RB_COLOR_INFO = 0x2001, RB_DEPTH_INFO = 0x2002;
 constexpr uint32_t kDirectFetchBytes = 16 * 1024; // buffers that change (UI quads, particles) are all under 3 KB (FM2_TRACE_MIDSIZE); FM2_DIRECT_FETCH_KB overrides
 
@@ -481,9 +495,9 @@ struct Renderer
     ComPtr<ID3D12PipelineState> depthBlit;                // depth buffer -> R32_FLOAT
     ComPtr<ID3D12PipelineState> colorBlit8, colorBlit16;  // colour -> 8888 / RGBA16F, scaled
     ComPtr<ID3D12PipelineState> boxBlit8, boxBlit16;      // a texture averaged down (SceneAtGameSize)
-    ComPtr<ID3D12PipelineState> depthBlitMs, colorBlitMs8, colorBlitMs16; // the same from multisampled surfaces
+    ComPtr<ID3D12PipelineState> depthBlitMs[9], colorBlitMs8[9], colorBlitMs16[9]; // the same from multisampled surfaces, by sample count
     ComPtr<ID3D12RootSignature> bytesRootSignature;        // depth and stencil SRVs + the blit constants
-    ComPtr<ID3D12PipelineState> depthBytesBlit, depthBytesBlitMs; // depth + stencil -> the D24S8 words as 8888
+    ComPtr<ID3D12PipelineState> depthBytesBlit, depthBytesBlitMs[9]; // depth + stencil -> the D24S8 words as 8888
     // EDRAM surfaces: one host colour and one host depth target per EDRAM base
     // (RB_COLOR_INFO / RB_DEPTH_INFO bits 0-11), so passes that the title
     // places at different EDRAM offsets do not overwrite each other.
@@ -1236,22 +1250,24 @@ bool PhysicalHeapAliasesGuest(ID3D12Device* d, ID3D12Resource* physical)
 // Depth resolves: a depth-stencil buffer can only be copied whole, so the
 // resolve rectangle is drawn into an R32_FLOAT texture by a tiny pass that
 // reads the depth buffer at the same pixel.
+// The highest sample count up to want that the device supports for both the colour and depth formats (1 when none).
+uint32_t SupportedMsaa(uint32_t want)
+{
+    for (want = std::min(want, 8u); want > 1; want /= 2)
+    {
+        D3D12_FEATURE_DATA_MULTISAMPLE_QUALITY_LEVELS colour{ kColorFormat, want }, depth{ DXGI_FORMAT_D32_FLOAT_S8X24_UINT, want };
+        if (SUCCEEDED(g_r.device->CheckFeatureSupport(D3D12_FEATURE_MULTISAMPLE_QUALITY_LEVELS, &colour, sizeof colour)) && colour.NumQualityLevels &&
+            SUCCEEDED(g_r.device->CheckFeatureSupport(D3D12_FEATURE_MULTISAMPLE_QUALITY_LEVELS, &depth, sizeof depth)) && depth.NumQualityLevels)
+            return want;
+    }
+    return 1;
+}
+
 void InitDepthBlit()
 {
     auto* d = g_r.device;
-    // Anti-aliasing: the highest sample count the setting asks for that the device supports
-    // for both the colour and depth formats (1 when none).
-    g_msaa = 1;
-    for (uint32_t want = GetSettings().msaa; want > 1; want /= 2)
-    {
-        D3D12_FEATURE_DATA_MULTISAMPLE_QUALITY_LEVELS colour{ kColorFormat, want }, depth{ DXGI_FORMAT_D32_FLOAT_S8X24_UINT, want };
-        if (SUCCEEDED(d->CheckFeatureSupport(D3D12_FEATURE_MULTISAMPLE_QUALITY_LEVELS, &colour, sizeof colour)) && colour.NumQualityLevels &&
-            SUCCEEDED(d->CheckFeatureSupport(D3D12_FEATURE_MULTISAMPLE_QUALITY_LEVELS, &depth, sizeof depth)) && depth.NumQualityLevels)
-        {
-            g_msaa = want;
-            break;
-        }
-    }
+    // Anti-aliasing: the highest sample count the setting asks for that the device supports.
+    g_msaa = SupportedMsaa(GetSettings().msaa);
     Log("renderer: anti-aliasing %ux (setting %u)", g_msaa, GetSettings().msaa);
     D3D12_DESCRIPTOR_RANGE range{};
     range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
@@ -1343,10 +1359,13 @@ float4 psBox(float4 pos : SV_Position) : SV_Target
     Check(d->CreateGraphicsPipelineState(&pd, IID_PPV_ARGS(&g_r.boxBlit8)), "CreateGraphicsPipelineState(box blit 8)");
     pd.PS = { psColor->GetBufferPointer(), psColor->GetBufferSize() };
     pd.RTVFormats[0] = DXGI_FORMAT_R16G16B16A16_FLOAT;
-    if (g_msaa > 1)
+    // The same passes reading a multisampled surface, for each supported sample count (the graphics options
+    // can change it while the game runs): depth takes sample 0, colour averages all samples.
+    for (uint32_t samples = 2; samples <= 8; samples *= 2)
     {
-        // The same passes reading a multisampled surface: depth takes sample 0, colour averages all samples.
-        const std::string msSource = "#define SAMPLES " + std::to_string(g_msaa) + R"(
+        if (SupportedMsaa(samples) != samples)
+            continue;
+        const std::string msSource = "#define SAMPLES " + std::to_string(samples) + R"(
 Texture2DMS<float, SAMPLES> depthMs : register(t0);
 Texture2DMS<float4, SAMPLES> colorMs : register(t0);
 cbuffer Blit : register(b0) { float scale; uint swapRB; uint clampDest; float destMin; float destMax; };
@@ -1376,12 +1395,12 @@ float4 psColor(float4 pos : SV_Position) : SV_Target
         pd.VS = { msVs->GetBufferPointer(), msVs->GetBufferSize() };
         pd.PS = { msPs->GetBufferPointer(), msPs->GetBufferSize() };
         pd.RTVFormats[0] = DXGI_FORMAT_R32_FLOAT;
-        Check(d->CreateGraphicsPipelineState(&pd, IID_PPV_ARGS(&g_r.depthBlitMs)), "CreateGraphicsPipelineState(depth blit ms)");
+        Check(d->CreateGraphicsPipelineState(&pd, IID_PPV_ARGS(&g_r.depthBlitMs[samples])), "CreateGraphicsPipelineState(depth blit ms)");
         pd.PS = { msColor->GetBufferPointer(), msColor->GetBufferSize() };
         pd.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
-        Check(d->CreateGraphicsPipelineState(&pd, IID_PPV_ARGS(&g_r.colorBlitMs8)), "CreateGraphicsPipelineState(colour blit ms 8)");
+        Check(d->CreateGraphicsPipelineState(&pd, IID_PPV_ARGS(&g_r.colorBlitMs8[samples])), "CreateGraphicsPipelineState(colour blit ms 8)");
         pd.RTVFormats[0] = DXGI_FORMAT_R16G16B16A16_FLOAT;
-        Check(d->CreateGraphicsPipelineState(&pd, IID_PPV_ARGS(&g_r.colorBlitMs16)), "CreateGraphicsPipelineState(colour blit ms 16)");
+        Check(d->CreateGraphicsPipelineState(&pd, IID_PPV_ARGS(&g_r.colorBlitMs16[samples])), "CreateGraphicsPipelineState(colour blit ms 16)");
     }
 
     // Depth resolves as the guest's D24S8 words read as 8888 (ResolvedTexture::bytes): depth (t0) and stencil (t1).
@@ -1395,7 +1414,7 @@ float4 psColor(float4 pos : SV_Position) : SV_Target
     Check(d->CreateRootSignature(0, blob->GetBufferPointer(), blob->GetBufferSize(), IID_PPV_ARGS(&g_r.bytesRootSignature)),
         "CreateRootSignature(bytes blit)");
     // floatDepth (the swapRB slot): the guest buffer is D24FS8, its depth a 20e4 float.
-    const std::string bytesSource = std::string(g_msaa > 1 ? "#define SAMPLES " + std::to_string(g_msaa) + "\n" : "") + R"(
+    const std::string bytesBody = R"(
 #ifdef SAMPLES
 Texture2DMS<float, SAMPLES> depthTex : register(t0);
 Texture2DMS<uint2, SAMPLES> stencilTex : register(t1);
@@ -1428,15 +1447,21 @@ float4 ps(float4 pos : SV_Position) : SV_Target
     return float4(s, d & 255, (d >> 8) & 255, d >> 16) / 255.0;
 }
 )";
-    ComPtr<ID3DBlob> bytesVs, bytesPs;
-    Check(D3DCompile(bytesSource.data(), bytesSource.size(), nullptr, nullptr, nullptr, "vs", "vs_5_0", 0, 0, &bytesVs, &error), "D3DCompile(bytes blit vs)");
-    Check(D3DCompile(bytesSource.data(), bytesSource.size(), nullptr, nullptr, nullptr, "ps", "ps_5_0", 0, 0, &bytesPs, &error), "D3DCompile(bytes blit ps)");
     pd.pRootSignature = g_r.bytesRootSignature.Get();
-    pd.VS = { bytesVs->GetBufferPointer(), bytesVs->GetBufferSize() };
-    pd.PS = { bytesPs->GetBufferPointer(), bytesPs->GetBufferSize() };
     pd.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
-    Check(d->CreateGraphicsPipelineState(&pd, IID_PPV_ARGS(g_msaa > 1 ? &g_r.depthBytesBlitMs : &g_r.depthBytesBlit)),
-        "CreateGraphicsPipelineState(depth bytes blit)");
+    for (uint32_t samples = 1; samples <= 8; samples *= 2)
+    {
+        if (SupportedMsaa(samples) != samples)
+            continue;
+        const std::string bytesSource = (samples > 1 ? "#define SAMPLES " + std::to_string(samples) + "\n" : std::string()) + bytesBody;
+        ComPtr<ID3DBlob> bytesVs, bytesPs;
+        Check(D3DCompile(bytesSource.data(), bytesSource.size(), nullptr, nullptr, nullptr, "vs", "vs_5_0", 0, 0, &bytesVs, &error), "D3DCompile(bytes blit vs)");
+        Check(D3DCompile(bytesSource.data(), bytesSource.size(), nullptr, nullptr, nullptr, "ps", "ps_5_0", 0, 0, &bytesPs, &error), "D3DCompile(bytes blit ps)");
+        pd.VS = { bytesVs->GetBufferPointer(), bytesVs->GetBufferSize() };
+        pd.PS = { bytesPs->GetBufferPointer(), bytesPs->GetBufferSize() };
+        Check(d->CreateGraphicsPipelineState(&pd, IID_PPV_ARGS(samples > 1 ? &g_r.depthBytesBlitMs[samples] : &g_r.depthBytesBlit)),
+            "CreateGraphicsPipelineState(depth bytes blit)");
+    }
 }
 
 void InitPipelineLibrary(ID3D12Device* device);
@@ -1534,6 +1559,8 @@ void Init()
             D3D12_CPU_DESCRIPTOR_HANDLE h = g_r.samplerHeap->GetCPUDescriptorHandleForHeapStart();
             h.ptr += size_t(i) * stride;
             d->CreateSampler(&sd, h);
+            if (filters[i] == D3D12_FILTER_MIN_MAG_MIP_LINEAR && modes[i] == D3D12_TEXTURE_ADDRESS_MODE_WRAP)
+                g_filteredSampler = sd, g_filteredSamplerHandle = h; // (the graphics options change its level)
         }
     }
     D3D12_ROOT_SIGNATURE_DESC rs{};
@@ -1888,6 +1915,123 @@ void EvictBindless()
     }
 }
 
+// The graphics options screen's change (RendererChangeSettings), taken at the start of a frame with the host GPU
+// idle. The EDRAM surfaces (made at the output size and sample count on first use) are dropped and come back as
+// the new settings say, as do the frame readback, the upscaler's images and the swap chain; resolved images take
+// their new size at their next resolve, and the guest redraws every surface it uses each frame. A pipeline's sample
+// count is fixed, so a new MSAA level builds them all again: what is drawn first, the rest a few at a time
+// (RewarmPipelines), each loading from the pipeline library if it was ever built before. The old ones stay
+// allocated: a build still running or a worker's cached pointer may name them, and the level rarely changes.
+std::mutex g_settingsChangeMutex;
+std::function<void(Settings&)> g_settingsChange;
+std::vector<PipelineKey> g_rewarm;
+extern std::atomic<int> g_pipelinesQueued; // jobs in the pipeline pool, queued or running
+std::shared_ptr<PipelineEntry> EnsurePipeline(const CompiledShader& vs, const CompiledShader& ps, const PipelineKey& key);
+
+void ApplySettingsChange()
+{
+    std::function<void(Settings&)> change;
+    {
+        std::lock_guard lock(g_settingsChangeMutex);
+        change.swap(g_settingsChange);
+    }
+    if (!change || !g_r.ok)
+        return;
+    if (const UINT64 last = g_r.nextFence - 1; g_r.fence->GetCompletedValue() < last)
+    {
+        g_r.fence->SetEventOnCompletion(last, g_r.fenceEvent);
+        WaitForSingleObject(g_r.fenceEvent, INFINITE);
+    }
+    Settings& st = GetSettings();
+    const uint32_t oldW = st.width, oldH = st.height, oldOutW = OutputWidth(), oldOutH = OutputHeight(), oldAniso = st.anisotropy;
+    const bool oldFull = st.fullscreen;
+    change(st);
+    LoadOutputSize();
+    const bool sized = st.width != oldW || st.height != oldH, outputSized = OutputWidth() != oldOutW || OutputHeight() != oldOutH;
+    const uint32_t samples = SupportedMsaa(st.msaa);
+    if (outputSized || samples != g_msaa)
+    {
+        // Released with this frame, not now: until the frame start rebinds (SelectSurfaces), commands
+        // still name the old surfaces' views.
+        {
+            std::lock_guard surfaceLock(g_surfaceMutex);
+            for (auto* map : { &g_r.colorSurfaces, &g_r.depthSurfaces })
+            {
+                for (auto& [base, s] : *map)
+                    Frame().garbage.push_back(std::move(s.resource));
+                map->clear();
+            }
+        }
+        C().colorBase = C().depthBase = ~0u; // nothing bound: the frame start selects the new surfaces
+        C().color.Reset();
+        C().depth.Reset();
+        g_upscale.reset = true;
+    }
+    if (outputSized)
+    {
+        g_r.readback = CreateBuffer(UINT64((OutputWidth() * 4 + 255) & ~255u) * OutputHeight(), D3D12_HEAP_TYPE_READBACK, D3D12_RESOURCE_STATE_COPY_DEST);
+        g_upscale.depth.Reset();
+        g_upscale.motion.Reset();
+        g_upscale.renderWidth = g_upscale.renderHeight = 0;
+        Log("renderer: output %ux%u (live)", OutputWidth(), OutputHeight());
+    }
+    if (sized)
+    {
+        PresenterResize(st.width, st.height);
+        if (!st.fullscreen)
+            PresenterSetWindowSize(st.width, st.height);
+    }
+    if (st.fullscreen != oldFull) // after the size: a window takes it
+        PresenterSetFullscreen(st.fullscreen);
+    if (samples != g_msaa)
+    {
+        static std::vector<std::shared_ptr<PipelineEntry>> retired;
+        std::lock_guard shaderLock(g_shaderMutex);
+        g_rewarm.clear();
+        for (auto& [key, entry] : g_r.pipelines)
+        {
+            if (!(key.flags & 4))
+                g_rewarm.push_back(key);
+            retired.push_back(std::move(entry));
+        }
+        g_r.pipelines.clear();
+        g_msaa = samples;
+        g_pipelineGen++;
+        Log("renderer: anti-aliasing %ux (live), %zu pipelines to build again", g_msaa, g_rewarm.size());
+    }
+    if (st.anisotropy != oldAniso && g_filteredSamplerHandle.ptr)
+    {
+        // (the GPU is idle and no draws are recording: the descriptor can be written in place)
+        D3D12_SAMPLER_DESC sd = g_filteredSampler;
+        sd.Filter = st.anisotropy >= 2 ? D3D12_FILTER_ANISOTROPIC : D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+        sd.MaxAnisotropy = st.anisotropy >= 2 ? st.anisotropy : 0;
+        g_r.device->CreateSampler(&sd, g_filteredSamplerHandle);
+        Log("renderer: texture filtering %u (live)", st.anisotropy);
+    }
+    SaveSettings();
+}
+
+// After a new MSAA level: pipelines the game built before, started a few a frame while the pool has room, so what a
+// draw is waiting for never queues behind thousands of them.
+void RewarmPipelines()
+{
+    if (g_rewarm.empty() || g_pipelinesQueued.load(std::memory_order_relaxed) >= 8)
+        return;
+    std::lock_guard shaderLock(g_shaderMutex);
+    for (int started = 0; started < 8 && !g_rewarm.empty();)
+    {
+        const PipelineKey key = g_rewarm.back();
+        g_rewarm.pop_back();
+        if (g_r.pipelines.count(key))
+            continue;
+        const auto vs = g_r.shaders.find(key.vs), ps = g_r.shaders.find(key.ps);
+        if (vs == g_r.shaders.end() || ps == g_r.shaders.end() || vs->second->state.load() != CompiledShader::Ready || ps->second->state.load() != CompiledShader::Ready)
+            continue;
+        EnsurePipeline(*vs->second, *ps->second, key);
+        started++;
+    }
+}
+
 void BeginFrameIfNeeded()
 {
     if (g_r.listOpen)
@@ -1901,6 +2045,8 @@ void BeginFrameIfNeeded()
         g_gpuWaitSeconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - w0).count();
     }
     f.garbage.clear();
+    ApplySettingsChange();
+    RewarmPipelines();
     void FinishDepthWriteback(UINT frameIndex);
     void FinishPhotoWriteback(UINT frameIndex);
     FinishDepthWriteback(UINT(&f - g_r.frames)); // this slot's previous frame has completed
@@ -2348,7 +2494,8 @@ ID3D12Resource* VertexCacheBeginFrame()
     static LiveSwitch off("FM2_NO_VERTEX_CACHE");
     VertexArena& arena = g_vertexArena;
     g_vertexCacheThisFrame = false;
-    if (off || !GetSettings().vertexArena)
+    static const bool arenaSetting = GetSettings().vertexArena; // (read once: the options screen's change is for the next start)
+    if (off || !arenaSetting)
         return nullptr;
     // Where the write watch can't work (guest memory shared with the GPU can't be made read-only:
     // the main PC's 4070 and the FX's GTX 970), the arena would have to hash every buffer each frame
@@ -3606,6 +3753,8 @@ struct PipelinePool
     }
 };
 
+std::atomic<int> g_pipelinesQueued{ 0 };
+
 std::shared_ptr<PipelineEntry> EnsurePipeline(const CompiledShader& vs, const CompiledShader& ps, const PipelineKey& key)
 {
     if (auto it = g_r.pipelines.find(key); it != g_r.pipelines.end())
@@ -3703,6 +3852,7 @@ std::shared_ptr<PipelineEntry> EnsurePipeline(const CompiledShader& vs, const Co
     char label[64];
     snprintf(label, sizeof(label), "pipeline %08llx/%08llx", (unsigned long long)(key.vs >> 32), (unsigned long long)(key.ps >> 32));
     g_stats.Begin(label);
+    g_pipelinesQueued++;
     pool.Push([entry, pd, vsKeep = vs.code, psKeep = ps.code, key]() mutable {
         const auto createStart = std::chrono::steady_clock::now();
         bool hit = false;
@@ -3715,6 +3865,7 @@ std::shared_ptr<PipelineEntry> EnsurePipeline(const CompiledShader& vs, const Co
         (hit ? g_stats.pipelinesLoaded : g_stats.pipelinesBuilt)++;
         entry->state.store(FAILED(hr) ? 2 : 1, std::memory_order_release);
         g_stats.End(!hit);
+        g_pipelinesQueued--;
     });
     g_pipelinesCreated++;
     g_frameEvents.pipelines++;
@@ -3807,7 +3958,13 @@ ID3D12PipelineState* GetPipeline(const CompiledShader& vs, const CompiledShader&
     PipelineKey key = MakePipelineKey(C().vsHash, C().psHash, depthOnly, cullable);
     if (motion)
         key.flags |= 4;
-    thread_local std::unordered_map<PipelineKey, ID3D12PipelineState*, PipelineKeyHash> ready; // (pipelines are never removed)
+    thread_local std::unordered_map<PipelineKey, ID3D12PipelineState*, PipelineKeyHash> ready; // (cleared when the pipelines are replaced)
+    thread_local uint32_t readyGen = 0;
+    if (const uint32_t gen = g_pipelineGen.load(std::memory_order_acquire); gen != readyGen)
+    {
+        readyGen = gen;
+        ready.clear();
+    }
     if (auto r = ready.find(key); r != ready.end())
         return r->second;
     std::shared_ptr<PipelineEntry> entry;
@@ -5115,9 +5272,9 @@ void BlitResolve(bool depth, uint32_t base, uint32_t width, uint32_t height, DXG
     C().list->ResourceBarrier(barriers, b);
 
     const bool ms = g_msaa > 1;
-    ID3D12PipelineState* pso = depth ? (ms ? g_r.depthBlitMs.Get() : g_r.depthBlit.Get())
-        : format == DXGI_FORMAT_R8G8B8A8_UNORM ? (ms ? g_r.colorBlitMs8.Get() : g_r.colorBlit8.Get())
-        : (ms ? g_r.colorBlitMs16.Get() : g_r.colorBlit16.Get());
+    ID3D12PipelineState* pso = depth ? (ms ? g_r.depthBlitMs[g_msaa].Get() : g_r.depthBlit.Get())
+        : format == DXGI_FORMAT_R8G8B8A8_UNORM ? (ms ? g_r.colorBlitMs8[g_msaa].Get() : g_r.colorBlit8.Get())
+        : (ms ? g_r.colorBlitMs16[g_msaa].Get() : g_r.colorBlit16.Get());
     C().list->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
     C().list->SetGraphicsRootSignature(g_r.blitRootSignature.Get());
     C().list->SetPipelineState(pso);
@@ -5134,7 +5291,7 @@ void BlitResolve(bool depth, uint32_t base, uint32_t width, uint32_t height, DXG
     C().list->DrawInstanced(3, 1, 0, 0);
 
     // Depth: also the D24S8 words as 8888 (ResolvedTexture::bytes), while the depth buffer is readable.
-    ID3D12PipelineState* bytesPso = ms ? g_r.depthBytesBlitMs.Get() : g_r.depthBytesBlit.Get();
+    ID3D12PipelineState* bytesPso = ms ? g_r.depthBytesBlitMs[g_msaa].Get() : g_r.depthBytesBlit.Get();
     if (depth && bytesPso && f.descriptorsUsed + 2 <= kDescriptorsPerFrame)
     {
         if (!dest.bytes)
@@ -10113,4 +10270,11 @@ std::string RendererDrawStats()
         out += buf;
     }
     return out;
+}
+
+// The graphics options screen (hooks/graphics_menu.cpp): `change` edits the settings at the next frame start.
+void RendererChangeSettings(std::function<void(Settings&)> change)
+{
+    std::lock_guard lock(g_settingsChangeMutex);
+    g_settingsChange = std::move(change);
 }

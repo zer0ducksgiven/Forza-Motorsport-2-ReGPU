@@ -15,6 +15,9 @@
 #include "input/wheel.h"
 #include "settings.h"
 
+bool GraphicsMenuCommand(const char* text, size_t len); // hooks/graphics_menu.cpp
+std::string GraphicsMenuLuaSource(const char* text, uint32_t size);
+
 PPC_FUNC_IMPL(__imp__sub_824B91F0);
 
 // luaD_throw
@@ -27,7 +30,8 @@ PPC_FUNC(sub_824B91F0)
     {
         const uint32_t str = __builtin_bswap32(*GuestPtr<uint32_t>(top - 16));
         const uint32_t len = __builtin_bswap32(*GuestPtr<uint32_t>(str + 12));
-        Log("lua: error %u: %.*s", errcode, int(len < 1024 ? len : 1024), GuestPtr<const char>(str + 16));
+        if (!GraphicsMenuCommand(GuestPtr<const char>(str + 16), len))
+            Log("lua: error %u: %.*s", errcode, int(len < 1024 ? len : 1024), GuestPtr<const char>(str + 16));
     }
     else
         Log("lua: error %u (value type %u)", errcode, tag);
@@ -98,6 +102,8 @@ static std::string ModLuaSource(const char* text, uint32_t size)
         out = std::move(music);
     if (std::string mix = out.empty() ? CarSoundLuaSource(text, size) : CarSoundLuaSource(out.data(), uint32_t(out.size())); !mix.empty())
         out = std::move(mix);
+    if (std::string gfx = out.empty() ? GraphicsMenuLuaSource(text, size) : GraphicsMenuLuaSource(out.data(), uint32_t(out.size())); !gfx.empty())
+        out = std::move(gfx);
     return out;
 }
 

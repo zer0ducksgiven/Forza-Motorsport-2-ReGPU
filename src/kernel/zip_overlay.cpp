@@ -119,6 +119,154 @@ bool PatchForzaFlow(std::vector<uint8_t>& data)
     return true;
 }
 
+// ---- built-in: Options > Graphics (hooks/graphics_menu.cpp) -----------------------------------------------
+//
+// A category after the controller's: its row is one more SELECTed onto the flow's own category queries, and its scene
+// is a copy of the HUD options scene (scrolling spinner rows). The copy's rows are bound to Lua data instead of the
+// profile. Each replacement keeps the string's length (the scene's strings are read back by position), the SQL's
+// padded with spaces.
+// (Text in the flow's <strings> would be ignored: the flow's strings are read from the string tables.)
+const char kGraphicsQuery[] = R"lua(
+			UI.Strings.IDS_Graphics = "Graphics"
+			UI.Strings.IDS_GraphicsOptions_Help = "Graphics Settings."
+			UI.Strings.IDS_Help_Resolution = "The size the game renders at: your display's own modes from 1280 x 720 up."
+			UI.Strings.IDS_Help_Aspect = "Forces a picture shape. Auto follows the resolution. Wider than 16:9 is experimental: the HUD stays in the centre and some objects at the sides can pop in late."
+			UI.Strings.IDS_Help_DisplayMode = "Windowed is a normal window. Fullscreen fills the display without changing its mode."
+			UI.Strings.IDS_Help_Msaa = "Smooths the edges of objects as they are drawn. Each step costs GPU time; 4x is a good balance. A change builds the game's pipelines again, so the next few minutes can stutter."
+			UI.Strings.IDS_Help_Smaa = "Smooths every edge in the finished picture, including fences, trees and crowds that MSAA misses. Works with any MSAA level."
+			UI.Strings.IDS_Help_Anisotropy = "Keeps road and ground textures sharp when seen at a low angle, ahead of the car."
+			UI.Strings.IDS_Help_RenderScale = "Renders the game, HUD included, at fewer pixels and upscales it with AMD FSR 1. Lower is faster on weak graphics cards."
+			UI.Strings.IDS_Help_Sharpening = "AMD CAS-style sharpening on the final picture, at any render scale. Almost free."
+			UI.Strings.IDS_Help_MaxFps = "The frame rate cap. The game's physics run at this rate too, so very high caps need a fast CPU."
+			UI.Strings.IDS_Help_Vsync = "Waits for the display's refresh: no tearing, slightly more input lag. The refresh rate also limits the frame rate."
+			UI.Strings.IDS_Help_LowPerformance = "For older CPUs. Turns off renderer optimisations that speed up modern PCs but slow down old ones."
+			UI.Strings.IDS_Help_VertexArena = "Keeps the game's large vertex buffers in video memory. Leave it on unless a developer tells you otherwise. Takes effect the next time the game starts."
+			UI.Strings.IDS_Help_HideShaderOverlay = "The box in the top left that shows shaders being compiled. Hiding it doesn't stop the compiling."
+			FM2OptionCategories = function(sql)
+				return DB:execute("SELECT * FROM (" .. sql .. " UNION ALL SELECT 99, 'GraphicsOptions', 'Graphics', 4, 99) ORDER BY CASE WHEN CatId=99 THEN 6.5 ELSE CatId END")
+			end
+)lua";
+
+const char kGraphicsChoice[] = R"xml(
+		<choice event="GraphicsOptions">
+            <scene path="GAME:\Media\UI\Scenes\P_Scenes\P_OPT\P_OPT_GFXOptions.xgf">
+				SceneTitle = UI.Strings.IDS_Graphics
+				--FM2GRAPHICS
+				HelpButtonTexts =
+				{
+					B = "{colour='255 255 255 255'}[UI.Strings.IDS_Back]",
+				}
+            </scene>
+			<logic>
+				UI:fireControlEvent("PreviousCancel")
+			</logic>
+			<GoToStart/>
+		</choice>
+
+		)xml";
+
+bool PatchOptionsFlow(std::vector<uint8_t>& data)
+{
+    std::string s(data.begin(), data.end());
+    if (s.find("GraphicsOptions") != std::string::npos)
+        return false;
+    const std::string query = "OptionCategories = DB:execute(";
+    size_t count = 0;
+    for (size_t at = s.find(query); at != std::string::npos; at = s.find(query, at + 1), count++)
+        s.replace(at, query.size(), "OptionCategories = FM2OptionCategories(");
+    const std::string title = "UI.Strings.SceneTitle = UI:getLocDisplayString(";
+    const size_t titleAt = s.find(title), titleEnd = titleAt == std::string::npos ? titleAt : s.find_first_of("\r\n", titleAt);
+    const size_t enter = s.find("UI.Flow.SceneTitle = \"[UI.Strings.IDS_Options]\"");
+    if (!count || titleEnd == std::string::npos || enter == std::string::npos ||
+        s.find("<choice event=\"HUDOptions\">") == std::string::npos)
+    {
+        Log("overlay: the Options flow isn't as expected: no Graphics options");
+        return false;
+    }
+    s.insert(titleEnd, " end");
+    s.insert(titleAt, "if UI.Flow.OptionCategory == \"GraphicsOptions\" then UI.Strings.SceneTitle = UI.Strings.IDS_Graphics else ");
+    s.insert(s.find("<choice event=\"HUDOptions\">"), kGraphicsChoice);
+    s.insert(enter, kGraphicsQuery);
+    data.assign(s.begin(), s.end());
+    return true;
+}
+
+// Same-length replacement of every occurrence (NUL-delimited strings in the scene's table); false if there is none.
+bool ReplaceSame(std::vector<uint8_t>& d, std::string from, std::string to)
+{
+    if (to.size() > from.size())
+        return false;
+    to.resize(from.size(), ' ');
+    bool found = false;
+    for (auto it = std::search(d.begin(), d.end(), from.begin(), from.end()); it != d.end(); it = std::search(it + 1, d.end(), from.begin(), from.end()))
+    {
+        std::copy(to.begin(), to.end(), it);
+        found = true;
+    }
+    return found;
+}
+
+constexpr const char* kGraphicsScene = "Scenes/P_Scenes/P_OPT/P_OPT_GFXOptions.xgf";
+constexpr const char* kGraphicsBehavior = "Behaviors/Components/P_Comp/P_OPT_GFXOptionsBehavior.lua";
+
+bool MakeGraphicsScene(std::vector<uint8_t>& d)
+{
+    return ReplaceSame(d, "ProfileManager.activePlayerProfile.profileOptionsPropBag.Main", "FM2GraphicsOptionValuesOfTheGraphicsScreenInTheOptionsMenu___") &&
+        ReplaceSame(d, "SELECT * FROM GameOptionValues, GameOptionMap WHERE ValueId=GameOptionValues.Id AND OptionId=[Table.Id] ORDER BY Value", "[Table.ValuesSql]") &&
+        ReplaceSame(d, "P_OPT_HUDOptionsBehavior", "P_OPT_GFXOptionsBehavior");
+}
+
+// The category's icon: the multiscreen icon (three monitors) with only the middle monitor left, its other blocks made
+// transparent in place. The texture is 500x400 DXT5 (tools/xds.py has the same tiling); DXT5's first 8 bytes are alpha.
+constexpr const char* kGraphicsIcon = "UI/textures/P_Map/P_OPT/P_OPT_ICON_GraphicsOptions.xds";
+
+bool MakeGraphicsIcon(std::vector<uint8_t>& icon)
+{
+    if (!ReadZipMember(GameDir() / "Media" / "UI" / "Textures.zip", "P_Map/P_OPT/P_OPT_ICON_multiscreen.xds", icon) || icon.size() < 52)
+        return false;
+    constexpr uint32_t kBlocksW = 125, kBlocksH = 100, kPitch = 128, kLog = 4;
+    for (uint32_t y = 0; y < kBlocksH; y++)
+    {
+        const uint32_t macroY = ((y >> 5) * (kPitch >> 5)) << (kLog + 7), microY = ((y & 6) << 2) << kLog;
+        const uint32_t row = macroY + ((microY & ~0xFu) << 1) + (microY & 0xF) + ((y & 8) << (3 + kLog)) + ((y & 1) << 4);
+        for (uint32_t x = 0; x < kBlocksW; x++)
+        {
+            if (x >= 28 && x < 95)
+                continue; // the middle monitor
+            const uint32_t macroX = (x >> 5) << (kLog + 7), microX = (x & 7) << kLog;
+            const uint32_t o = row + macroX + ((microX & ~0xFu) << 1) + (microX & 0xF);
+            const size_t at = 52 + size_t(((o & ~0x1FFu) << 3) + ((o & 0x1C0) << 2) + (o & 0x3F) + ((y & 16) << 7) + ((((y & 8) >> 2) + (x >> 3) & 3) << 6));
+            if (at + 8 <= icon.size())
+                std::fill(icon.begin() + ptrdiff_t(at), icon.begin() + ptrdiff_t(at + 8), uint8_t(0));
+        }
+    }
+    return true;
+}
+
+// The HUD options' behaviour (compiled; this is its source) without its All Off, reporting what was chosen.
+const char kGraphicsBehaviorLua[] = R"lua(
+self.onInitialize = function(self)
+    owner = self:getOwner()
+    owner.refreshComponent = function(self)
+        self.mInput = self:getObjectByPath(self.mInputPath, true)
+        self.ScrollingList.mInput = self.mInput
+        self:registerForEvent(self.mInput, "cancel_press", self.onExit)
+        self.onUpdate = nil
+    end
+    owner.onSave = function(self)
+        Presentation.scene["Anark Lua Library"]:Apply()
+        local v = FM2GraphicsOptionValuesOfTheGraphicsScreenInTheOptionsMenu___
+        pcall(error, "FM2GFX " .. v.Resolution .. " " .. v.Aspect .. " " .. v.DisplayMode .. " " .. v.Msaa .. " " .. v.Smaa .. " " .. v.Anisotropy .. " " ..
+            v.RenderScale .. " " .. v.Sharpening .. " " .. v.MaxFps .. " " .. v.Vsync .. " " .. v.LowPerformance .. " " .. v.VertexArena .. " " .. v.HideShaderOverlay, 0)
+    end
+    owner.onExit = function(self)
+        self:onSave()
+        UI:flowProcess()
+    end
+    owner.onUpdate = owner.refreshComponent
+end
+)lua";
+
 // The X button's label word, and "Quit" in the same language (no longer than it).
 struct Word
 {
@@ -222,6 +370,8 @@ bool BuiltIn(const std::string& zip, const std::string& member, std::vector<uint
         return ScaleCarSound(zip, data);
     if (zip.size() >= 9 && zip.compare(zip.size() - 9, 9, "media.zip") == 0)
     {
+        if (member == "ui/flows/options.xml")
+            return PatchOptionsFlow(data);
         if (member == "ui/behaviors/components/p_comp/p_mai/p_mai_footer.lua")
         {
             data.assign(kFooter, kFooter + sizeof(kFooter) - 1);
@@ -428,9 +578,12 @@ bool Rewrite(const std::string& zipName, const std::vector<uint8_t>& zip, const 
         modByMember[Lower(m.member)] = &m;
     // Members to inflate and change: by name, from one pass over the archive.
     std::map<std::string, std::vector<uint8_t>> inflated;
+    std::vector<uint8_t> graphicsScene;
     ForEachZipMember(zip, "", [&](const std::string& n, const std::vector<uint8_t>& d) {
         std::vector<uint8_t> copy = d;
         const std::string l = Lower(n);
+        if (zipName == "media/ui.zip" && l == "scenes/p_scenes/p_opt/p_opt_hudoptions.xgf")
+            graphicsScene = d;
         if (modByMember.count(l) || BuiltIn(zipName, l, copy))
             inflated.emplace(l, std::move(copy));
     });
@@ -468,6 +621,17 @@ bool Rewrite(const std::string& zipName, const std::vector<uint8_t>& zip, const 
         else
             w.Add(name, method, time, date, crc, &zip[data], csize, usize);
     }
+    if (!graphicsScene.empty() && MakeGraphicsScene(graphicsScene))
+    {
+        w.Stored(kGraphicsScene, graphicsScene);
+        w.Stored(kGraphicsBehavior, std::vector<uint8_t>(kGraphicsBehaviorLua, kGraphicsBehaviorLua + sizeof(kGraphicsBehaviorLua) - 1));
+        changed += 2;
+    }
+    if (std::vector<uint8_t> icon; zipName == "media.zip" && MakeGraphicsIcon(icon))
+    {
+        w.Stored(kGraphicsIcon, icon);
+        changed++;
+    }
     for (const auto& [l, m] : modByMember) // new files from mods
     {
         std::ifstream in(m->file, std::ios::binary);
@@ -482,7 +646,7 @@ bool Rewrite(const std::string& zipName, const std::vector<uint8_t>& zip, const 
 std::string Stamp(const fs::path& zip, const std::vector<ModFile>& mods)
 {
     std::error_code ec;
-    std::string s = "overlay 3 " + std::to_string(fs::file_size(zip, ec)) + " " + std::to_string(fs::last_write_time(zip, ec).time_since_epoch().count()) +
+    std::string s = "overlay 5 " + std::to_string(fs::file_size(zip, ec)) + " " + std::to_string(fs::last_write_time(zip, ec).time_since_epoch().count()) +
                     " exhaust " + std::to_string(ExhaustScale());
     for (const ModFile& m : mods)
         s += "\n" + m.file.string() + " " + std::to_string(fs::file_size(m.file, ec)) + " " + std::to_string(fs::last_write_time(m.file, ec).time_since_epoch().count());

@@ -39,5 +39,11 @@ ID3D12CommandQueue* RenderQueue();
 bool PresenterRecordCopy(ID3D12GraphicsCommandList* list, ID3D12Resource* src, ID3D12Resource* overlay = nullptr, uint32_t overlayW = 0, uint32_t overlayH = 0,
                          ID3D12Resource* toast = nullptr, uint32_t toastW = 0, uint32_t toastH = 0, float toastRise = 0.0f);
 void PresenterPresent();
+// The graphics options, while the game runs (the renderer's thread, with the GPU idle): the swap chain's size, the
+// window's client size (shrunk to fit the screen; maximised or fullscreen: unchanged), and borderless fullscreen
+// on the window's display or a window again.
+void PresenterResize(uint32_t width, uint32_t height);
+void PresenterSetWindowSize(uint32_t width, uint32_t height);
+void PresenterSetFullscreen(bool on);
 // Called by the renderer: the presenter stops drawing its own frames.
 void PresenterUseRenderer();

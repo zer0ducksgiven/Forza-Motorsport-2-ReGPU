@@ -32,6 +32,8 @@ constexpr UINT kWidth = 1280, kHeight = 720;
 struct Presenter
 {
     HWND window = nullptr;
+    HWND surface = nullptr; // the child window holding the swap chain
+    std::atomic<bool> fullscreen{ false };
     ComPtr<ID3D12Device> device;
     ComPtr<ID3D12CommandQueue> queue;
     ComPtr<IDXGISwapChain3> swapChain;
@@ -69,8 +71,12 @@ namespace
 std::atomic<bool> g_cursorHidden{ false };
 constexpr UINT kHideCursor = WM_APP + 1;
 
+void LayoutSurface();
+
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
+    if (msg == WM_SIZE && hwnd == g_p.window)
+        LayoutSurface();
     // The cursor hides after controller use (PresenterControllerUsed) and comes back when the mouse moves.
     if (msg == kHideCursor || (msg == WM_SETCURSOR && LOWORD(lp) == HTCLIENT && g_cursorHidden))
     {
@@ -95,6 +101,46 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         DealerOnChar(wchar_t(wp));
     }
     return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+// The swap chain's child window in its parent: fullscreen, the largest rectangle of the output's aspect ratio,
+// centred (the parent's black background shows around it, and other windows cannot cover the bars); windowed, the
+// whole client area (the picture stretches with the window).
+void LayoutSurface()
+{
+    if (!g_p.surface)
+        return;
+    RECT c{};
+    GetClientRect(g_p.window, &c);
+    LONG cw = c.right, ch = c.bottom, w = cw, h = ch;
+    const Settings& st = GetSettings();
+    if (g_p.fullscreen && st.width && st.height)
+    {
+        if (int64_t(cw) * st.height > int64_t(ch) * st.width)
+            w = LONG(int64_t(ch) * st.width / st.height);
+        else
+            h = LONG(int64_t(cw) * st.height / st.width);
+    }
+    const bool own = GetWindowThreadProcessId(g_p.surface, nullptr) == GetCurrentThreadId();
+    SetWindowPos(g_p.surface, nullptr, (cw - w) / 2, (ch - h) / 2, w, h, SWP_NOZORDER | SWP_NOACTIVATE | (own ? 0u : UINT(SWP_ASYNCWINDOWPOS)));
+}
+
+// The window for a client area of this size, shrunk (aspect kept) to fit the screen.
+SIZE WindowSizeFor(uint32_t width, uint32_t height)
+{
+    RECT work{};
+    SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
+    LONG cw = LONG(width), ch = LONG(height);
+    const LONG maxW = (work.right - work.left) * 9 / 10, maxH = (work.bottom - work.top) * 9 / 10;
+    if (cw > maxW || ch > maxH)
+    {
+        const double f = std::min(double(maxW) / cw, double(maxH) / ch);
+        cw = LONG(cw * f);
+        ch = LONG(ch * f);
+    }
+    RECT r{ 0, 0, cw, ch };
+    AdjustWindowRect(&r, WS_OVERLAPPEDWINDOW, FALSE);
+    return { r.right - r.left, r.bottom - r.top };
 }
 
 void Check(HRESULT hr, const char* what)
@@ -166,39 +212,23 @@ void CreateWindowAndDevice()
     // primary display. Either way the swap chain stretches to the window.
     const Settings& settings = GetSettings();
     const uint32_t outW = settings.width, outH = settings.height;
-    HWND surface = nullptr;
     if (settings.fullscreen)
     {
-        // Borderless window over the whole display; its black background shows around the picture.
-        // The picture (the swap chain) is a child window: the largest rectangle of the chosen
-        // aspect ratio, centred. Other windows cannot cover the black bars this way.
+        // Borderless window over the whole display; the picture is its child window (LayoutSurface).
         const int sw = GetSystemMetrics(SM_CXSCREEN), sh = GetSystemMetrics(SM_CYSCREEN);
+        g_p.fullscreen = true;
         g_p.window = CreateWindowExW(0, L"fm2", L"Forza Motorsport 2", WS_POPUP | WS_VISIBLE, 0, 0, sw, sh, nullptr, nullptr, wc.hInstance, nullptr);
-        LONG w = sw, h = sh;
-        if (int64_t(sw) * outH > int64_t(sh) * outW)
-            w = LONG(int64_t(sh) * outW / outH);
-        else
-            h = LONG(int64_t(sw) * outH / outW);
-        surface = CreateWindowExW(0, L"fm2", nullptr, WS_CHILD | WS_VISIBLE, (sw - w) / 2, (sh - h) / 2, w, h,
-            g_p.window, nullptr, wc.hInstance, nullptr);
     }
     else
     {
-        RECT work{};
-        SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
-        LONG cw = LONG(outW), ch = LONG(outH);
-        const LONG maxW = (work.right - work.left) * 9 / 10, maxH = (work.bottom - work.top) * 9 / 10;
-        if (cw > maxW || ch > maxH)
-        {
-            const double f = std::min(double(maxW) / cw, double(maxH) / ch);
-            cw = LONG(cw * f);
-            ch = LONG(ch * f);
-        }
-        RECT r{ 0, 0, cw, ch };
-        AdjustWindowRect(&r, WS_OVERLAPPEDWINDOW, FALSE);
+        SIZE size = WindowSizeFor(outW, outH);
         g_p.window = CreateWindowW(L"fm2", L"Forza Motorsport 2", WS_OVERLAPPEDWINDOW | WS_VISIBLE, CW_USEDEFAULT, CW_USEDEFAULT,
-            r.right - r.left, r.bottom - r.top, nullptr, nullptr, wc.hInstance, nullptr);
+            size.cx, size.cy, nullptr, nullptr, wc.hInstance, nullptr);
     }
+    // Both modes present into a child window, so the graphics options can switch between them while the game
+    // runs without a new swap chain.
+    g_p.surface = CreateWindowExW(0, L"fm2", nullptr, WS_CHILD | WS_VISIBLE | WS_DISABLED, 0, 0, 1, 1, g_p.window, nullptr, wc.hInstance, nullptr);
+    LayoutSurface();
 
     ComPtr<IDXGIFactory4> factory;
     Check(CreateDXGIFactory2(0, IID_PPV_ARGS(&factory)), "CreateDXGIFactory2");
@@ -217,7 +247,7 @@ void CreateWindowAndDevice()
     sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
     sd.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
     ComPtr<IDXGISwapChain1> sc1;
-    Check(factory->CreateSwapChainForHwnd(g_p.queue.Get(), surface ? surface : g_p.window, &sd, nullptr, nullptr, &sc1), "CreateSwapChainForHwnd");
+    Check(factory->CreateSwapChainForHwnd(g_p.queue.Get(), g_p.surface, &sd, nullptr, nullptr, &sc1), "CreateSwapChainForHwnd");
     Check(sc1.As(&g_p.swapChain), "IDXGISwapChain3");
     factory->MakeWindowAssociation(g_p.window, DXGI_MWA_NO_ALT_ENTER);
 
@@ -571,6 +601,61 @@ bool PresenterRecordCopy(ID3D12GraphicsCommandList* list, ID3D12Resource* src, I
     std::swap(b.Transition.StateBefore, b.Transition.StateAfter);
     list->ResourceBarrier(1, &b);
     return true;
+}
+
+void PresenterResize(uint32_t width, uint32_t height)
+{
+    if (!g_p.swapChain)
+        return;
+    for (auto& b : g_p.backBuffers)
+        b.Reset();
+    if (FAILED(g_p.swapChain->ResizeBuffers(kBuffers, width, height, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING)))
+    {
+        Log("presenter: swap chain resize to %ux%u failed", width, height);
+        return;
+    }
+    for (UINT i = 0; i < kBuffers; i++)
+    {
+        Check(g_p.swapChain->GetBuffer(i, IID_PPV_ARGS(&g_p.backBuffers[i])), "GetBuffer");
+        D3D12_CPU_DESCRIPTOR_HANDLE h = g_p.rtvHeap->GetCPUDescriptorHandleForHeapStart();
+        h.ptr += SIZE_T(i) * g_p.rtvStride;
+        g_p.device->CreateRenderTargetView(g_p.backBuffers[i].Get(), nullptr, h);
+    }
+    Log("presenter: swap chain %ux%u", width, height);
+    LayoutSurface(); // (fullscreen: the bars follow the new aspect ratio)
+}
+
+void PresenterSetWindowSize(uint32_t width, uint32_t height)
+{
+    if (!g_p.window || g_p.fullscreen || IsZoomed(g_p.window))
+        return;
+    const SIZE size = WindowSizeFor(width, height);
+    SetWindowPos(g_p.window, nullptr, 0, 0, size.cx, size.cy, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS);
+    Log("presenter: window %ldx%ld", size.cx, size.cy);
+}
+
+void PresenterSetFullscreen(bool on)
+{
+    if (!g_p.window || g_p.fullscreen == on)
+        return;
+    g_p.fullscreen = on;
+    if (on)
+    {
+        MONITORINFO mi{ sizeof(mi) };
+        GetMonitorInfoW(MonitorFromWindow(g_p.window, MONITOR_DEFAULTTONEAREST), &mi);
+        if (IsZoomed(g_p.window))
+            ShowWindowAsync(g_p.window, SW_RESTORE);
+        SetWindowLongW(g_p.window, GWL_STYLE, WS_POPUP | WS_VISIBLE);
+        SetWindowPos(g_p.window, HWND_TOP, mi.rcMonitor.left, mi.rcMonitor.top, mi.rcMonitor.right - mi.rcMonitor.left,
+            mi.rcMonitor.bottom - mi.rcMonitor.top, SWP_FRAMECHANGED | SWP_ASYNCWINDOWPOS);
+    }
+    else
+    {
+        SetWindowLongW(g_p.window, GWL_STYLE, WS_OVERLAPPEDWINDOW | WS_VISIBLE);
+        const SIZE size = WindowSizeFor(GetSettings().width, GetSettings().height);
+        SetWindowPos(g_p.window, nullptr, 40, 40, size.cx, size.cy, SWP_NOZORDER | SWP_FRAMECHANGED | SWP_ASYNCWINDOWPOS);
+    }
+    Log("presenter: %s (live)", on ? "fullscreen" : "windowed");
 }
 
 void PresenterPresent()

@@ -26,6 +26,12 @@ void BenchmarkWriteReport(const char* path);
 // True while FM2_TRACE_DRAWS's frame is being recorded.
 bool RendererTracing();
 
+// The graphics options screen: `change` edits the settings at the next frame start, with the GPU idle; the resolution,
+// aspect ratio, display mode, MSAA and filtering then follow them, and they are saved.
+#include <functional>
+struct Settings;
+void RendererChangeSettings(std::function<void(Settings&)> change);
+
 // Parallel draw translation (gpu.cpp cuts the draw stream between resolves into pieces).
 #include <functional>
 struct RendererTile
