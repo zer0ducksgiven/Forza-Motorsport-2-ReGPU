@@ -19,6 +19,7 @@
 #include <string_view>
 #include <thread>
 #include <vector>
+#include <cwctype>
 
 #include <windows.h>
 #include <xaudio2.h>
@@ -245,9 +246,9 @@ std::vector<std::filesystem::path> Playlist()
     for (auto it = std::filesystem::recursive_directory_iterator(dir, ec); !ec && it != std::filesystem::recursive_directory_iterator();
          it.increment(ec))
     {
-        auto ext = it->path().extension().string();
-        std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return char(tolower(c)); });
-        if (it->is_regular_file(ec) && ext == ".mp3")
+        auto ext = it->path().extension().wstring(); // .string() throws on a name the code page can't hold (GitHub #27)
+        std::transform(ext.begin(), ext.end(), ext.begin(), [](wchar_t c) { return wchar_t(towlower(c)); });
+        if (it->is_regular_file(ec) && ext == L".mp3")
             tracks.push_back(it->path());
     }
     std::shuffle(tracks.begin(), tracks.end(), std::mt19937(std::random_device{}()));
@@ -336,13 +337,13 @@ void Run()
                 track = std::make_unique<Track>();
                 if (!track->Open(path))
                 {
-                    Log("music: can't play %s", path.filename().string().c_str());
+                    Log("music: can't play %s", reinterpret_cast<const char*>(path.filename().u8string().c_str()));
                     track.reset();
                     failed++;
                     continue;
                 }
                 failed = 0;
-                Log("music: %s", path.filename().string().c_str());
+                Log("music: %s", reinterpret_cast<const char*>(path.filename().u8string().c_str()));
                 {
                     std::lock_guard lock(g_toastMutex);
                     g_title = track->title;

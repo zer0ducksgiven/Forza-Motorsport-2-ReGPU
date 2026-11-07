@@ -105,7 +105,7 @@ public sealed class CareerMod
         var work = Path.Combine(Path.GetTempPath(), "fm2-" + Id.ToLowerInvariant());
         if (Directory.Exists(work)) Directory.Delete(work, true);
         var psi = new ProcessStartInfo(Python) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
-        foreach (var a in new[] { "-I", Script, GameDb, StringTables, work, "--rotation", rotation.ToString(), "--seed", seed.ToString(),
+        foreach (var a in new[] { "-X", "utf8", "-I", Script, GameDb, StringTables, work, "--rotation", rotation.ToString(), "--seed", seed.ToString(),
                                   "--mode", _mode, "--install", zips })
             psi.ArgumentList.Add(a);
         using var p = Process.Start(psi) ?? throw new InvalidOperationException("Python didn't start.");
