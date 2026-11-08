@@ -226,8 +226,9 @@ void CreateWindowAndDevice()
             size.cx, size.cy, nullptr, nullptr, wc.hInstance, nullptr);
     }
     // Both modes present into a child window, so the graphics options can switch between them while the game
-    // runs without a new swap chain.
-    g_p.surface = CreateWindowExW(0, L"fm2", nullptr, WS_CHILD | WS_VISIBLE | WS_DISABLED, 0, 0, 1, 1, g_p.window, nullptr, wc.hInstance, nullptr);
+    // runs without a new swap chain. Not disabled, like 0.10.9's fullscreen child: a black
+    // fullscreen picture while focused on an AMD card started with the disabled one (report #59).
+    g_p.surface = CreateWindowExW(0, L"fm2", nullptr, WS_CHILD | WS_VISIBLE, 0, 0, 1, 1, g_p.window, nullptr, wc.hInstance, nullptr);
     LayoutSurface();
 
     ComPtr<IDXGIFactory4> factory;
