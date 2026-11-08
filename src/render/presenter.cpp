@@ -225,11 +225,18 @@ void CreateWindowAndDevice()
         g_p.window = CreateWindowW(L"fm2", L"Forza Motorsport 2", WS_OVERLAPPEDWINDOW | WS_VISIBLE, CW_USEDEFAULT, CW_USEDEFAULT,
             size.cx, size.cy, nullptr, nullptr, wc.hInstance, nullptr);
     }
-    // Both modes present into a child window, so the graphics options can switch between them while the game
-    // runs without a new swap chain. Not disabled, like 0.10.9's fullscreen child: a black
-    // fullscreen picture while focused on an AMD card started with the disabled one (report #59).
-    g_p.surface = CreateWindowExW(0, L"fm2", nullptr, WS_CHILD | WS_VISIBLE, 0, 0, 1, 1, g_p.window, nullptr, wc.hInstance, nullptr);
-    LayoutSurface();
+    // The swap chain goes on the window itself, except fullscreen at an aspect ratio other than the display's:
+    // there the picture is a child window between black bars (LayoutSurface). A child covering the whole
+    // display showed black while focused on an AMD card (report #59). Switching live into fullscreen at another
+    // aspect ratio stretches the picture until the next start.
+    RECT client{};
+    GetClientRect(g_p.window, &client);
+    if (g_p.fullscreen && int64_t(client.right) * outH != int64_t(client.bottom) * outW)
+    {
+        g_p.surface = CreateWindowExW(0, L"fm2", nullptr, WS_CHILD | WS_VISIBLE, 0, 0, 1, 1, g_p.window, nullptr, wc.hInstance, nullptr);
+        LayoutSurface();
+    }
+    Log("presenter: picture in %s", g_p.surface ? "a child window (black bars)" : "the game window");
 
     ComPtr<IDXGIFactory4> factory;
     Check(CreateDXGIFactory2(0, IID_PPV_ARGS(&factory)), "CreateDXGIFactory2");
@@ -248,7 +255,7 @@ void CreateWindowAndDevice()
     sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
     sd.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
     ComPtr<IDXGISwapChain1> sc1;
-    Check(factory->CreateSwapChainForHwnd(g_p.queue.Get(), g_p.surface, &sd, nullptr, nullptr, &sc1), "CreateSwapChainForHwnd");
+    Check(factory->CreateSwapChainForHwnd(g_p.queue.Get(), g_p.surface ? g_p.surface : g_p.window, &sd, nullptr, nullptr, &sc1), "CreateSwapChainForHwnd");
     Check(sc1.As(&g_p.swapChain), "IDXGISwapChain3");
     factory->MakeWindowAssociation(g_p.window, DXGI_MWA_NO_ALT_ENTER);
 
