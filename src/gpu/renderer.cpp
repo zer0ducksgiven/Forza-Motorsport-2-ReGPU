@@ -3997,6 +3997,8 @@ ID3D12PipelineState* GetPipeline(const CompiledShader& vs, const CompiledShader&
     return pso;
 }
 
+const ResolvedTexture* ResolvedFor(const TextureFetch& fetch);
+
 // Cube textures: six faces, each a padded 2D slice. Faces the title rendered
 // and resolved (dynamic reflections) are copied from their host textures every
 // frame; static faces are decoded once and re-decoded when their data changes.
@@ -4018,12 +4020,16 @@ ID3D12Resource* GetCubeTexture(const TextureFetch& fetch, DXGI_FORMAT& format)
     // Faces the title resolved into?
     const ResolvedTexture* faces[6]{};
     bool resolved = false;
+    // ResolvedFor: never for a compressed cube, and not once the title has reused the memory. The showroom's
+    // DXT5 reflection cube landed on an old resolve after many races, and the car reflected that (report #56).
     for (uint32_t i = 0; i < 6; i++)
     {
-        auto it = g_r.resolved.find((fetch.Address() + i * stride) & 0x1FFFFFFF);
-        if (it != g_r.resolved.end() && it->second.format != DXGI_FORMAT_R32_FLOAT && it->second.width >= w && it->second.height >= h)
+        TextureFetch face = fetch;
+        face.dwords[1] = (face.dwords[1] & 0xFFF) | ((fetch.Address() + i * stride) & 0xFFFFF000);
+        const ResolvedTexture* r = ResolvedFor(face);
+        if (r && r->format != DXGI_FORMAT_R32_FLOAT && r->width >= w && r->height >= h)
         {
-            faces[i] = &it->second;
+            faces[i] = r;
             resolved = true;
         }
     }
