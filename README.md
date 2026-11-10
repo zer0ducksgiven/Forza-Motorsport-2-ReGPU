@@ -81,6 +81,11 @@ notes menus locked to half rate and 144 Hz running slower than 60 Hz. Details in
 | RAM | 8 GB (16 GB tested) | 16 GB or more (64 GB tested) |
 | Disk | 6 GB (extracted game ~4.7 GB, plus shader and pipeline caches) | an SSD shortens the first start |
 
+**You need a graphics card with full DirectX 12 support (feature level 12_0).** Without it the game
+closes as soon as it starts. Some older cards do run DirectX 12 but only at feature level 11_0 or 11_1, and
+those can't run the game. Examples are AMD's first GCN cards (Radeon HD 7000, R7 240/250/265, R9 270/280)
+and NVIDIA's Fermi cards (GeForce 400 and 500 series).
+
 **What the minimum PC gets.** The FX-8350 + GTX 970 PC above (Windows 10 22H2, 1280x720, **Low performance
 mode** on) averages **71-74 fps** in the benchmark race, with 1% lows of **49-51 fps**: a steady 60 most of
 the time, with dips in the busiest moments. Its first start compiles shaders for a few minutes longer than a
