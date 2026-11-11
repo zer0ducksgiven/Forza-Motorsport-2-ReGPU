@@ -53,10 +53,12 @@ bool IsMlVersion(const char* name)
     return Contains(name, "FSR 4") || Contains(name, "FSR4") || (name && name[0] == '4' && name[1] == '.');
 }
 
-// FSR 4 is the ML upscaler. The FidelityFX API lists it on RDNA 2/3 too (a slower fallback path in newer
-// SDKs), where in the FM4 port it worked but hung the device and crashed inside amdxc64.dll in some long
-// runs. So it is opt-in: the "fsr4" upscaler setting runs FSR 3 unless FM2_FSR4=1 is set. The adapter is
-// logged either way.
+// FSR 4 is the ML upscaler. Which cards run it is AMD's list, by SDK version (gpuopen.com/amd-fsr-sdk):
+// Radeon RX 9000 (RDNA 4) from the start, RX 7000 (RDNA 3) discrete cards since SDK 2.3 (FSR 4.1.1, the
+// one this port ships), RX 6000 (RDNA 2) and some Ryzen processors' graphics since SDK 2.4 (FSR 4.1.2).
+// The API lists an FSR 4 version only where the card and its driver run it. In the FM4 port it worked on
+// RDNA 2/3 but hung the device and crashed inside amdxc64.dll in some long runs, so it is opt-in: the
+// "fsr4" upscaler setting runs FSR 3 unless FM2_FSR4=1 is set. The adapter is logged either way.
 bool Fsr4Enabled(ID3D12Device* device)
 {
     static int cached = -1;

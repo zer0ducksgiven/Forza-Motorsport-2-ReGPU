@@ -241,8 +241,11 @@ and an Upscaling method that brings the picture back to full size:
 - **FSR 3** (AMD, experimental): the 3D picture of races only, rebuilt over several frames
   from motion vectors the port works out for each draw. The HUD, the showroom and the menus
   stay at full size. It is used instead of MSAA, and at 100% it only smooths edges.
-- **FSR 4** (AMD, experimental): the newer version for Radeon RX 9000 cards. It runs FSR 3
-  unless `FM2_FSR4=1` is set and the card offers it.
+- **FSR 4** (AMD, experimental): AMD's newer, machine-learning version. With the AMD FSR SDK
+  this port ships (2.3.0, FSR 4.1.1) AMD supports it on Radeon RX 9000 and RX 7000 graphics
+  cards; RX 6000 cards and some Ryzen processors' graphics were added in SDK 2.4, which the
+  port does not use yet. It runs FSR 3 unless `FM2_FSR4=1` is set and the card and its driver
+  offer FSR 4.
 
 FSR 3 has a fixed cost every frame that grows with the output size (about 3.5 ms at 4K on an
 RTX 4070), so above roughly 60% render scale it can be slower than no upscaling.

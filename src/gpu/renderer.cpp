@@ -476,6 +476,16 @@ struct FrameResources
     UINT64 fence = 0;
     std::vector<ComPtr<ID3D12Resource>> garbage; // released once this frame's work completes
     bool timed = false; // FM2_PERF: GPU timestamps were written for this frame
+    // FM2_FLASH_WATCH: the picture shown, copied for FlashWatchRead.
+    ComPtr<ID3D12Resource> watch;
+    UINT watchW = 0, watchH = 0;
+    uint64_t watchFrame = 0;
+    bool watchPending = false;
+    // FM2_HDR_PROBE: the temporal upscaler's input and output (half float), copied for HdrProbeRead.
+    ComPtr<ID3D12Resource> probe[2];
+    UINT probeW[2]{}, probeH[2]{};
+    uint64_t probeFrame = 0;
+    bool probePending = false;
     // Extra command lists of this frame (parallel draw pieces, main list continuations).
     std::vector<std::pair<ComPtr<ID3D12CommandAllocator>, ComPtr<ID3D12GraphicsCommandList>>> pool;
     size_t poolUsed = 0;
@@ -2088,15 +2098,191 @@ void RewarmPipelines()
     }
 }
 
+// FM2_FLASH_WATCH (a test tool): the last kKeep pictures shown are kept at half size; a flash is some of the
+// middle ones well above (or below) both ends, with the ends alike (a lasting change of scene is not one). The
+// frames of one are written to out/flash and their brightness and saturation logged.
+void HdrProbeReport(uint32_t event);
+void FlashWatchRead(FrameResources& f)
+{
+    if (!f.watchPending || !f.watch)
+        return;
+    f.watchPending = false;
+    const UINT pitch = (f.watchW * 4 + 255) & ~255u, dw = f.watchW / 2, dh = f.watchH / 2;
+    uint8_t* data = nullptr;
+    if (FAILED(f.watch->Map(0, nullptr, reinterpret_cast<void**>(&data))))
+        return;
+    std::vector<uint8_t> full(size_t(dw) * dh * 4);
+    for (UINT y = 0; y < dh; y++)
+    {
+        const uint32_t* row = reinterpret_cast<const uint32_t*>(data + size_t(y) * 2 * pitch);
+        uint32_t* out = reinterpret_cast<uint32_t*>(&full[size_t(y) * dw * 4]);
+        for (UINT x = 0; x < dw; x++)
+            out[x] = row[x * 2] | 0xFF000000u;
+    }
+    const D3D12_RANGE none{ 0, 0 };
+    f.watch->Unmap(0, &none);
+    struct Seen { uint64_t frame; double mean, sat; std::vector<uint8_t> px; };
+    static std::deque<Seen> ring;
+    static uint32_t events = 0, quiet = 0;
+    constexpr size_t kKeep = 14;
+    uint64_t sum = 0, satSum = 0, n = 0;
+    for (uint32_t y = 0; y < dh; y += 4)
+        for (uint32_t x = 0; x < dw; x += 4, n++)
+        {
+            const uint8_t* px = &full[(size_t(y) * dw + x) * 4];
+            sum += px[0] + px[1] + px[2];
+            satSum += std::max({ px[0], px[1], px[2] }) - std::min({ px[0], px[1], px[2] });
+        }
+    ring.push_back(Seen{ f.watchFrame, double(sum) / (3 * n), double(satSum) / n, std::move(full) });
+    if (ring.size() > kKeep)
+        ring.pop_front();
+    static uint32_t reads = 0;
+    if (reads++ % 600 == 0)
+        Log("flash: watching, frame %llu mean %.1f saturation %.1f", (unsigned long long)f.watchFrame, ring.back().mean, ring.back().sat);
+    if (quiet)
+        quiet--;
+    if (ring.size() != kKeep || quiet || events >= 30)
+        return;
+    const double m0 = (ring[0].mean + ring[1].mean + ring[2].mean) / 3, m1 = (ring[kKeep - 1].mean + ring[kKeep - 2].mean) / 2;
+    const double s0 = (ring[0].sat + ring[1].sat + ring[2].sat) / 3, s1 = (ring[kKeep - 1].sat + ring[kKeep - 2].sat) / 2;
+    double top = 0, topSat = 0, low = 1e9;
+    for (size_t i = 3; i + 2 < kKeep; i++)
+        top = std::max(top, ring[i].mean), topSat = std::max(topSat, ring[i].sat), low = std::min(low, ring[i].mean);
+    const double base = std::max(m0, m1), baseSat = std::max(s0, s1), floor = std::min(m0, m1);
+    const bool alike = std::abs(m0 - m1) < 0.06 * base + 2;
+    if (!alike || !(top > base * 1.10 + 3 || topSat > baseSat * 1.25 + 4 || low < floor * 0.88 - 3))
+        return;
+    events++;
+    quiet = kKeep;
+    std::string line;
+    std::filesystem::create_directories("out/flash");
+    for (const Seen& s : ring)
+    {
+        char t[48];
+        snprintf(t, sizeof(t), " %.0f/%.0f", s.mean, s.sat);
+        line += t;
+        char name[96];
+        snprintf(name, sizeof(name), "out/flash/e%02u_%07llu.png", events, (unsigned long long)s.frame);
+        if (s.px.size() == size_t(dw) * dh * 4)
+            WritePng(name, dw, dh, s.px);
+    }
+    Log("flash: event %u, frames %llu-%llu, mean/saturation:%s", events, (unsigned long long)ring.front().frame, (unsigned long long)ring.back().frame, line.c_str());
+    HdrProbeReport(events);
+}
+
+// FM2_HDR_PROBE (a test tool, with FM2_FLASH_WATCH): the temporal upscaler's input and output of the last frames
+// are kept at half size (half floats). When the flash watch sees a flash, each kept frame is logged (mean, largest
+// value, values above the 7e3 range of 31.875, inf/nan) and written to out/flash as in_/out_ pictures.
+struct HdrKept
+{
+    uint64_t frame = 0;
+    UINT w[2]{}, h[2]{};
+    std::vector<uint16_t> px[2]; // rgba
+};
+std::deque<HdrKept> g_hdrKept;
+
+void HdrProbeRead(FrameResources& f)
+{
+    if (!f.probePending)
+        return;
+    f.probePending = false;
+    HdrKept k;
+    k.frame = f.probeFrame;
+    for (int i = 0; i < 2; i++)
+    {
+        if (!f.probe[i])
+            continue;
+        const UINT pitch = (f.probeW[i] * 8 + 255) & ~255u;
+        uint8_t* data = nullptr;
+        if (FAILED(f.probe[i]->Map(0, nullptr, reinterpret_cast<void**>(&data))))
+            continue;
+        k.w[i] = f.probeW[i] / 2;
+        k.h[i] = f.probeH[i] / 2;
+        k.px[i].resize(size_t(k.w[i]) * k.h[i] * 4);
+        for (UINT y = 0; y < k.h[i]; y++)
+        {
+            const uint64_t* row = reinterpret_cast<const uint64_t*>(data + size_t(y) * 2 * pitch);
+            uint64_t* out = reinterpret_cast<uint64_t*>(&k.px[i][size_t(y) * k.w[i] * 4]);
+            for (UINT x = 0; x < k.w[i]; x++)
+                out[x] = row[x * 2];
+        }
+        const D3D12_RANGE none{ 0, 0 };
+        f.probe[i]->Unmap(0, &none);
+    }
+    g_hdrKept.push_back(std::move(k));
+    if (g_hdrKept.size() > 20)
+        g_hdrKept.pop_front();
+}
+
+void HdrProbeReport(uint32_t event)
+{
+    auto value = [](uint16_t h) {
+        const double v = (h & 0x7C00) ? (1.0 + (h & 1023) / 1024.0) * std::ldexp(1.0, int((h >> 10) & 31) - 15) : (h & 1023) / 1024.0 * std::ldexp(1.0, -14);
+        return (h & 0x8000) ? -v : v;
+    };
+    for (const HdrKept& k : g_hdrKept)
+    {
+        std::string line;
+        for (int i = 0; i < 2; i++)
+        {
+            if (k.px[i].empty())
+                continue;
+            double sum[3]{}, top = 0;
+            uint64_t over = 0, odd = 0, negative = 0;
+            std::vector<uint8_t> rgba(size_t(k.w[i]) * k.h[i] * 4);
+            for (size_t n = 0, count = size_t(k.w[i]) * k.h[i]; n < count; n++)
+            {
+                for (int c = 0; c < 3; c++)
+                {
+                    const uint16_t h = k.px[i][n * 4 + c];
+                    if ((h & 0x7C00) == 0x7C00)
+                    {
+                        odd++;
+                        rgba[n * 4 + c] = 255;
+                        continue;
+                    }
+                    const double v = value(h);
+                    sum[c] += v;
+                    top = std::max(top, v);
+                    if (v > 32.0)
+                        over++;
+                    if (v < -0.001)
+                        negative++;
+                    rgba[n * 4 + c] = uint8_t(std::clamp(std::sqrt(std::max(v, 0.0) / 4.0), 0.0, 1.0) * 255.0); // 0..4, gamma 2
+                }
+                rgba[n * 4 + 3] = 255;
+            }
+            const double count = double(k.w[i]) * k.h[i];
+            char t[200];
+            snprintf(t, sizeof(t), " %s mean %.3f %.3f %.3f largest %.1f, above 32: %llu, inf/nan: %llu, negative: %llu;", i ? "output" : "input", sum[0] / count,
+                sum[1] / count, sum[2] / count, top, (unsigned long long)over, (unsigned long long)odd, (unsigned long long)negative);
+            line += t;
+            char name[96];
+            snprintf(name, sizeof(name), "out/flash/e%02u_%07llu_%s.png", event, (unsigned long long)k.frame, i ? "out" : "in");
+            WritePng(name, k.w[i], k.h[i], rgba);
+        }
+        Log("probe: event %u frame %llu:%s", event, (unsigned long long)k.frame, line.c_str());
+    }
+}
+
 void BeginFrameIfNeeded()
 {
     if (g_r.listOpen)
         return;
     FrameResources& f = Frame();
-    if (g_r.fence->GetCompletedValue() < f.fence)
+    // The slot is free once its own last frame is done on the GPU. With a temporal upscaler the frame after that
+    // one must be done too: its motion-vector draws read their last frame's vertex constants from this slot's
+    // ring (see Upscale::DrawConstants), and with the GPU two frames behind they read what this frame was
+    // writing over them: wild motion vectors, and the upscaler's picture washed out for a few frames.
+    // FM2_NO_RING_HOLD=1 (live): the old wait (A/B).
+    static LiveSwitch noRingHold("FM2_NO_RING_HOLD");
+    UINT64 waitFor = f.fence;
+    if (g_temporal && !noRingHold)
+        waitFor = std::max(waitFor, g_r.frames[(g_r.frameIndex + 1) % kFrames].fence);
+    if (g_r.fence->GetCompletedValue() < waitFor)
     {
         const auto w0 = std::chrono::steady_clock::now();
-        g_r.fence->SetEventOnCompletion(f.fence, g_r.fenceEvent);
+        g_r.fence->SetEventOnCompletion(waitFor, g_r.fenceEvent);
         WaitForSingleObject(g_r.fenceEvent, INFINITE);
         g_gpuWaitSeconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - w0).count();
     }
@@ -2214,6 +2400,8 @@ void BeginFrameIfNeeded()
         }
         f.timed = false;
     }
+    HdrProbeRead(f); // (this slot's previous frame has completed)
+    FlashWatchRead(f);
     f.allocator->Reset();
     f.poolUsed = 0;
     g_r.recorder.Rebind(g_r.realList.Get()); // (a pool list may have continued last frame)
@@ -2250,6 +2438,24 @@ void BeginFrameIfNeeded()
         f.ring->Map(0, nullptr, reinterpret_cast<void**>(&f.ringCpu));
         f.ringSize = want;
         Log("renderer: upload ring grown to %llu MB", (unsigned long long)(want >> 20));
+    }
+    // FM2_RING_SCRIBBLE (live, a test): what the slot's last frame left in the ring is zeroed before this frame
+    // writes to it, so anything on the GPU that still reads it (see the wait above) shows at once.
+    static LiveSwitch ringScribble("FM2_RING_SCRIBBLE");
+    if (ringScribble && f.ringCpu)
+        memset(f.ringCpu, 0, size_t(std::min<UINT64>(f.ringUsed.load(), f.ringSize)));
+    // How often the frame that reads this ring (the next slot's) was still on the GPU at this point.
+    {
+        static uint32_t early = 0, total = 0;
+        total++;
+        if (g_temporal && g_r.fence->GetCompletedValue() < g_r.frames[(g_r.frameIndex + 1) % kFrames].fence)
+            early++;
+        if (total % 600 == 0)
+        {
+            if (early)
+                Log("ring: reused in %u of 600 frames while the frame reading it was still on the GPU", early);
+            early = 0;
+        }
     }
     f.ringUsed = 0;
     f.uploads.clear();
@@ -5803,6 +6009,9 @@ bool EvaluateTemporal(uint32_t base, bool dlss)
     in.motionScaleX = float(inWidth);
     in.motionScaleY = float(inHeight);
     in.frameTimeMs = float(std::chrono::duration<double, std::milli>(now - last).count());
+    static LiveSwitch fixedDt("FM2_FSR_FIXED_DT"); // A/B: the upscaler is told every frame took 1/60 s
+    if (fixedDt)
+        in.frameTimeMs = 16.6f;
     // A camera cut (see Upscale::cut): most of the sampled draws' transforms turned a long way since last frame.
     static LiveSwitch noCutReset("FM2_NO_CUT_RESET");
     g_upscale.cut = g_upscale.cutSamples >= 8 && g_upscale.cutHits * 2 > g_upscale.cutSamples;
@@ -5851,6 +6060,36 @@ bool EvaluateTemporal(uint32_t base, bool dlss)
     g_upscale.viewWidth = inWidth;
     g_upscale.viewHeight = inHeight;
     barrier(in.output, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, read);
+    static LiveSwitch hdrProbe("FM2_HDR_PROBE");
+    if (hdrProbe && ok && setup.hdr)
+    {
+        FrameResources& pf = Frame();
+        ID3D12Resource* images[2] = { in.color, in.output };
+        for (int i = 0; i < 2; i++)
+        {
+            const D3D12_RESOURCE_DESC d = images[i]->GetDesc();
+            if (d.Format != DXGI_FORMAT_R16G16B16A16_FLOAT)
+                continue;
+            const UINT w = UINT(d.Width), h = d.Height, pitch = (w * 8 + 255) & ~255u;
+            if (!pf.probe[i] || pf.probeW[i] != w || pf.probeH[i] != h)
+            {
+                pf.probe[i] = CreateBuffer(UINT64(pitch) * h, D3D12_HEAP_TYPE_READBACK, D3D12_RESOURCE_STATE_COPY_DEST);
+                pf.probeW[i] = w;
+                pf.probeH[i] = h;
+            }
+            barrier(images[i], read, D3D12_RESOURCE_STATE_COPY_SOURCE);
+            D3D12_TEXTURE_COPY_LOCATION dst{}, src{};
+            dst.pResource = pf.probe[i].Get();
+            dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+            dst.PlacedFootprint.Footprint = { DXGI_FORMAT_R16G16B16A16_FLOAT, w, h, 1, pitch };
+            src.pResource = images[i];
+            src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+            C().list->Real()->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+            barrier(images[i], D3D12_RESOURCE_STATE_COPY_SOURCE, read);
+        }
+        pf.probeFrame = g_r.frame;
+        pf.probePending = true;
+    }
     if (dlaa && ok)
     {
         barrier(in.output, read, D3D12_RESOURCE_STATE_COPY_SOURCE);
@@ -10767,7 +11006,33 @@ void RendererOnSwapImpl(uint64_t frameNumber, uint32_t frontBuffer)
     static const uint64_t dumpEvery = getenv("FM2_DUMP_EVERY") ? strtoull(getenv("FM2_DUMP_EVERY"), nullptr, 10) : 0;
     static uint32_t sweepCountForDump = [] { uint32_t a = 0, b = 0, c = 0; if (const char* e = getenv("FM2_SWEEP")) sscanf(e, "%u,%u,%u", &a, &b, &c); return c; }();
     const bool sweepDump = fromResolve && sweepCountForDump && dumpFrame && g_r.frame >= dumpFrame && g_r.frame < dumpFrame + sweepCountForDump;
-    const bool dump = sweepDump || (fromResolve && ((dumpFrame && (g_r.frame == dumpFrame || (dumpSecond && g_r.frame == dumpFrame + 1))) || (dumpEvery && g_r.frame % dumpEvery == 0)));
+    const bool wantDump = sweepDump || (fromResolve && ((dumpFrame && (g_r.frame == dumpFrame || (dumpSecond && g_r.frame == dumpFrame + 1))) || (dumpEvery && g_r.frame % dumpEvery == 0)));
+    // FM2_FLASH_WATCH (live): every frame is read back and its brightness and saturation compared with the
+    // frames before; a frame that jumps is written to out/flash with its neighbours (slow: a test tool).
+    static LiveSwitch flashWatch("FM2_FLASH_WATCH");
+    const bool dump = wantDump;
+    if (flashWatch && fromResolve && !dump)
+    {
+        // Copied into this frame slot's own buffer and read when the slot comes round again (FlashWatchRead):
+        // no wait for the GPU, so the frame pacing stays as it is without the watch.
+        FrameResources& wf = Frame();
+        const UINT ww = OutputWidth(), wh = OutputHeight(), pitch = (ww * 4 + 255) & ~255u;
+        if (!wf.watch || wf.watchW != ww || wf.watchH != wh)
+        {
+            wf.watch = CreateBuffer(UINT64(pitch) * wh, D3D12_HEAP_TYPE_READBACK, D3D12_RESOURCE_STATE_COPY_DEST);
+            wf.watchW = ww;
+            wf.watchH = wh;
+        }
+        D3D12_TEXTURE_COPY_LOCATION dst{}, src{};
+        dst.pResource = wf.watch.Get();
+        dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+        dst.PlacedFootprint.Footprint = { DXGI_FORMAT_R8G8B8A8_UNORM, ww, wh, 1, pitch };
+        src.pResource = shown;
+        src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+        C().list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+        wf.watchFrame = g_r.frame;
+        wf.watchPending = true;
+    }
     if (dump)
     {
         D3D12_TEXTURE_COPY_LOCATION dst{};
@@ -10927,6 +11192,8 @@ void RendererOnSwapImpl(uint64_t frameNumber, uint32_t frontBuffer)
         g_r.readback->Unmap(0, nullptr);
         for (size_t i = 3; i < full.size(); i += 4)
             full[i] = 255;
+        if (wantDump)
+        {
         std::vector<uint8_t> rgba(size_t(kWidth) * kHeight * 4);
         for (uint32_t y = 0; y < kHeight; y++)
             for (uint32_t x = 0; x < kWidth; x++)
@@ -10989,6 +11256,7 @@ void RendererOnSwapImpl(uint64_t frameNumber, uint32_t frontBuffer)
             WritePng(g_r.frame == dumpFrame ? "frame.png" : "frame2.png", dw, dh, full);
         Log("renderer: wrote frame.png (frame %llu: %u draws, %u skipped)", (unsigned long long)frameNumber, g_r.drawsThisFrame.load(),
             g_r.skippedThisFrame.load());
+        }
     }
     // Frame times since the last line: the average, the slowest 1% and the GPU's share.
     static std::vector<float> frameMs;

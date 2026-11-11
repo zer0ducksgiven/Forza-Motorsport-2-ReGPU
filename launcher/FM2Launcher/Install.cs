@@ -219,7 +219,7 @@ public static class Options
     public static readonly (int Value, string Name)[] Msaa = [(1, "Off"), (2, "2x MSAA"), (4, "4x MSAA"), (8, "8x MSAA")];
     public static readonly (int Value, string Name)[] Smaa = [(0, "Off"), (1, "Low"), (2, "Medium"), (3, "High"), (4, "Ultra")];
     public static readonly (int Value, string Name)[] RenderScale = [(100, "100% (native)"), (85, "85%"), (77, "77%"), (67, "67%"), (59, "59%"), (50, "50%")];
-    public static readonly (string Value, string Name)[] Upscalers = [("fsr1", "FSR 1"), ("fsr3", "FSR 3 (experimental)"), ("fsr4", "FSR 4 (experimental, AMD RX 9000)")];
+    public static readonly (string Value, string Name)[] Upscalers = [("fsr1", "FSR 1"), ("fsr3", "FSR 3 (experimental)"), ("fsr4", "FSR 4 (experimental, AMD RX 7000 / 9000)")];
     public static readonly (int Value, string Name)[] Sharpening = [(0, "Off"), (25, "Low"), (50, "Medium"), (75, "High"), (100, "Maximum")];
     public static readonly (int Value, string Name)[] Anisotropy = [(0, "Off (trilinear)"), (2, "2x"), (4, "4x"), (8, "8x"), (16, "16x")];
 

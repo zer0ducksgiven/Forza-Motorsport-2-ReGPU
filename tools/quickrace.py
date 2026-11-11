@@ -1,6 +1,6 @@
 """Boot the game straight into a race on a given track: no menus, racing in about 10 s.
 
-  py -3 tools/quickrace.py [--track ID] [--car ID] [--laps N] [--ai N] [--profile NAME]
+  py -3 tools/quickrace.py [--track ID] [--car ID] [--laps N] [--ai N] [--autodrive] [--profile NAME]
                            [--fullscreen] [--args "name=value ..."] [NAME=VALUE ...]
 
 Passes FM2_ARGS to the game's own developer command line (src/hooks/cmdline_args.cpp).
@@ -17,6 +17,7 @@ ap.add_argument('--track', type=int, help='Tracks id (default: the game\'s own)'
 ap.add_argument('--car', type=int, help='car id (default: the game\'s own)')
 ap.add_argument('--laps', type=int)
 ap.add_argument('--ai', type=int, help='number of AI cars')
+ap.add_argument('--autodrive', action='store_true', help='the AI drives the player car too (nohumans=true): a race that runs by itself')
 ap.add_argument('--args', default='', help='extra raw command-line options')
 ap.add_argument('--profile', default=os.environ.get('FM2_PROFILE'), help='profile name (default: the usual one)')
 ap.add_argument('--fullscreen', action='store_true')
@@ -28,6 +29,7 @@ if a.track is not None: args.append(f'track={a.track}')
 if a.car is not None: args.append(f'car={a.car}')
 if a.laps is not None: args.append(f'numlaps={a.laps}')
 if a.ai is not None: args.append(f'numaicars={a.ai}')
+if a.autodrive: args.append('nohumans=true')
 if a.args: args.append(a.args)
 env = ['FM2_SKIP_INTRO=1', 'FM2_ARGS=' + ' '.join(args)]
 if a.profile: env.append('FM2_PROFILE=' + a.profile)

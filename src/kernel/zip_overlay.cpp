@@ -135,7 +135,7 @@ const char kGraphicsQuery[] = R"lua(
 			UI.Strings.IDS_Help_Msaa = "Smooths the edges of objects as they are drawn. Each step costs GPU time; 4x is a good balance. A change builds the game's pipelines again, so the next few minutes can stutter."
 			UI.Strings.IDS_Help_Smaa = "Smooths every edge in the finished picture, including fences, trees and crowds that MSAA misses. Works with any MSAA level."
 			UI.Strings.IDS_Help_Anisotropy = "Keeps road and ground textures sharp when seen at a low angle, ahead of the car."
-			UI.Strings.IDS_Help_Upscaler = "How a lower render scale is brought back to full size. FSR 1 is fastest. FSR 3 (in place of MSAA) rebuilds the 3D picture over several frames: sharper, but it costs time every frame and can be slower than no upscaling. FSR 4: AMD RX 9000 only. Please report how FSR 3 runs for you."
+			UI.Strings.IDS_Help_Upscaler = "How a lower render scale is brought back to full size. FSR 1 is fastest. FSR 3 (in place of MSAA) rebuilds the 3D picture over several frames: sharper, but it costs time every frame and can be slower than no upscaling. FSR 4: AMD RX 7000/9000. Please report how FSR 3 runs for you."
 			UI.Strings.IDS_Help_FrameGen = "Experimental. Shows a made-up frame between real ones in races. Needs FSR 3 or FSR 4 above, and a restart of the game. Large overhead: the real frame rate drops by a third to a half, so it may look no smoother, and the controls respond later. Please report how it runs for you."
 			UI.Strings.IDS_Help_RenderScale = "Renders the game at fewer pixels and upscales it with the Upscaling method above. Lower is faster on weak graphics cards."
 			UI.Strings.IDS_Help_Sharpening = "AMD CAS-style sharpening on the final picture, at any render scale. Almost free."
@@ -648,7 +648,7 @@ bool Rewrite(const std::string& zipName, const std::vector<uint8_t>& zip, const 
 std::string Stamp(const fs::path& zip, const std::vector<ModFile>& mods)
 {
     std::error_code ec;
-    std::string s = "overlay 10 " + std::to_string(fs::file_size(zip, ec)) + " " + std::to_string(fs::last_write_time(zip, ec).time_since_epoch().count()) +
+    std::string s = "overlay 11 " + std::to_string(fs::file_size(zip, ec)) + " " + std::to_string(fs::last_write_time(zip, ec).time_since_epoch().count()) +
                     " exhaust " + std::to_string(ExhaustScale());
     for (const ModFile& m : mods)
         s += "\n" + m.file.string() + " " + std::to_string(fs::file_size(m.file, ec)) + " " + std::to_string(fs::last_write_time(m.file, ec).time_since_epoch().count());
