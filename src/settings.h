@@ -47,18 +47,26 @@ struct Settings
     // SMAA 1x on the whole frame as it is shown (after MSAA, before FSR 1): 0 off, 1 low, 2 medium,
     // 3 high, 4 ultra (the SMAA presets).
     uint32_t smaa = 0;
+    // AMD FSR 3 frame generation (experimental; gpu/fsrfg.h): a made frame between each two rendered ones, in
+    // races, with the FSR 3 or FSR 4 upscaler only. Read when the window is made (frame_generation=1).
+    bool frameGen = false;
     uint32_t anisotropy = 16;            // anisotropic filtering of surface textures: 0 (off: trilinear), 2, 4, 8 or 16
     // Upscaling. FSR 1 (the launcher's): the whole frame, HUD included, renders at render_scale
     // and is upscaled (EASU) and sharpened (RCAS) as it is shown; at 100% it is only sharpened.
-    // FSR 3 and DLSS (testing only): the 3D scene renders smaller and is reconstructed before
-    // post-processing and the HUD, at the size `quality` picks.
-    enum class Upscaler : uint32_t { Off, Fsr1, Fsr3, Dlss };
+    // FSR 3 and FSR 4 (experimental; the launcher's Upscaling choice): the 3D scene renders at
+    // render_scale and is reconstructed over several frames before post-processing and the HUD, which
+    // stay at full size. DLSS (testing only) takes its size from `quality`.
+    enum class Upscaler : uint32_t { Off, Fsr1, Fsr3, Dlss, Fsr4 }; // Fsr4: FSR 3 unless FM2_FSR4=1 (gpu/fsr3.cpp)
     Upscaler upscaler = Upscaler::Off;
     uint32_t renderScale = 100; // FSR 1: percent of the output size per axis, 50-100
     uint32_t quality = 1;   // 0 native (anti-aliasing only), 1 quality, 2 balanced, 3 performance, 4 ultra performance
     float sharpness = 0.5f; // 0-1
     // The scene's resolution as a fraction of the output (1 when upscaling is off).
     float SceneScale() const;
+    // DLSS, FSR 3 or FSR 4: the scene is reconstructed over several frames (motion vectors, jitter).
+    bool TemporalUpscaler() const;
+    // What a temporal upscaler rules out (MSAA), applied to these settings.
+    void ApplyUpscalerRules();
 
     // The size the game renders at: the resolution, narrowed or shortened to the forced
     // aspect ratio (the rest of the screen is black bars).

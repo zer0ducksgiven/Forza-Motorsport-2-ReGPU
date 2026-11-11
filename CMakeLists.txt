@@ -83,7 +83,7 @@ endif()
 set(FM2_GENERATED "${CMAKE_BINARY_DIR}/generated")
 add_custom_command(OUTPUT "${FM2_GENERATED}/fsr1_cs.h"
     COMMAND py -3 -I "${CMAKE_SOURCE_DIR}/tools/embed_hlsl.py" "${CMAKE_SOURCE_DIR}/src/gpu/fsr1.hlsl" "${FM2_GENERATED}/fsr1_cs.h"
-            EasuMain,RcasMain,DepthCopyMain,GammaMain,EnhanceMain,PillarMain "${FM2_FFX}/api/internal/gpu" "${FM2_FFX}/upscalers/fsr3/include/gpu/fsr1"
+            EasuMain,RcasMain,DepthCopyMain,GammaMain,EnhanceMain,PillarMain,ViewMain,TurnMain "${FM2_FFX}/api/internal/gpu" "${FM2_FFX}/upscalers/fsr3/include/gpu/fsr1"
     DEPENDS "${CMAKE_SOURCE_DIR}/src/gpu/fsr1.hlsl" "${CMAKE_SOURCE_DIR}/tools/embed_hlsl.py"
     COMMENT "Compiling FSR 1 shaders")
 list(APPEND FM2_SOURCES "${FM2_GENERATED}/fsr1_cs.h")
@@ -112,9 +112,10 @@ if(FM2_TITLE_UPDATE)
 endif()
 target_include_directories(fm2 PRIVATE src "${FM2_GENERATED}" "${FM2_DLSS}/include" "${CMAKE_SOURCE_DIR}/thirdparty/smaa/Textures")
 target_link_libraries(fm2 PRIVATE "${FM2_DLSS}/lib/Windows_x86_64/x64/nvsdk_ngx_s.lib" "${FM2_FFX}/signedbin/amd_fidelityfx_loader_dx12.lib")
-target_include_directories(fm2 PRIVATE "${FM2_FFX}/api/include" "${FM2_FFX}/upscalers/include")
+target_include_directories(fm2 PRIVATE "${FM2_FFX}/api/include" "${FM2_FFX}/upscalers/include" "${FM2_FFX}/framegeneration/include")
 add_custom_command(TARGET fm2 POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
-    "${FM2_FFX}/signedbin/amd_fidelityfx_loader_dx12.dll" "${FM2_FFX}/signedbin/amd_fidelityfx_upscaler_dx12.dll" $<TARGET_FILE_DIR:fm2>)
+    "${FM2_FFX}/signedbin/amd_fidelityfx_loader_dx12.dll" "${FM2_FFX}/signedbin/amd_fidelityfx_upscaler_dx12.dll"
+    "${FM2_FFX}/signedbin/amd_fidelityfx_framegeneration_dx12.dll" $<TARGET_FILE_DIR:fm2>)
 add_custom_command(TARGET fm2 POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
     "${FM2_DLSS}/lib/Windows_x86_64/rel/nvngx_dlss.dll" $<TARGET_FILE_DIR:fm2>)
 # Microsoft's HLSL compiler ships beside fm2.exe: Windows loads it from there first, and under Proton

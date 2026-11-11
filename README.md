@@ -232,11 +232,35 @@ Keep a mod switched on once a career uses it: a save with a mod's cars or upgrad
 Plus 2** is installed from its own panel, and while it's on, no DLC or other mods are loaded.
 [docs/modding.md](docs/modding.md) explains how to make a mod.
 
-### Upscaling (removed from the launcher for now)
+### Upscaling
 
-The upscaling code (AMD FSR 1, FSR 3 and NVIDIA DLSS) is still in the source and its
-environment variables still work, but the launcher no longer offers it. It is not part
-of 0.1.0's settings.
+The launcher's Graphics page and the game's Options > Graphics screen have a render scale
+and an Upscaling method that brings the picture back to full size:
+
+- **FSR 1** (AMD): the whole picture, HUD included. The fastest.
+- **FSR 3** (AMD, experimental): the 3D picture of races only, rebuilt over several frames
+  from motion vectors the port works out for each draw. The HUD, the showroom and the menus
+  stay at full size. It is used instead of MSAA, and at 100% it only smooths edges.
+- **FSR 4** (AMD, experimental): the newer version for Radeon RX 9000 cards. It runs FSR 3
+  unless `FM2_FSR4=1` is set and the card offers it.
+
+FSR 3 has a fixed cost every frame that grows with the output size (about 3.5 ms at 4K on an
+RTX 4070), so above roughly 60% render scale it can be slower than no upscaling.
+
+**Frame generation** (AMD FSR 3, experimental; the launcher's Graphics page, Options > Graphics,
+or `frame_generation=1`): a made frame between each two rendered ones, in races, with FSR 3 or
+FSR 4 as the upscaler. It is read when the game starts. It has a large overhead: the rendered
+frame rate drops by a third to a half (4K at 67% on an RTX 4070: 167 fps to 85, so about 170
+shown), and the controls respond later. The window's title bar shows the rendered rate.
+`FM2_NO_FRAMEGEN` (live) stops the made frames; `FM2_FRAMEGEN_ASYNC=1` runs AMD's work on its
+own GPU queue; `FM2_VIEW_HUDLESS` shows the HUD-less picture it is given.
+
+NVIDIA DLSS is in the source but unfinished (`FM2_TEMPORAL_UPSCALERS=1` to test it).
+Switches for looking at what the upscaler is given, all live through `tools/fm2ctl.py`:
+`FM2_VIEW_MOTION`, `FM2_VIEW_DEPTH`, `FM2_VIEW_REACTIVE`, `FM2_NO_MOTION`, `FM2_NO_JITTER`,
+`FM2_NO_REACTIVE`, `FM2_NO_CUT_RESET`, `FM2_MOTION_STATS`.
+
+The licences of the libraries that ship with the port are in `THIRD-PARTY-NOTICES.txt`.
 
 ## Building
 

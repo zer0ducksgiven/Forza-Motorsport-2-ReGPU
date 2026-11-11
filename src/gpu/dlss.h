@@ -16,6 +16,9 @@ struct DlssFrame
 {
     // Inputs in NON_PIXEL_SHADER_RESOURCE state, the output in UNORDERED_ACCESS.
     ID3D12Resource *color, *depth, *motion, *output;
+    // FSR 3/4 only: the reactive mask (R8, in NON_PIXEL_SHADER_RESOURCE like the other inputs), or null. Where
+    // it is set the upscaler trusts this frame's colour over its history (smoke, dust, the braking line).
+    ID3D12Resource* reactive = nullptr;
     float jitterX, jitterY;           // render pixels
     float motionScaleX, motionScaleY; // motion texture values to render pixels
     float frameTimeMs;

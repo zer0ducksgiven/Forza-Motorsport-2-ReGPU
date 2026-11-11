@@ -32,6 +32,7 @@ def main(argv):
     for name in ('xiso.py', 'stfs.py'):
         files.append((os.path.join(ROOT, 'tools', name), 'py/' + name, 0o644))
     files.append((os.path.join(ROOT, 'out', 'release', 'FM2', 'changelog.txt'), 'changelog.txt', 0o644))
+    files.append((os.path.join(ROOT, 'THIRD-PARTY-NOTICES.txt'), 'THIRD-PARTY-NOTICES.txt', 0o644))
     launcher = os.path.join(ROOT, 'out', 'launcher-linux')
     r = subprocess.run(['dotnet', 'publish', os.path.join(ROOT, 'launcher', 'FM2Launcher', 'FM2Launcher.csproj'), '-c', 'Release',
                         '-r', 'linux-x64', '--self-contained', '-p:PublishSingleFile=true', '-p:EnableCompressionInSingleFile=true', '-o', launcher, '--nologo', '-v', 'q'])

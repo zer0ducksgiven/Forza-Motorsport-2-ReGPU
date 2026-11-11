@@ -2,7 +2,7 @@
 
   make_patch.py <version> [launcher dir]
 
-Contents (paths relative to the install): build/tu/fm2.exe, d3dcompiler_47.dll (not SDL3.dll, see below), the launcher (launcher/..., from the given folder or
+Contents (paths relative to the install): build/tu/fm2.exe, d3dcompiler_47.dll, AMD's frame generation DLL (not SDL3.dll, see below), the launcher (launcher/..., from the given folder or
 installer/payload/launcher, which build-installer.ps1 publishes) and changelog.txt. Names are written with '/',
 and the zip is read back and checked: no control characters, nothing outside the install.
 """
@@ -23,7 +23,12 @@ def main(argv):
              (os.path.join(ROOT, 'build', 'tu', 'd3dcompiler_47.dll'), 'build/tu/d3dcompiler_47.dll'),
              # SDL3.dll is left out: launchers before 0.9.1 hold it open (controllers) and can't overwrite it,
              # which stopped the 0.9.0 update before the launcher. It hasn't changed since 0.8.2.
-             (os.path.join(ROOT, 'out', 'release', 'FM2', 'changelog.txt'), 'changelog.txt')]
+             (os.path.join(ROOT, 'out', 'release', 'FM2', 'changelog.txt'), 'changelog.txt'),
+             # AMD's frame generation (new with the frame generation option: installs before it lack the DLL;
+             # nothing holds it open while the game is not running).
+             (os.path.join(ROOT, 'build', 'tu', 'amd_fidelityfx_framegeneration_dx12.dll'), 'build/tu/amd_fidelityfx_framegeneration_dx12.dll'),
+             # The licences of what ships with the port (AMD FidelityFX, SMAA, SDL, FFmpeg).
+             (os.path.join(ROOT, 'THIRD-PARTY-NOTICES.txt'), 'THIRD-PARTY-NOTICES.txt')]
     if not os.path.isfile(os.path.join(launcher, 'FM2Launcher.exe')):
         print('no launcher at', launcher, '(run installer/build-installer.ps1 first)')
         return 1

@@ -13,6 +13,7 @@
 #include <windows.h>
 #include <wrl/client.h>
 
+#include "gpu/fsrfg.h"
 #include "input/wheel.h"
 #include "log.h"
 #include "render/presenter.h"
@@ -153,6 +154,32 @@ std::mutex g_deviceMutex;
 ComPtr<ID3D12Device> g_device;
 ComPtr<ID3D12CommandQueue> g_queue;
 std::atomic<bool> g_rendererActive{ false };
+std::atomic<uint32_t> g_presents{ 0 }; // frames shown (for the fps in the window's title bar)
+
+// Windowed: the frames shown in the last second, in the title bar ("Forza Motorsport 2 - 143 fps"). Called
+// from the window's own thread, so setting the text cannot wait on another thread.
+void UpdateTitleFps()
+{
+    static auto last = std::chrono::steady_clock::now();
+    static bool shown = false;
+    const auto now = std::chrono::steady_clock::now();
+    const double seconds = std::chrono::duration<double>(now - last).count();
+    if (seconds < 1.0)
+        return;
+    last = now;
+    const uint32_t frames = g_presents.exchange(0);
+    if (g_p.fullscreen)
+    {
+        if (shown)
+            SetWindowTextW(g_p.window, L"Forza Motorsport 2");
+        shown = false;
+        return;
+    }
+    wchar_t title[64];
+    swprintf(title, 64, L"Forza Motorsport 2 - %.0f fps", double(frames) / seconds);
+    SetWindowTextW(g_p.window, title);
+    shown = true;
+}
 
 void EnsureDevice()
 {
@@ -254,9 +281,16 @@ void CreateWindowAndDevice()
     sd.BufferCount = kBuffers;
     sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
     sd.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
-    ComPtr<IDXGISwapChain1> sc1;
-    Check(factory->CreateSwapChainForHwnd(g_p.queue.Get(), g_p.surface ? g_p.surface : g_p.window, &sd, nullptr, nullptr, &sc1), "CreateSwapChainForHwnd");
-    Check(sc1.As(&g_p.swapChain), "IDXGISwapChain3");
+    // Frame generation (frame_generation=1): AMD's swap chain, which shows the frames it makes between ours.
+    ComPtr<IDXGISwapChain4> generated;
+    if (FsrFgWanted() && FsrFgCreateSwapChain(factory.Get(), g_p.queue.Get(), g_p.surface ? g_p.surface : g_p.window, &sd, &generated))
+        Check(generated.As(&g_p.swapChain), "IDXGISwapChain3 (frame generation)");
+    else
+    {
+        ComPtr<IDXGISwapChain1> sc1;
+        Check(factory->CreateSwapChainForHwnd(g_p.queue.Get(), g_p.surface ? g_p.surface : g_p.window, &sd, nullptr, nullptr, &sc1), "CreateSwapChainForHwnd");
+        Check(sc1.As(&g_p.swapChain), "IDXGISwapChain3");
+    }
     factory->MakeWindowAssociation(g_p.window, DXGI_MWA_NO_ALT_ENTER);
 
     D3D12_DESCRIPTOR_HEAP_DESC hd{};
@@ -357,7 +391,9 @@ void DrawFrame(uint64_t frame)
     g_p.list->Close();
     ID3D12CommandList* lists[] = { g_p.list.Get() };
     g_p.queue->ExecuteCommandLists(1, lists);
+    FsrFgBeforePresent();
     g_p.swapChain->Present(0, DXGI_PRESENT_ALLOW_TEARING);
+    g_presents++;
     g_p.fenceValues[i] = g_p.nextFence++;
     g_p.queue->Signal(g_p.fence.Get(), g_p.fenceValues[i]);
 }
@@ -376,6 +412,7 @@ void RenderThread()
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
+        UpdateTitleFps();
         uint64_t frame;
         {
             std::unique_lock lock(g_p.mutex);
@@ -671,10 +708,12 @@ void PresenterPresent()
     // Vsync: wait for the display's refresh; off: present at once (tearing allowed).
     if (g_p.ready)
     {
+        FsrFgBeforePresent();
         if (GetSettings().vsync)
             g_p.swapChain->Present(1, 0);
         else
             g_p.swapChain->Present(0, DXGI_PRESENT_ALLOW_TEARING);
+        g_presents++;
     }
 }
 

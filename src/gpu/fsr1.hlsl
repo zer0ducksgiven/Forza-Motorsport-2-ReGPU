@@ -78,6 +78,45 @@ void GammaMain(uint3 id : SV_DispatchThreadID)
     dst[id.xy] = float4(GammaCurve(c.r, p), GammaCurve(c.g, p), GammaCurve(c.b, p), c.a);
 }
 
+// Debug view of a temporal upscaler input, written at the output's size (from Aiden's FM4 port).
+// rcasCon.x: 0 motion (RG, UV offsets to last frame; grey is still, red and green are motion), 1 depth
+// (R, as stored); rcasCon.y (float bits): the motion gain, how much one UV unit moves the colour;
+// rcasCon.zw the size of the scene (the render size): the input holds its data in that top left part
+// only, so each output pixel reads the one it covers.
+[numthreads(8, 8, 1)]
+void ViewMain(uint3 id : SV_DispatchThreadID)
+{
+    if (any(id.xy >= outSize.xy))
+        return;
+    uint2 p = min(uint2((float2(id.xy) + 0.5) * float2(rcasCon.zw) / float2(outSize.xy)), rcasCon.zw - 1);
+    // outSize.z: the scene is drawn rotated by half a turn (FM2's is; its post-processing turns it back),
+    // so the view is turned to match the picture, and the motion's directions with it.
+    const bool turned = outSize.z != 0u;
+    if (turned)
+        p = rcasCon.zw - 1 - p;
+    float4 s = src.Load(int3(p, 0));
+    if (turned && rcasCon.x == 0u)
+        s.rg = -s.rg;
+    if (rcasCon.x == 0u)
+        dst[id.xy] = float4(saturate(0.5 + s.rg * asfloat(rcasCon.y)), 0.5, 1.0);
+    else
+        dst[id.xy] = float4(saturate(s.rrr), 1.0);
+}
+
+// Frame generation: the scene's depth or motion (src, its data in the top left outSize.xy pixels) turned by half
+// a turn into dst (exactly outSize.xy), the way up the finished picture is shown (FM2 draws its scene turned
+// and its post-processing turns it back). rcasCon.x == 0: motion, whose directions turn too.
+[numthreads(8, 8, 1)]
+void TurnMain(uint3 id : SV_DispatchThreadID)
+{
+    if (any(id.xy >= outSize.xy))
+        return;
+    float4 s = src.Load(int3(outSize.xy - 1 - id.xy, 0));
+    if (rcasCon.x == 0u)
+        s.rg = -s.rg;
+    dst[id.xy] = s;
+}
+
 // Ultrawide menus: the frame (drawn stretched across the whole width) squeezed back into the middle 16:9,
 // black at the sides. outSize.z is where that area starts, outSize.w its width.
 [numthreads(8, 8, 1)]

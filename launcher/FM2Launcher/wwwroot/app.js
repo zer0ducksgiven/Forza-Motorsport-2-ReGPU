@@ -203,6 +203,13 @@ function render() {
   fill($("smaa"), o.smaa, set.smaa)
   fill($("anisotropy"), o.anisotropy, set.anisotropy)
   fill($("renderScale"), o.renderScale, set.renderScale)
+  fill($("upscaler"), o.upscalers, set.upscaler)
+  // FSR 3 and 4 do the anti-aliasing of races themselves: the game turns MSAA off with them. SMAA still smooths the menus.
+  const temporal = set.upscaler === "fsr3" || set.upscaler === "fsr4"
+  $("msaa").disabled = temporal
+  // Frame generation works from what FSR 3 / 4 draw: without them it is off.
+  $("frameGen").disabled = !temporal
+  $("frameGen").classList.toggle("on", temporal && !!set.frameGen)
   fill($("sharpening"), o.sharpening, set.sharpening)
   fill($("language"), o.languages.map((l) => ({ value: l.id, name: l.name })), set.language)
   fill($("musicVolume"), [10, 20, 30, 40, 50, 60, 70, 80, 90, 100].map((v) => ({ value: v, name: v + "%" })), set.musicVolume)
@@ -220,7 +227,7 @@ function render() {
   line("Frame rate", `${set.maxFps} fps cap, VSync ${set.vsync ? "on" : "off"}`)
   const msaaName = (o.msaa.find((m) => m.value === set.msaa) || { name: "Off" }).name
   const smaaName = set.smaa ? "SMAA " + (o.smaa.find((m) => m.value === set.smaa) || { name: "" }).name : ""
-  line("Anti-aliasing", set.msaa > 1 && set.smaa ? `${msaaName} + ${smaaName}` : set.smaa ? smaaName : msaaName)
+  line("Anti-aliasing", temporal ? (set.upscaler === "fsr4" ? "FSR 4" : "FSR 3") + (set.smaa ? ` + ${smaaName} in menus` : "") : set.msaa > 1 && set.smaa ? `${msaaName} + ${smaaName}` : set.smaa ? smaaName : msaaName)
   line("Language", lang ? lang.name : "English")
   line("Intro", set.skipIntro ? "skipped" : "plays")
   if (s.wheel && s.wheel.found) line("Wheel", `${s.wheel.name}, force feedback ${set.wheelStrength}%`)
@@ -437,6 +444,8 @@ $("msaa").onchange = (e) => change({ msaa: +e.target.value })
 $("smaa").onchange = (e) => change({ smaa: +e.target.value })
 $("anisotropy").onchange = (e) => change({ anisotropy: +e.target.value })
 $("renderScale").onchange = (e) => change({ renderScale: +e.target.value })
+$("upscaler").onchange = (e) => change({ upscaler: e.target.value })
+$("frameGen").onclick = () => change({ frameGen: !state.settings.frameGen })
 $("sharpening").onchange = (e) => change({ sharpening: +e.target.value })
 $("language").onchange = (e) => change({ language: +e.target.value })
 $("musicVolume").onchange = (e) => change({ musicVolume: +e.target.value })

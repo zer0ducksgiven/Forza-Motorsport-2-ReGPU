@@ -66,9 +66,10 @@ public:
     }
     void OMSetRenderTargets(UINT n, const D3D12_CPU_DESCRIPTOR_HANDLE* rtvs, BOOL single, const D3D12_CPU_DESCRIPTOR_HANDLE* dsv)
     {
-        // Only the forms the renderer uses: up to two render targets (separate handles), optional depth.
-        struct A { UINT n; BOOL single, hasDsv; D3D12_CPU_DESCRIPTOR_HANDLE rtv[2], dsv; } a{ n, single, dsv != nullptr, {}, dsv ? *dsv : D3D12_CPU_DESCRIPTOR_HANDLE{} };
-        for (UINT i = 0; i < n && i < 2; i++)
+        // Only the forms the renderer uses: up to three render targets (separate handles: colour, motion and the
+        // reactive mask), optional depth.
+        struct A { UINT n; BOOL single, hasDsv; D3D12_CPU_DESCRIPTOR_HANDLE rtv[3], dsv; } a{ n, single, dsv != nullptr, {}, dsv ? *dsv : D3D12_CPU_DESCRIPTOR_HANDLE{} };
+        for (UINT i = 0; i < n && i < 3; i++)
             a.rtv[i] = rtvs[i];
         Put(kTargets, &a, sizeof(a));
     }
@@ -250,7 +251,7 @@ private:
             }
             case kTargets:
             {
-                struct A { UINT n; BOOL single, hasDsv; D3D12_CPU_DESCRIPTOR_HANDLE rtv[2], dsv; };
+                struct A { UINT n; BOOL single, hasDsv; D3D12_CPU_DESCRIPTOR_HANDLE rtv[3], dsv; };
                 const A& c = At<A>(a);
                 l->OMSetRenderTargets(c.n, c.n ? c.rtv : nullptr, c.single, c.hasDsv ? &c.dsv : nullptr);
                 break;

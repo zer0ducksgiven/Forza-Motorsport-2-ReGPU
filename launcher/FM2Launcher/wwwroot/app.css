@@ -268,3 +268,4 @@ textarea { resize: vertical; min-height: 120px; }
 .item .ghost.small { flex: none; }
 #mods { flex: 0 0 auto; }
 #musicVolume { width: 84px; flex: none; }
+.switch:disabled { opacity: .4; cursor: default; }

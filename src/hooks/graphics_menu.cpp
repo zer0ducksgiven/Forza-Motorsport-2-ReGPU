@@ -32,11 +32,12 @@ const std::pair<uint32_t, const char*> kSmaa[] = { { 0, "Off" }, { 1, "Low" }, {
 const std::pair<uint32_t, const char*> kAniso[] = { { 0, "Off (trilinear)" }, { 2, "2x" }, { 4, "4x" }, { 8, "8x" }, { 16, "16x" } };
 const std::pair<uint32_t, const char*> kScale[] = { { 50, "50%" }, { 59, "59%" }, { 67, "67%" }, { 77, "77%" }, { 85, "85%" }, { 100, "100% (native)" } };
 const std::pair<uint32_t, const char*> kSharp[] = { { 0, "Off" }, { 25, "Low" }, { 50, "Medium" }, { 75, "High" }, { 100, "Maximum" } };
+const std::pair<uint32_t, const char*> kUpscaler[] = { { 0, "FSR 1" }, { 1, "FSR 3 (experimental)" }, { 2, "FSR 4 (experimental)" } };
 const std::pair<uint32_t, const char*> kOnOff[] = { { 0, "Off" }, { 1, "On" } };
 const std::pair<uint32_t, const char*> kMode[] = { { 0, "Windowed" }, { 1, "Fullscreen" } };
 
 std::vector<std::pair<uint32_t, uint32_t>> g_resolutions; // as listed on the screen
-uint32_t g_shownSharp = 0, g_shownScale = 100;
+uint32_t g_shownSharp = 0, g_shownScale = 100, g_shownUpscaler = 0;
 
 // The display's modes from 1280x720 up, smallest first (as the launcher lists them), and the current setting.
 void ListResolutions()
@@ -101,6 +102,7 @@ std::string Lua()
     }
     const uint32_t sharpPercent = s.upscaler == Settings::Upscaler::Off ? 0 : uint32_t(std::lround(s.sharpness * 100));
     g_shownSharp = std::min<uint32_t>((sharpPercent + 12) / 25 * 25, 100);
+    g_shownUpscaler = s.upscaler == Settings::Upscaler::Fsr3 ? 1 : s.upscaler == Settings::Upscaler::Fsr4 ? 2 : 0;
 
     struct Row
     {
@@ -116,8 +118,10 @@ std::string Lua()
         { "Msaa", "MSAA", toStrings(kMsaa), s.msaa },
         { "Smaa", "SMAA", toStrings(kSmaa), s.smaa },
         { "Anisotropy", "Anisotropic Filtering", toStrings(kAniso), s.anisotropy },
-        { "RenderScale", "Render Scale (FSR 1)", toStrings(kScale), g_shownScale },
+        { "Upscaler", "Upscaling", toStrings(kUpscaler), g_shownUpscaler },
+        { "RenderScale", "Render Scale", toStrings(kScale), g_shownScale },
         { "Sharpening", "Sharpening", toStrings(kSharp), g_shownSharp },
+        { "FrameGen", "Frame Generation", toStrings(kOnOff), s.frameGen ? 1u : 0u },
         { "MaxFps", "Max FPS", fps, s.maxFps },
         { "Vsync", "VSync", toStrings(kOnOff), s.vsync ? 1u : 0u },
         { "LowPerformance", "Low Performance Mode", toStrings(kOnOff), s.lowPerformance ? 1u : 0u },
@@ -149,16 +153,17 @@ std::string GraphicsMenuLuaSource(const char* text, uint32_t size)
     return out;
 }
 
-// "FM2GFX <resolution index> <aspect> <mode> <msaa> <smaa> <anisotropy> <scale> <sharpening> <fps> <vsync> <low> <arena> <overlay>" from
+// "FM2GFX <resolution index> <aspect> <mode> <msaa> <smaa> <anisotropy> <scale> <sharpening> <fps> <vsync> <low> <arena> <overlay> <upscaler> <frame generation>" from
 // the screen's Back. True when it was this, so the caller doesn't log it as an error.
 bool GraphicsMenuCommand(const char* text, size_t len)
 {
     constexpr char kTag[] = "FM2GFX ";
     if (len < sizeof kTag - 1 || memcmp(text, kTag, sizeof kTag - 1) != 0)
         return false;
-    double v[13] = {};
+    double v[15] = {};
     const std::string args(text + sizeof kTag - 1, len - (sizeof kTag - 1));
-    if (sscanf(args.c_str(), "%lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf", &v[0], &v[1], &v[2], &v[3], &v[4], &v[5], &v[6], &v[7], &v[8], &v[9], &v[10], &v[11], &v[12]) != 13)
+    if (sscanf(args.c_str(), "%lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf", &v[0], &v[1], &v[2], &v[3], &v[4], &v[5], &v[6], &v[7], &v[8], &v[9], &v[10], &v[11], &v[12],
+            &v[13], &v[14]) != 15)
     {
         Log("ui: graphics options: bad report: %s", args.c_str());
         return true;
@@ -166,8 +171,8 @@ bool GraphicsMenuCommand(const char* text, size_t len)
     const size_t res = size_t(v[0]);
     const auto size = res < g_resolutions.size() ? g_resolutions[res] : std::make_pair(0u, 0u);
     const uint32_t aspect = uint32_t(v[1]), msaa = uint32_t(v[3]), smaa = uint32_t(v[4]), aniso = uint32_t(v[5]), scale = uint32_t(v[6]), sharp = uint32_t(v[7]), fps = uint32_t(v[8]);
-    const bool full = v[2] != 0, vsync = v[9] != 0, low = v[10] != 0, arena = v[11] != 0, overlay = v[12] != 0;
-    const uint32_t shownScale = g_shownScale, shownSharp = g_shownSharp;
+    const bool full = v[2] != 0, vsync = v[9] != 0, low = v[10] != 0, arena = v[11] != 0, overlay = v[12] != 0, frameGen = v[14] != 0;
+    const uint32_t shownScale = g_shownScale, shownSharp = g_shownSharp, shownUpscaler = g_shownUpscaler, upscaler = uint32_t(v[13]);
     RendererChangeSettings([=](Settings& s) {
         if (size.first)
         {
@@ -181,19 +186,23 @@ bool GraphicsMenuCommand(const char* text, size_t len)
         s.smaa = smaa;
         s.anisotropy = aniso;
         // As the launcher's GameSettings.Save writes them; left alone when not changed here (a test's upscaler).
-        if (scale != shownScale || sharp != shownSharp)
+        if (scale != shownScale || sharp != shownSharp || upscaler != shownUpscaler)
         {
             s.renderScale = scale;
             s.sharpness = float(sharp) / 100.0f;
-            s.upscaler = scale < 100 || sharp > 0 ? Settings::Upscaler::Fsr1 : Settings::Upscaler::Off;
+            // FSR 3 and 4 stay on at 100% (anti-aliasing only); FSR 1 has nothing to do there without sharpening.
+            s.upscaler = upscaler == 1 ? Settings::Upscaler::Fsr3 : upscaler == 2 ? Settings::Upscaler::Fsr4
+                : scale < 100 || sharp > 0 ? Settings::Upscaler::Fsr1 : Settings::Upscaler::Off;
         }
+        // (Saved now; the swap chain it needs is made when the game starts, so it takes effect at the next start.)
+        s.frameGen = frameGen;
         s.maxFps = fps;
         s.vsync = vsync;
         s.lowPerformance = low;
         s.vertexArena = arena;
         s.hideShaderOverlay = overlay;
     });
-    Log("ui: graphics options: %ux%u, aspect %u, %s, MSAA %u, SMAA %u, filtering %u, scale %u, sharpening %u, cap %u, vsync %d, low %d, arena %d, overlay hidden %d",
-        size.first, size.second, aspect, full ? "fullscreen" : "windowed", msaa, smaa, aniso, scale, sharp, fps, vsync, low, arena, overlay);
+    Log("ui: graphics options: %ux%u, aspect %u, %s, MSAA %u, SMAA %u, filtering %u, upscaling %u, scale %u, sharpening %u, cap %u, vsync %d, low %d, arena %d, overlay hidden %d",
+        size.first, size.second, aspect, full ? "fullscreen" : "windowed", msaa, smaa, aniso, upscaler, scale, sharp, fps, vsync, low, arena, overlay);
     return true;
 }

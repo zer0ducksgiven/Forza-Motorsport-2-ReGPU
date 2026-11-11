@@ -21,10 +21,13 @@ Settings::Upscaler ParseUpscaler(const std::string& v)
 {
     if (v == "fsr1")
         return Settings::Upscaler::Fsr1;
-    // DLSS and FSR 3 aren't finished (0.8.0): off unless FM2_TEMPORAL_UPSCALERS=1, for testing.
-    static const bool temporal = getenv("FM2_TEMPORAL_UPSCALERS") != nullptr;
-    if (v == "fsr3" && temporal)
+    // FSR 3 and FSR 4 (experimental): the launcher's and the Graphics screen's Upscaling choice.
+    if (v == "fsr3")
         return Settings::Upscaler::Fsr3;
+    if (v == "fsr4")
+        return Settings::Upscaler::Fsr4;
+    // DLSS isn't finished: off unless FM2_TEMPORAL_UPSCALERS=1, for testing.
+    static const bool temporal = getenv("FM2_TEMPORAL_UPSCALERS") != nullptr;
     if (v == "dlss" && temporal)
         return Settings::Upscaler::Dlss;
     return Settings::Upscaler::Off;
@@ -37,6 +40,7 @@ const char* UpscalerName(Settings::Upscaler u)
     case Settings::Upscaler::Fsr1: return "fsr1";
     case Settings::Upscaler::Fsr3: return "fsr3";
     case Settings::Upscaler::Dlss: return "dlss";
+    case Settings::Upscaler::Fsr4: return "fsr4";
     default: return "off";
     }
 }
@@ -104,6 +108,8 @@ void Load()
             g_settings.msaa = uint32_t(atoi(value.c_str()));
         else if (key == "smaa")
             g_settings.smaa = uint32_t(atoi(value.c_str()));
+        else if (key == "frame_generation")
+            g_settings.frameGen = value == "1";
         else if (key == "anisotropy")
             g_settings.anisotropy = uint32_t(atoi(value.c_str()));
         else if (key == "upscaler")
@@ -187,13 +193,12 @@ void Load()
     if (const char* v = getenv("FM2_MSAA"))
         g_settings.msaa = uint32_t(atoi(v));
     g_settings.msaa = g_settings.msaa >= 8 ? 8 : g_settings.msaa >= 4 ? 4 : g_settings.msaa >= 2 ? 2 : 1;
-    // DLSS and FSR 3 anti-alias the image themselves; with MSAA as well the device is removed at
-    // the first scene resolve.
-    if (g_settings.upscaler == Settings::Upscaler::Dlss || g_settings.upscaler == Settings::Upscaler::Fsr3)
-        g_settings.msaa = 1;
     if (const char* v = getenv("FM2_SMAA"))
         g_settings.smaa = uint32_t(atoi(v));
     g_settings.smaa = std::min<uint32_t>(g_settings.smaa, 4);
+    if (const char* v = getenv("FM2_FRAMEGEN"))
+        g_settings.frameGen = atoi(v) != 0;
+    g_settings.ApplyUpscalerRules();
     if (const char* v = getenv("FM2_ANISOTROPY"))
         g_settings.anisotropy = uint32_t(atoi(v));
     {
@@ -226,11 +231,26 @@ void Settings::RenderSize(uint32_t& w, uint32_t& h) const
         h = uint32_t(uint64_t(width) * ah / aw) & ~1u;
 }
 
+bool Settings::TemporalUpscaler() const
+{
+    return upscaler == Upscaler::Dlss || upscaler == Upscaler::Fsr3 || upscaler == Upscaler::Fsr4;
+}
+
+// DLSS and FSR 3/4 anti-alias the image themselves. With MSAA as well the device is removed at the first
+// scene resolve (FSR 4 crashed at context creation with 4x in the FM4 port). SMAA stays as set: the renderer
+// skips it on the frames a temporal upscaler ran on, and it still smooths the showroom and the menus.
+void Settings::ApplyUpscalerRules()
+{
+    if (TemporalUpscaler())
+        msaa = 1;
+}
+
 float Settings::SceneScale() const
 {
     if (upscaler == Upscaler::Off)
         return 1.0f;
-    if (upscaler == Upscaler::Fsr1)
+    // FSR 1, 3 and 4 share the launcher's render scale (at 100% FSR 3/4 only anti-alias).
+    if (upscaler == Upscaler::Fsr1 || upscaler == Upscaler::Fsr3 || upscaler == Upscaler::Fsr4)
         return float(renderScale) / 100.0f;
     // The usual presets (native, 1.5x, 1.7x, 2x, 3x per axis).
     static const float scales[] = { 1.0f, 1.0f / 1.5f, 1.0f / 1.7f, 0.5f, 1.0f / 3.0f };
@@ -278,6 +298,7 @@ void SaveSettings()
     out << "settings_rev=1\n"; // see the launcher's GameSettings.Load
     out << "msaa=" << s.msaa << "\n";
     out << "smaa=" << s.smaa << "\n";
+    out << "frame_generation=" << (s.frameGen ? 1 : 0) << "\n";
     out << "anisotropy=" << s.anisotropy << "\n";
     out << "upscaler=" << UpscalerName(s.upscaler) << "\n";
     out << "upscale_quality=" << s.quality << "\n";

@@ -150,14 +150,22 @@
         <span>Anisotropic filtering</span>
         <select id="anisotropy"></select>
       </label>
-      <label class="field" data-tip="Renders the game, HUD included, at fewer pixels and upscales it with AMD FSR 1. Lower is faster on weak graphics cards (laptops, older GPUs); most PCs are limited by the CPU and gain little. 100% renders at full resolution.">
-        <span>Render scale (FSR 1)</span>
+      <label class="field" data-tip="How a lower render scale is brought back to full size. FSR 1 is the fastest and works on the whole picture. FSR 3 (experimental) rebuilds the 3D picture over several frames: sharper and smoother, the HUD stays at full size, it is used instead of MSAA in races and replays (menus stay at full size, where SMAA still works), and at 100% it only smooths edges. Overhead: FSR 3 has a fixed cost every frame that grows with the resolution, so it is slower than FSR 1 at the same render scale, and above about 60% render scale it can be slower than no upscaling at all. FSR 4 (experimental) is AMD's newer version for RX 9000 cards; on other cards it runs FSR 3. Please tell us how it runs on your PC (Report tab): the game's log records your frame rate and whether the graphics card or the processor was the limit.">
+        <span>Upscaling</span>
+        <select id="upscaler"></select>
+      </label>
+      <label class="field" data-tip="Renders the game at fewer pixels and upscales it with the Upscaling method. Lower is faster on weak graphics cards (laptops, older GPUs); most PCs are limited by the CPU and gain little. 100% renders at full resolution.">
+        <span>Render scale</span>
         <select id="renderScale"></select>
       </label>
       <label class="field" data-tip="AMD CAS-style sharpening (FSR 1's RCAS) on the final picture. Works at any render scale; at 100% it only sharpens. Almost free.">
         <span>Sharpening</span>
         <select id="sharpening"></select>
       </label>
+      <div class="toggle-row" data-tip="AMD FSR 3 frame generation (experimental): shows a made-up frame between each two real ones in races, so the picture can look smoother than the game renders. Needs Upscaling set to FSR 3 or FSR 4. Overhead: it is costly. The real frame rate drops by a third to a half, so the frame rate you see may end up no higher than with it off, and the controls respond a little later. It suits some PCs more than others: compare both ways. The frame rate in the game window's title bar counts real frames only. Please tell us how it runs on your PC (Report tab): the game's log records your frame rate and whether the graphics card or the processor was the limit.">
+        <div><div class="toggle-title">Frame generation</div><div class="toggle-sub">Experimental. Needs FSR 3 or 4; lowers the real frame rate</div></div>
+        <button class="switch" id="frameGen" role="switch"></button>
+      </div>
     </section>
 
     <div class="stack">

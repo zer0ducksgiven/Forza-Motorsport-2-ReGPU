@@ -38,6 +38,7 @@
 #include "gpu/hlsl.h"
 #include "gpu/dlss.h"
 #include "gpu/fsr3.h"
+#include "gpu/fsrfg.h"
 #include "gpu/recorded_list.h"
 #include "fsr1_cs.h"
 #include "smaa_cs.h"
@@ -119,11 +120,35 @@ float g_sceneScale = 1.0f;
 bool g_scenePhase = false;
 // A temporal upscaler this frame: the scene's main view draws with motion vectors and jitter.
 bool g_temporal = false;
+// What reaches the temporal upscaler's motion and depth paths, summed and logged once a second
+// (BeginTemporalFrame): which of the conditions for a draw's motion vectors and for the scene's depth
+// copy holds, and how often (from Aiden's FM4 port).
+struct TemporalStats
+{
+    std::atomic<uint32_t> frames{ 0 }, draws{ 0 }, edram4{ 0 }, widePass{ 0 }, wantMotion{ 0 }, shaderMissing{ 0 }, shaderNotReady{ 0 }, noPipeline{ 0 },
+        motion{ 0 }, known{ 0 }, resolves{ 0 }, resolveFullWidth{ 0 }, sceneDone{ 0 }, evaluated{ 0 }, depthCopies{ 0 }, depthNoTarget{ 0 }, depthEmpty{ 0 }, cuts{ 0 },
+        cutSamples{ 0 }, cutHits{ 0 }, generated{ 0 }, hudSnaps{ 0 }, hudless{ 0 };
+} g_tstat;
+// FM2_MOTION_STATS=1 (live): every 5 s, the vertex shaders whose main-view draws wrote no real motion (their
+// draw was not found in last frame, so the upscaler sees them as still), with the pixel shader last seen with
+// each (fm2ctl.py "ps HASH tint 1,0,1" paints its draws). After Aiden's per-shader motion stats in the FM4 port.
+struct MotionUnknownStat
+{
+    uint32_t draws = 0, unknown = 0, vfetch = 0, dma = 0;
+    uint64_t psHash = 0;
+};
+std::unordered_map<uint64_t, MotionUnknownStat> g_motionUnknown;
+uint32_t g_motionUnknownFrames = 0;
 struct Upscale
 {
     bool tried = false, ready = false;
     ComPtr<ID3D12RootSignature> root;
-    ComPtr<ID3D12PipelineState> easu, rcas, depthCopy, gamma, enhance, pillar;
+    ComPtr<ID3D12PipelineState> easu, rcas, depthCopy, gamma, enhance, pillar, view, turn;
+    // Frame generation: the scene's depth and motion turned the way up the picture is shown (render size).
+    ComPtr<ID3D12Resource> turnedDepth, turnedMotion;
+    // This frame's motion and depth were handed to the upscaler, at this render size (ViewFrontBuffer).
+    bool viewValid = false;
+    uint32_t viewWidth = 0, viewHeight = 0;
     ComPtr<ID3D12Resource> dlaaOut; // DLAA output (scene size), copied back into the scene image
     ComPtr<ID3D12Resource> depth; // temporal: the scene's depth as R32 (render size, top left)
     ComPtr<ID3D12Resource> temp; // EASU output (RGBA16F)
@@ -137,11 +162,25 @@ struct Upscale
     uint32_t pendingBase = 0;
     bool pending = false;
     uint64_t retryFrame = 0; // after a frame with no scene to upscale (menus): native until then
+    // Temporal upscalers only run on frames with a 3D scene of its own: one whose first full-screen colour
+    // resolve is not the front buffer (a race, a replay). The showroom and the menus draw straight into the
+    // front buffer, HUD and all, and stay at full size. fullResolveBase: this frame's first full-screen colour
+    // resolve; sceneOk: last frame had such a scene, so this one may use the scene phase (decided at each swap,
+    // so the first frame of a race is still drawn at full size and the first of a menu after one is not).
+    uint32_t fullResolveBase = ~0u;
+    bool sceneOk = false;
+    bool temporalRan = false; // the temporal upscaler ran this frame (SMAA is skipped on it)
     // Temporal upscalers: the motion target (RG16F, output size; UV offsets to last frame),
     // this frame's jitter (pixels and NDC) and the scene's render size.
     ComPtr<ID3D12Resource> motion;
     ComPtr<ID3D12DescriptorHeap> motionRtvHeap;
     D3D12_CPU_DESCRIPTOR_HANDLE motionRtv{};
+    // The reactive mask for FSR 3/4 (R8, output size, the motion pipelines' third target): blended draws that
+    // were not found in last frame (dynamic geometry: smoke, dust, sparks, the braking line) write how much
+    // they cover; opaque draws leave it alone. The upscaler then trusts the new frame there instead of
+    // smearing its history: those draws have no motion of their own.
+    ComPtr<ID3D12Resource> reactive;
+    D3D12_CPU_DESCRIPTOR_HANDLE reactiveRtv{};
     float jitterPx[2] = {}, jitterNdc[2] = {};
     uint32_t renderWidth = 0, renderHeight = 0;
     bool reset = true; // no usable history (first frame, after menus)
@@ -151,7 +190,14 @@ struct Upscale
     {
         uint32_t frame = 0;                    // the temporal frame that last drew it
         D3D12_GPU_VIRTUAL_ADDRESS address[2]{}; // its vertex constants in that frame's ring, by frame parity
+        float first[16]{};                      // its c0-c3 that frame (camera cut detection; set for sampled draws)
+        uint32_t firstFrame = 0;
     };
+    // Camera cuts: the frame's first draws with motion compare their c0-c3 (a transform, in most scene
+    // shaders) with last frame's; when most of them turned a long way at once the view was cut, and the
+    // upscaler drops its history (EvaluateTemporal). cutSamples/cutHits count this frame's comparisons.
+    uint32_t cutSamples = 0, cutHits = 0;
+    bool cut = false;
     std::unordered_map<uint64_t, DrawConstants> constants;
     std::unordered_map<uint64_t, uint32_t> occurrences;
     uint32_t constantsFrame = 0;
@@ -697,6 +743,7 @@ uint32_t g_gpuFrames = 0;
 // players' logs tell a GPU-bound PC (iGPUs, APUs) from a CPU-bound one.
 double g_logGpuMs = 0;
 uint32_t g_logGpuFrames = 0;
+uint32_t g_logSceneFrames = 0; // frames with a 3D scene of their own (races, replays) since the last "performance:" line
 ID3D12Resource* VertexCacheBeginFrame(); // the vertex arena for t1 this frame, or none (see VertexArena)
 uint32_t g_waitBlend = 0;
 std::map<std::string, uint64_t> g_created; // FM2_PERF: committed resources created, by kind
@@ -1945,7 +1992,15 @@ void ApplySettingsChange()
     Settings& st = GetSettings();
     const uint32_t oldW = st.width, oldH = st.height, oldOutW = OutputWidth(), oldOutH = OutputHeight(), oldAniso = st.anisotropy;
     const bool oldFull = st.fullscreen;
+    const Settings::Upscaler oldUpscaler = st.upscaler;
     change(st);
+    st.ApplyUpscalerRules();
+    if (st.upscaler != oldUpscaler)
+    {
+        g_upscale.reset = true; // a temporal upscaler starts without history
+        static const char* names[] = { "off", "FSR 1", "FSR 3", "DLSS", "FSR 4" };
+        Log("renderer: upscaler %s (live)", names[std::min<uint32_t>(uint32_t(st.upscaler), 4)]);
+    }
     LoadOutputSize();
     const bool sized = st.width != oldW || st.height != oldH, outputSized = OutputWidth() != oldOutW || OutputHeight() != oldOutH;
     const uint32_t samples = SupportedMsaa(st.msaa);
@@ -1972,6 +2027,7 @@ void ApplySettingsChange()
         g_r.readback = CreateBuffer(UINT64((OutputWidth() * 4 + 255) & ~255u) * OutputHeight(), D3D12_HEAP_TYPE_READBACK, D3D12_RESOURCE_STATE_COPY_DEST);
         g_upscale.depth.Reset();
         g_upscale.motion.Reset();
+        g_upscale.reactive.Reset();
         g_upscale.renderWidth = g_upscale.renderHeight = 0;
         Log("renderer: output %ux%u (live)", OutputWidth(), OutputHeight());
     }
@@ -2165,11 +2221,14 @@ void BeginFrameIfNeeded()
     // This frame's scene phase and scale (see UpscaleScene).
     {
         const Settings& st = GetSettings();
-        const bool temporalUpscaler = st.upscaler == Settings::Upscaler::Dlss || st.upscaler == Settings::Upscaler::Fsr3;
+        const bool temporalUpscaler = st.upscaler == Settings::Upscaler::Dlss || st.upscaler == Settings::Upscaler::Fsr3 ||
+            st.upscaler == Settings::Upscaler::Fsr4;
         const float scale = st.SceneScale();
         g_upscale.switchedThisFrame = false;
+        g_upscale.fullResolveBase = ~0u;
+        g_upscale.temporalRan = false;
         g_scenePhase = st.upscaler != Settings::Upscaler::Off && (temporalUpscaler || scale < 1.0f) && g_r.frame >= g_upscale.retryFrame &&
-            (!temporalUpscaler || TemporalInit());
+            (!temporalUpscaler || (g_upscale.sceneOk && TemporalInit()));
         g_temporal = g_scenePhase && temporalUpscaler;
         g_sceneScale = g_scenePhase ? scale : 1.0f;
         if (g_temporal)
@@ -2877,6 +2936,18 @@ struct ShaderCompiler
         cv.notify_one();
     }
 
+    // A shader no draw waits for (the motion-vector variants: draws go without motion until theirs is
+    // ready): compiled when nothing urgent is queued, parked or not, and never part of what a hold waits for.
+    void PushQuiet(CompiledShader* cs)
+    {
+        {
+            std::lock_guard lock(mutex);
+            waiting++;
+            background.push_back(cs);
+        }
+        cv.notify_one();
+    }
+
     // Moves a background shader something now needs to the front of the urgent queue.
     void Promote(const CompiledShader& cs)
     {
@@ -3364,7 +3435,7 @@ std::string MotionVariant(const std::string& hlsl, bool pixel)
         return {};
     if (pixel)
     {
-        if (!replace("float4 main(VSOut input) : SV_Target0\n{", "struct PSMotionOut { float4 c : SV_Target0; float2 mv : SV_Target1; };\n"
+        if (!replace("float4 main(VSOut input) : SV_Target0\n{", "struct PSMotionOut { float4 c : SV_Target0; float2 mv : SV_Target1; float reactive : SV_Target2; };\n"
                                                                     "PSMotionOut main(VSOut input)\n{"))
             return {};
         const size_t at = h.rfind("    return oC[0];\n}");
@@ -3375,6 +3446,10 @@ std::string MotionVariant(const std::string& hlsl, bool pixel)
             "    motionOut.c = oC[0];\n"
             "    float2 cur = input.mcur.xy / input.mcur.w, prev = input.mprev.xy / input.mprev.w;\n"
             "    motionOut.mv = (prev - cur) * float2(0.5, -0.5);\n"
+            // The reactive mask: how much this draw covers: its alpha (scaled by mcur.z, set for draws that blend
+            // by their alpha) or its brightness (by mprev.z, for the others: additive light). Both are 0 unless
+            // the draw is dynamic geometry (see Upscale::reactive).
+            "    motionOut.reactive = saturate(input.mcur.z * oC[0].a + input.mprev.z * max(oC[0].r, max(oC[0].g, oC[0].b)));\n"
             "    return motionOut;\n}");
         return h;
     }
@@ -3410,7 +3485,9 @@ std::string MotionVariant(const std::string& hlsl, bool pixel)
         "        GuestVSPrev(e, q, qo, qpts);\n"
         "        r.mprev = ToClip(q, pointOffset);\n"
         "    }\n"
-        "    r.pos.xy += vjitter.xy * r.pos.w;\n");
+        "    r.pos.xy += vjitter.xy * r.pos.w;\n"
+        "    r.mcur.z = vjitter.z;\n" // (the pixel shader uses xy and w only of these two: their z carry the reactive scales)
+        "    r.mprev.z = vjitter.w;\n");
     h.insert(mainAt, fn);
     // VSOut members the original code never sets.
     return h;
@@ -3446,7 +3523,9 @@ const CompiledShader* MotionShaderLookup(const CompiledShader& base)
         cs.state = CompiledShader::Failed;
         return nullptr;
     }
-    cs.cacheKey = Fnv(cs.info.hlsl.data(), cs.info.hlsl.size(), CacheSeed(source.pixel));
+    // FM2_MOTION_SALT=<number>: other cache names, so the variants compile again (testing a first run).
+    static const uint64_t salt = getenv("FM2_MOTION_SALT") ? strtoull(getenv("FM2_MOTION_SALT"), nullptr, 0) : 0;
+    cs.cacheKey = Fnv(cs.info.hlsl.data(), cs.info.hlsl.size(), CacheSeed(source.pixel)) ^ salt;
     if (auto b = g_bytecode.find(cs.cacheKey); b != g_bytecode.end())
     {
         cs.code = b->second;
@@ -3465,7 +3544,13 @@ const CompiledShader* MotionShaderLookup(const CompiledShader& base)
             return &cs;
         }
     }
-    g_compiler.Push(&cs, false);
+    // Not urgent: as urgent jobs they made any hold wait for every variant (the first FSR 3 race on the
+    // FX froze for most of a minute: ~130 variants at 2 s each). FM2_MOTION_URGENT=1: as before.
+    static const bool urgent = getenv("FM2_MOTION_URGENT") != nullptr;
+    if (urgent)
+        g_compiler.Push(&cs, false);
+    else
+        g_compiler.PushQuiet(&cs);
     return &cs;
 }
 
@@ -3832,13 +3917,24 @@ std::shared_ptr<PipelineEntry> EnsurePipeline(const CompiledShader& vs, const Co
     if (motion)
     {
         pd.pRootSignature = g_r.motionRootSignature.Get();
-        pd.NumRenderTargets = 2;
+        pd.NumRenderTargets = 3;
         pd.RTVFormats[1] = DXGI_FORMAT_R16G16_FLOAT;
+        pd.RTVFormats[2] = DXGI_FORMAT_R8_UNORM;
         pd.BlendState.IndependentBlendEnable = TRUE;
         auto& mv = pd.BlendState.RenderTarget[1];
         mv = D3D12_RENDER_TARGET_BLEND_DESC{};
         // Blended draws (glass, smoke) keep the motion of what is behind them.
         mv.RenderTargetWriteMask = rt.BlendEnable ? 0 : D3D12_COLOR_WRITE_ENABLE_RED | D3D12_COLOR_WRITE_ENABLE_GREEN;
+        // The reactive mask (Upscale::reactive): blended draws keep the larger of what is there and what they
+        // write. Opaque draws leave it alone: the dynamic blended draws come last in the scene, and a
+        // full-screen opaque pass after them would otherwise wipe it.
+        auto& re = pd.BlendState.RenderTarget[2];
+        re = D3D12_RENDER_TARGET_BLEND_DESC{};
+        re.BlendEnable = TRUE;
+        re.SrcBlend = re.SrcBlendAlpha = D3D12_BLEND_ONE;
+        re.DestBlend = re.DestBlendAlpha = D3D12_BLEND_ONE;
+        re.BlendOp = re.BlendOpAlpha = D3D12_BLEND_OP_MAX;
+        re.RenderTargetWriteMask = rt.BlendEnable ? D3D12_COLOR_WRITE_ENABLE_RED : 0;
     }
     auto entry = std::make_shared<PipelineEntry>();
     g_r.pipelines[key] = entry;
@@ -3982,6 +4078,10 @@ ID3D12PipelineState* GetPipeline(const CompiledShader& vs, const CompiledShader&
         }
         entry = EnsurePipeline(vs, ps, key);
     }
+    // A motion pipeline is never waited for: the draw uses its plain pipeline (no motion) until this one is built.
+    static const bool motionWaits = getenv("FM2_MOTION_URGENT") != nullptr;
+    if (motion && !motionWaits && entry->state.load(std::memory_order_acquire) != 1)
+        return nullptr;
     if (SkippableDraw(depthOnly, key.blend) && entry->state.load(std::memory_order_acquire) == 0)
     {
         g_skippedPipeline++;
@@ -5384,11 +5484,18 @@ bool TemporalInit()
             return false;
         D3D12_DESCRIPTOR_HEAP_DESC hd{};
         hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-        hd.NumDescriptors = 1;
+        hd.NumDescriptors = 2;
         if (FAILED(g_r.device->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&g_upscale.motionRtvHeap))))
             return false;
         g_upscale.motionRtv = g_upscale.motionRtvHeap->GetCPUDescriptorHandleForHeapStart();
         g_r.device->CreateRenderTargetView(g_upscale.motion.Get(), nullptr, g_upscale.motionRtv);
+        td.Format = cv.Format = DXGI_FORMAT_R8_UNORM;
+        if (FAILED(g_r.device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &td, D3D12_RESOURCE_STATE_RENDER_TARGET, &cv,
+                IID_PPV_ARGS(&g_upscale.reactive))))
+            return false;
+        g_upscale.reactiveRtv = g_upscale.motionRtv;
+        g_upscale.reactiveRtv.ptr += g_r.device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+        g_r.device->CreateRenderTargetView(g_upscale.reactive.Get(), nullptr, g_upscale.reactiveRtv);
         td.Format = DXGI_FORMAT_R32_FLOAT;
         td.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
         if (FAILED(g_r.device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &td, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
@@ -5403,8 +5510,16 @@ void CopySceneDepth(const D3D12_RECT& gameRect)
 {
     const D3D12_RECT r = ToHost(gameRect);
     FrameResources& f = Frame();
-    if (!g_upscale.depth || !C().depth || r.right <= r.left || r.bottom <= r.top || f.descriptorsUsed + 2 > kDescriptorsPerFrame)
+    if (!g_upscale.depth || !C().depth)
+    {
+        g_tstat.depthNoTarget++;
         return;
+    }
+    if (r.right <= r.left || r.bottom <= r.top || f.descriptorsUsed + 2 > kDescriptorsPerFrame)
+    {
+        g_tstat.depthEmpty++;
+        return;
+    }
     const UINT slots = f.descriptorBase + f.descriptorsUsed;
     f.descriptorsUsed += 2;
     D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
@@ -5438,6 +5553,7 @@ void CopySceneDepth(const D3D12_RECT& gameRect)
     std::swap(b.Transition.StateBefore, b.Transition.StateAfter);
     C().list->ResourceBarrier(1, &b);
     g_drawState.Invalidate(); // the compute pipeline replaced the draw's
+    g_tstat.depthCopies++;
 }
 
 float Halton(uint32_t index, uint32_t base)
@@ -5454,6 +5570,51 @@ float Halton(uint32_t index, uint32_t base)
 // Start of a temporal frame: jitter, a cleared motion target, the next constants map.
 void BeginTemporalFrame()
 {
+    g_tstat.frames++;
+    g_upscale.cutSamples = g_upscale.cutHits = 0;
+    if (static LiveSwitch motionStats("FM2_MOTION_STATS"); motionStats)
+    {
+        g_motionUnknownFrames++;
+        static auto last = std::chrono::steady_clock::now();
+        if (const auto now = std::chrono::steady_clock::now(); now - last >= std::chrono::seconds(5))
+        {
+            last = now;
+            std::vector<std::pair<uint64_t, MotionUnknownStat>> v;
+            for (const auto& e : g_motionUnknown)
+                if (e.second.unknown)
+                    v.push_back(e);
+            std::sort(v.begin(), v.end(), [](const auto& a, const auto& b) { return a.second.unknown > b.second.unknown; });
+            const double frames = std::max(1u, g_motionUnknownFrames);
+            Log("motion: %.0f frames, %zu of %zu vertex shaders had draws not found in last frame", frames, v.size(), g_motionUnknown.size());
+            for (size_t i = 0; i < v.size() && i < 10; i++)
+                Log("motion:   vs %016llx ps %016llx: %.2f of %.2f draws a frame not found; %u vertex fetches, %s", (unsigned long long)v[i].first,
+                    (unsigned long long)v[i].second.psHash, v[i].second.unknown / frames, v[i].second.draws / frames, v[i].second.vfetch,
+                    v[i].second.dma ? "indexed" : "not indexed");
+            g_motionUnknown.clear();
+            g_motionUnknownFrames = 0;
+        }
+    }
+    else if (!g_motionUnknown.empty())
+        g_motionUnknown.clear();
+    static auto statsLogged = std::chrono::steady_clock::now();
+    if (const auto now = std::chrono::steady_clock::now(); now - statsLogged >= std::chrono::seconds(1))
+    {
+        statsLogged = now;
+        auto take = [](std::atomic<uint32_t>& v) { return v.exchange(0); };
+        const uint32_t frames = take(g_tstat.frames), draws = take(g_tstat.draws), edram4 = take(g_tstat.edram4), wide = take(g_tstat.widePass),
+            want = take(g_tstat.wantMotion), missing = take(g_tstat.shaderMissing), notReady = take(g_tstat.shaderNotReady), noPso = take(g_tstat.noPipeline),
+            motion = take(g_tstat.motion), known = take(g_tstat.known), resolves = take(g_tstat.resolves), fullWidth = take(g_tstat.resolveFullWidth),
+            done = take(g_tstat.sceneDone), evaluated = take(g_tstat.evaluated), copies = take(g_tstat.depthCopies), noTarget = take(g_tstat.depthNoTarget),
+            empty = take(g_tstat.depthEmpty), cuts = take(g_tstat.cuts), cutSamples = take(g_tstat.cutSamples), cutHits = take(g_tstat.cutHits),
+            generated = take(g_tstat.generated), hudSnaps = take(g_tstat.hudSnaps), hudless = take(g_tstat.hudless);
+        static LiveSwitch quiet("FM2_NO_TEMPORAL_STATS");
+        if (!quiet)
+            Log("temporal: %u frames: scene draws %u (edram mode 4: %u, wide pass: %u, want motion: %u; motion shader missing %u, not ready %u, no pipeline %u; "
+                "writing motion %u, known from last frame %u); colour resolves %u (full width %u), scenes done %u (upscaler ran %u), depth copies %u (skipped: no target %u, empty %u); "
+                "camera cuts %u (%u of %u sampled transforms turned); frames generated %u (%u with the HUD-less picture, %u copies of it)",
+                frames, draws, edram4, wide, want, missing, notReady, noPso, motion, known, resolves, fullWidth, done, evaluated, copies, noTarget, empty,
+                cuts, cutHits, cutSamples, generated, hudless, hudSnaps);
+    }
     g_upscale.renderWidth = uint32_t(std::lround(OutputWidth() * double(g_sceneScale)));
     g_upscale.renderHeight = uint32_t(std::lround(OutputHeight() * double(g_sceneScale)));
     // Phases: 8 per pixel of upscale area (DLSS guidance), at most 64.
@@ -5471,12 +5632,107 @@ void BeginTemporalFrame()
         std::erase_if(g_upscale.constants, [](const auto& e) { return e.second.frame + 2 < g_upscale.constantsFrame; });
     const float zero[4] = {};
     C().list->ClearRenderTargetView(g_upscale.motionRtv, zero, 0, nullptr);
+    C().list->ClearRenderTargetView(g_upscale.reactiveRtv, zero, 0, nullptr);
 }
 
 void UpscaleResolved(uint32_t base);
 
 // DLSS or FSR 3 on the scene image at `base`: colour (render size), depth and motion (top left of
 // output-sized textures); the upscaled image replaces it like UpscaleResolved.
+// Frame generation (gpu/fsrfg.h): this frame's depth and motion, as the upscaler just had them (both in
+// NON_PIXEL_SHADER_RESOURCE, `width` x `height` in their top left), go to AMD's frame generation, which works
+// on the picture as presented. FM2 draws its scene turned by half a turn and turns it back in post-processing,
+// so both are turned first (TurnMain), and the jitter with them.
+bool InitUpscale();
+FsrFgFrame g_fgPending{};
+bool g_fgPendingValid = false;
+void PrepareFrameGen(uint32_t width, uint32_t height, uint32_t outWidth, uint32_t outHeight, const DlssFrame& in, bool depthInverted)
+{
+    if (!InitUpscale() || !g_upscale.turn)
+        return;
+    FrameResources& f = Frame();
+    if (f.descriptorsUsed + 4 > kDescriptorsPerFrame)
+        return;
+    auto ensure = [&](ComPtr<ID3D12Resource>& t, DXGI_FORMAT format, const char* kind) {
+        if (t && t->GetDesc().Width == width && t->GetDesc().Height == height)
+            return true;
+        D3D12_RESOURCE_DESC td{};
+        td.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        td.Width = width;
+        td.Height = height;
+        td.DepthOrArraySize = 1;
+        td.MipLevels = 1;
+        td.Format = format;
+        td.SampleDesc.Count = 1;
+        td.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+        RetireTexture(std::move(t));
+        t = CreateTexture(td, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, kind);
+        return t != nullptr;
+    };
+    if (!ensure(g_upscale.turnedDepth, DXGI_FORMAT_R32_FLOAT, "turned depth") || !ensure(g_upscale.turnedMotion, DXGI_FORMAT_R16G16_FLOAT, "turned motion"))
+        return;
+    auto barrier = [](ID3D12Resource* r, D3D12_RESOURCE_STATES from, D3D12_RESOURCE_STATES to) {
+        D3D12_RESOURCE_BARRIER b{};
+        b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        b.Transition.pResource = r;
+        b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        b.Transition.StateBefore = from;
+        b.Transition.StateAfter = to;
+        C().list->ResourceBarrier(1, &b);
+    };
+    // (The upscaler may have left its own heaps on the list.)
+    ID3D12DescriptorHeap* heaps[] = { g_r.srvHeap.Get(), g_r.samplerHeap.Get() };
+    C().list->SetDescriptorHeaps(2, heaps);
+    C().list->SetComputeRootSignature(g_upscale.root.Get());
+    C().list->SetPipelineState(g_upscale.turn.Get());
+    for (int pass = 0; pass < 2; pass++)
+    {
+        const bool motion = pass == 1;
+        ID3D12Resource* source = motion ? in.motion : in.depth;
+        ID3D12Resource* turned = motion ? g_upscale.turnedMotion.Get() : g_upscale.turnedDepth.Get();
+        const DXGI_FORMAT format = motion ? DXGI_FORMAT_R16G16_FLOAT : DXGI_FORMAT_R32_FLOAT;
+        const UINT slots = f.descriptorBase + f.descriptorsUsed;
+        f.descriptorsUsed += 2;
+        D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
+        srv.Format = format;
+        srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        srv.Texture2D.MipLevels = 1;
+        g_r.device->CreateShaderResourceView(source, &srv, Cpu(g_r.srvHeap.Get(), slots, g_r.srvStride));
+        D3D12_UNORDERED_ACCESS_VIEW_DESC uav{};
+        uav.Format = format;
+        uav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+        g_r.device->CreateUnorderedAccessView(turned, nullptr, &uav, Cpu(g_r.srvHeap.Get(), slots + 1, g_r.srvStride));
+        uint32_t c[24] = {};
+        c[16] = motion ? 0u : 1u; // rcasCon.x: motion's directions turn too
+        c[20] = width;            // outSize.xy
+        c[21] = height;
+        barrier(turned, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        C().list->SetComputeRoot32BitConstants(0, 24, c, 0);
+        C().list->SetComputeRootDescriptorTable(1, Gpu(g_r.srvHeap.Get(), slots, g_r.srvStride));
+        C().list->SetComputeRootDescriptorTable(2, Gpu(g_r.srvHeap.Get(), slots + 1, g_r.srvStride));
+        C().list->Dispatch((width + 7) / 8, (height + 7) / 8, 1);
+        barrier(turned, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    }
+    FsrFgFrame fg{};
+    fg.depth = g_upscale.turnedDepth.Get();
+    fg.motion = g_upscale.turnedMotion.Get();
+    fg.renderWidth = width;
+    fg.renderHeight = height;
+    fg.displayWidth = outWidth;
+    fg.displayHeight = outHeight;
+    fg.jitterX = -in.jitterX;
+    fg.jitterY = -in.jitterY;
+    fg.motionScaleX = in.motionScaleX;
+    fg.motionScaleY = in.motionScaleY;
+    fg.frameTimeMs = in.frameTimeMs;
+    fg.reset = in.reset;
+    fg.depthInverted = depthInverted;
+    // Handed over at the swap (FinishFrameGen): the picture without the HUD is only known then.
+    g_fgPending = fg;
+    g_fgPendingValid = true;
+}
+
 bool EvaluateTemporal(uint32_t base, bool dlss)
 {
     if (dlss && !DlssInit(g_r.device))
@@ -5486,7 +5742,10 @@ bool EvaluateTemporal(uint32_t base, bool dlss)
         return false;
     ResolvedTexture& dest = it->second;
     if (dest.format != DXGI_FORMAT_R8G8B8A8_UNORM && dest.format != DXGI_FORMAT_R16G16B16A16_FLOAT)
+    {
+        LOG_ONCE("upscale: the scene image's format %d is not one the temporal upscalers take (FSR 1 instead)", int(dest.format));
         return false;
+    }
     const ComPtr<ID3D12Resource> color = dest.resource;
     const uint32_t inWidth = dest.hostWidth, inHeight = dest.hostHeight;
     const float savedScale = g_sceneScale;
@@ -5535,6 +5794,8 @@ bool EvaluateTemporal(uint32_t base, bool dlss)
     in.color = color.Get();
     in.depth = g_upscale.depth.Get();
     in.motion = g_upscale.motion.Get();
+    static LiveSwitch noReactiveInput("FM2_NO_REACTIVE_INPUT"); // A/B: the mask is drawn but not given to the upscaler
+    in.reactive = noReactiveInput ? nullptr : g_upscale.reactive.Get();
     in.output = dlaa ? g_upscale.dlaaOut.Get() : dest.resource.Get();
     static const float jitterSign = getenv("FM2_DLSS_JITTER_FLIP") ? -1.0f : 1.0f;
     in.jitterX = g_upscale.jitterPx[0] * jitterSign;
@@ -5542,7 +5803,20 @@ bool EvaluateTemporal(uint32_t base, bool dlss)
     in.motionScaleX = float(inWidth);
     in.motionScaleY = float(inHeight);
     in.frameTimeMs = float(std::chrono::duration<double, std::milli>(now - last).count());
-    in.reset = g_upscale.reset;
+    // A camera cut (see Upscale::cut): most of the sampled draws' transforms turned a long way since last frame.
+    static LiveSwitch noCutReset("FM2_NO_CUT_RESET");
+    g_upscale.cut = g_upscale.cutSamples >= 8 && g_upscale.cutHits * 2 > g_upscale.cutSamples;
+    g_tstat.cutSamples += g_upscale.cutSamples;
+    g_tstat.cutHits += g_upscale.cutHits;
+    if (g_upscale.cut)
+    {
+        g_tstat.cuts++;
+        static uint32_t logged = 0;
+        if (logged++ < 20)
+            Log("temporal: camera cut at frame %llu (%u of %u sampled draws)%s", (unsigned long long)g_r.frame, g_upscale.cutHits, g_upscale.cutSamples,
+                noCutReset ? ", history kept (FM2_NO_CUT_RESET)" : ": upscaler history dropped");
+    }
+    in.reset = g_upscale.reset || (g_upscale.cut && !noCutReset);
     last = now;
 
     auto barrier = [](ID3D12Resource* r, D3D12_RESOURCE_STATES from, D3D12_RESOURCE_STATES to) {
@@ -5557,10 +5831,25 @@ bool EvaluateTemporal(uint32_t base, bool dlss)
     const D3D12_RESOURCE_STATES read = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
     barrier(g_upscale.depth.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     barrier(g_upscale.motion.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    barrier(g_upscale.reactive.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     barrier(in.output, read, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     // NGX records into the real command list (after everything recorded so far).
     const bool ok = dlss ? DlssEvaluate(C().list->Real(), setup, in)
-                         : Fsr3Evaluate(g_r.device, C().list->Real(), setup, in, GetSettings().sharpness);
+                         : GetSettings().upscaler == Settings::Upscaler::Fsr4 ? Fsr4Evaluate(g_r.device, C().list->Real(), setup, in, GetSettings().sharpness)
+                                                                             : Fsr3Evaluate(g_r.device, C().list->Real(), setup, in, GetSettings().sharpness);
+    if (ok)
+    {
+        g_tstat.evaluated++;
+        g_upscale.temporalRan = true;
+    }
+    // Frame generation: needs the swap chain made for it at the start (frame_generation=1). FM2_NO_FRAMEGEN=1
+    // (live): no made frames (the swap chain stays).
+    static LiveSwitch noFrameGen("FM2_NO_FRAMEGEN");
+    if (ok && !dlss && FsrFgHasSwapChain() && !noFrameGen)
+        PrepareFrameGen(inWidth, inHeight, outWidth, outHeight, in, setup.depthInverted);
+    g_upscale.viewValid = ok; // (FM2_VIEW_MOTION / FM2_VIEW_DEPTH show them at the end of the frame)
+    g_upscale.viewWidth = inWidth;
+    g_upscale.viewHeight = inHeight;
     barrier(in.output, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, read);
     if (dlaa && ok)
     {
@@ -5571,6 +5860,7 @@ bool EvaluateTemporal(uint32_t base, bool dlss)
         barrier(in.output, D3D12_RESOURCE_STATE_COPY_SOURCE, read);
     }
     barrier(g_upscale.motion.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    barrier(g_upscale.reactive.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET);
     barrier(g_upscale.depth.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     // NGX may have changed the list's heaps, root signatures and pipeline: set ours again.
     ID3D12DescriptorHeap* heaps[] = { g_r.srvHeap.Get(), g_r.samplerHeap.Get() };
@@ -5659,6 +5949,12 @@ bool InitUpscale()
     pd.CS = { kPillarMain, sizeof(kPillarMain) };
     if (FAILED(g_r.device->CreateComputePipelineState(&pd, IID_PPV_ARGS(&g_upscale.pillar))))
         return false;
+    pd.CS = { kViewMain, sizeof(kViewMain) };
+    if (FAILED(g_r.device->CreateComputePipelineState(&pd, IID_PPV_ARGS(&g_upscale.view))))
+        return false;
+    pd.CS = { kTurnMain, sizeof(kTurnMain) };
+    if (FAILED(g_r.device->CreateComputePipelineState(&pd, IID_PPV_ARGS(&g_upscale.turn))))
+        return false;
     g_upscale.ready = true;
     Log("upscale: FSR 1 ready (scene at %.0f%% of %ux%u)", GetSettings().SceneScale() * 100.0f, OutputWidth(), OutputHeight());
     return true;
@@ -5675,6 +5971,26 @@ ComPtr<ID3D12Resource> g_enhanceOut; // enhanced lighting output (Settings::enha
 ComPtr<ID3D12Resource> g_pillarOut;  // ultrawide menus squeezed to 16:9 (PillarFrontBuffer)
 
 // Returns the graded copy of `image` (in COPY_SOURCE state), or null to show it as is.
+// The display's gamma table as the 17 points the gamma pass takes; false when it is off, unset or does nothing.
+bool GammaPoints(float points[17])
+{
+    static LiveSwitch off("FM2_NO_GAMMA");
+    if (off || !g_gammaSet.load(std::memory_order_relaxed))
+        return false;
+    bool identity = true;
+    for (uint32_t k = 0; k <= 16; k++)
+    {
+        const float at = k * 255.0f / 16.0f;
+        const uint32_t i = std::min(uint32_t(at), 254u);
+        const float t = at - float(i);
+        const float a = float((g_gammaTable[i].load(std::memory_order_relaxed) >> 10) & 0x3FF) / 1023.0f;
+        const float b = float((g_gammaTable[i + 1].load(std::memory_order_relaxed) >> 10) & 0x3FF) / 1023.0f;
+        points[k] = a + (b - a) * t;
+        identity &= std::fabs(points[k] - k / 16.0f) < 0.002f;
+    }
+    return !identity;
+}
+
 ID3D12Resource* GradeFrontBuffer(ID3D12Resource* image)
 {
     static LiveSwitch off("FM2_NO_GAMMA");
@@ -5805,6 +6121,86 @@ ID3D12Resource* EnhanceFrontBuffer(ID3D12Resource* image)
     C().list->ResourceBarrier(2, b);
     g_drawState.Invalidate(); // the compute pipeline replaced the draw's
     return g_enhanceOut.Get();
+}
+
+// FM2_VIEW_MOTION / FM2_VIEW_DEPTH (live, tools/fm2ctl.py): the temporal upscaler's motion or depth input of
+// this frame in place of the finished frame (HUD included, hidden), to tune the motion path (from Aiden's FM4
+// port). Motion: grey is still, red and green are motion (about +-8 render pixels over the full range); depth:
+// the stored value (reversed depth reads white when near). `shown` gives the size; the result is in
+// COPY_SOURCE. Null when off, or this frame had no temporal scene.
+ComPtr<ID3D12Resource> g_viewOut;
+ID3D12Resource* ViewFrontBuffer(ID3D12Resource* shown)
+{
+    static LiveSwitch viewMotion("FM2_VIEW_MOTION"), viewDepth("FM2_VIEW_DEPTH"), viewReactive("FM2_VIEW_REACTIVE"); // (reactive: white where set)
+    if (!shown || !g_upscale.viewValid || !(viewMotion || viewDepth || viewReactive) || !InitUpscale() || !g_upscale.view || !g_upscale.motion || !g_upscale.depth ||
+        !g_upscale.reactive)
+        return nullptr;
+    g_upscale.viewValid = false;
+    FrameResources& f = Frame();
+    if (f.descriptorsUsed + 2 > kDescriptorsPerFrame)
+        return nullptr;
+    const D3D12_RESOURCE_DESC desc = shown->GetDesc();
+    if (!g_viewOut || g_viewOut->GetDesc().Width != desc.Width || g_viewOut->GetDesc().Height != desc.Height)
+    {
+        D3D12_RESOURCE_DESC td = desc;
+        td.MipLevels = 1;
+        td.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        td.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+        RetireTexture(std::move(g_viewOut));
+        g_viewOut = CreateTexture(td, D3D12_RESOURCE_STATE_COPY_SOURCE, "view");
+        if (!g_viewOut)
+            return nullptr;
+    }
+    const bool motion = viewMotion;
+    const bool reactive = !motion && viewReactive;
+    ID3D12Resource* source = motion ? g_upscale.motion.Get() : reactive ? g_upscale.reactive.Get() : g_upscale.depth.Get();
+    // Motion and the reactive mask rest as render targets, depth as UAV.
+    const D3D12_RESOURCE_STATES sourceRest = motion || reactive ? D3D12_RESOURCE_STATE_RENDER_TARGET : D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    auto barrier = [](ID3D12Resource* r, D3D12_RESOURCE_STATES from, D3D12_RESOURCE_STATES to) {
+        D3D12_RESOURCE_BARRIER b{};
+        b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        b.Transition.pResource = r;
+        b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        b.Transition.StateBefore = from;
+        b.Transition.StateAfter = to;
+        C().list->ResourceBarrier(1, &b);
+    };
+    barrier(source, sourceRest, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    barrier(g_viewOut.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    const UINT slots = f.descriptorBase + f.descriptorsUsed;
+    f.descriptorsUsed += 2;
+    D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
+    srv.Format = motion ? DXGI_FORMAT_R16G16_FLOAT : reactive ? DXGI_FORMAT_R8_UNORM : DXGI_FORMAT_R32_FLOAT;
+    srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    srv.Texture2D.MipLevels = 1;
+    g_r.device->CreateShaderResourceView(source, &srv, Cpu(g_r.srvHeap.Get(), slots, g_r.srvStride));
+    D3D12_UNORDERED_ACCESS_VIEW_DESC uav{};
+    uav.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    uav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+    g_r.device->CreateUnorderedAccessView(g_viewOut.Get(), nullptr, &uav, Cpu(g_r.srvHeap.Get(), slots + 1, g_r.srvStride));
+    uint32_t c[24] = {};
+    c[16] = motion ? 0u : 1u;                              // rcasCon.x
+    const float gain = float(g_upscale.viewWidth) / 16.0f; // one render pixel of motion is 1/width: +-8 px fills the range
+    memcpy(&c[17], &gain, sizeof(gain));                   // rcasCon.y
+    c[18] = g_upscale.viewWidth;                           // rcasCon.zw
+    c[19] = g_upscale.viewHeight;
+    c[20] = uint32_t(desc.Width);
+    c[21] = desc.Height;
+    // FM2 draws its scene rotated by half a turn and its post-processing turns it back (see the scene image in
+    // out/res): the view is turned too, to match the picture. FM2_VIEW_AS_DRAWN=1 (live): as the upscaler gets it.
+    static LiveSwitch asDrawn("FM2_VIEW_AS_DRAWN");
+    c[22] = asDrawn ? 0u : 1u; // outSize.z
+    C().list->SetComputeRootSignature(g_upscale.root.Get());
+    C().list->SetComputeRoot32BitConstants(0, 24, c, 0);
+    C().list->SetPipelineState(g_upscale.view.Get());
+    C().list->SetComputeRootDescriptorTable(1, Gpu(g_r.srvHeap.Get(), slots, g_r.srvStride));
+    C().list->SetComputeRootDescriptorTable(2, Gpu(g_r.srvHeap.Get(), slots + 1, g_r.srvStride));
+    C().list->Dispatch((c[20] + 7) / 8, (c[21] + 7) / 8, 1);
+    barrier(g_viewOut.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    barrier(source, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, sourceRest);
+    g_drawState.Invalidate();
+    return g_viewOut.Get();
 }
 
 // Ultrawide menus (no race on screen): the frame, drawn as at 16:9 but stretched across the width, squeezed back
@@ -6242,6 +6638,10 @@ ID3D12Resource* SmaaPresent(const ResolvedTexture& image)
     const uint32_t preset = GetSettings().smaa;
     if (!preset || noSmaa || !image.resource || image.format != DXGI_FORMAT_R8G8B8A8_UNORM || !InitSmaa())
         return nullptr;
+    // A temporal upscaler anti-aliased this frame's scene: SMAA after it only blurs. (On the frames it does
+    // not run on, the showroom and the menus, SMAA still does.)
+    if (g_upscale.temporalRan)
+        return nullptr;
     const uint32_t w = image.hostWidth, h = image.hostHeight;
     const D3D12_RESOURCE_STATES read = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
     auto barrier = [](ID3D12Resource* r, D3D12_RESOURCE_STATES from, D3D12_RESOURCE_STATES to) {
@@ -6386,6 +6786,320 @@ void WriteDepthToGuest(uint32_t base, uint32_t width, uint32_t height, uint32_t 
 void WritePhotoToGuest(uint32_t base, uint32_t width, uint32_t height, uint32_t info);
 extern uint64_t g_lastFocusFrame;
 
+// ---- Frame generation: the picture before the HUD ----------------------------------------
+// AMD's frame generation moves every pixel of the presented picture with the scene's motion, HUD included,
+// unless it is given the picture without the HUD: what differs between the two is HUD and stays put.
+// In a race the game draws, into the front buffer's surface and once per tile: the HUD FIRST (it writes depth;
+// its see-through panels sample a small blurred copy of the scene), then the post-processing composite (one
+// draw that samples this frame's full-size scene image: g_drawSamplesResolve), depth-tested so it only fills
+// what the HUD left, then the resolve to the front buffer. So the composite draw is issued a second time into
+// a surface of our own with no depth buffer bound (every pixel passes): the picture with no HUD. At the
+// resolve that surface goes through the resolve's own 8888 conversion, so the two pictures match bit for bit
+// where there is no HUD. Only on frames the temporal upscaler ran on, with frame generation on.
+struct Hudless
+{
+    ComPtr<ID3D12Resource> surface;       // the composite drawn again without the HUD's depth (as the colour surfaces)
+    // As 8888, before and after the display's gamma table (GradeHudless). Two graded ones, alternating by frame,
+    // when the frame generation runs beside the next frame (FsrFgAsync): it still reads last frame's.
+    ComPtr<ID3D12Resource> image, graded[2];
+    int gradedSlot = 0;
+    uint64_t frame = ~0ull;              // the frame `image` was written in
+    bool redrawThis = false;             // this draw is a composite draw: issue it again into `surface`
+    bool redrawn = false;                // `surface` holds a composite not yet copied to `image`
+    uint32_t colorBase = ~0u;            // the surface the composite went into
+    LONG top = 0, bottom = 0;            // rows copied this frame (game pixels)
+    uint32_t base = ~0u;                 // where that surface was then resolved to (the front buffer, checked at the swap)
+    bool plain = false;                  // ...by a plain 8888 copy, as the copy here assumes
+    uint32_t snaps = 0;
+    bool gradedShown[2] = {};            // FM2_VIEW_HUDLESS left that `graded` in COPY_SOURCE
+} g_hudless;
+
+bool HudlessTracking()
+{
+    return g_upscale.temporalRan && g_fgPendingValid && g_msaa == 1;
+}
+
+void HudlessTrace(const char* what, uint32_t a = 0, uint32_t b = 0);
+void SnapHudless()
+{
+    const D3D12_RECT tile = WindowScissor();
+    const D3D12_RECT sr{ std::clamp<LONG>(tile.left, 0, kWidth), std::clamp<LONG>(tile.top, 0, kHeight), std::clamp<LONG>(tile.right, 0, kWidth),
+        std::clamp<LONG>(tile.bottom, 0, kHeight) };
+    FrameResources& f = Frame();
+    if (sr.right <= sr.left || sr.bottom <= sr.top || f.descriptorsUsed >= kDescriptorsPerFrame)
+        return;
+    const uint32_t width = OutputWidth(), height = OutputHeight();
+    if (!g_hudless.image || g_hudless.image->GetDesc().Width != width || g_hudless.image->GetDesc().Height != height)
+    {
+        D3D12_RESOURCE_DESC td{};
+        td.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        td.Width = width;
+        td.Height = height;
+        td.DepthOrArraySize = 1;
+        td.MipLevels = 1;
+        td.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        td.SampleDesc.Count = 1;
+        td.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+        RetireTexture(std::move(g_hudless.image));
+        g_hudless.image = CreateTexture(td, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, "hudless");
+        if (!g_hudless.image)
+            return;
+    }
+    if (g_hudless.frame != g_r.frame)
+    {
+        g_hudless.frame = g_r.frame;
+        g_hudless.top = kHeight;
+        g_hudless.bottom = 0;
+        g_hudless.base = ~0u;
+        g_hudless.plain = false;
+        g_hudless.snaps = 0;
+    }
+    g_hudless.top = std::min(g_hudless.top, sr.top);
+    g_hudless.bottom = std::max(g_hudless.bottom, sr.bottom);
+    g_hudless.snaps++;
+    g_tstat.hudSnaps++;
+    HudlessTrace("HUD-less rows to 8888 / colour surface", uint32_t(sr.top) << 16 | uint32_t(sr.bottom), C().colorBase);
+
+    // As BlitResolve's colour path, into our own texture.
+    const UINT slot = f.descriptorBase + f.descriptorsUsed++;
+    D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
+    srv.Format = kColorFormat;
+    srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    srv.Texture2D.MipLevels = 1;
+    g_r.device->CreateShaderResourceView(g_hudless.surface.Get(), &srv, Cpu(g_r.srvHeap.Get(), slot, g_r.srvStride));
+    const auto rtv = g_r.blitRtvHeap->GetCPUDescriptorHandleForHeapStart();
+    C().list->CreateRenderTargetView(g_r.device, g_hudless.image.Get(), rtv); // in order with the recorded commands
+    D3D12_RESOURCE_BARRIER b{};
+    b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    b.Transition.pResource = g_hudless.image.Get();
+    b.Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    b.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    C().list->ResourceBarrier(1, &b);
+    C().list->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
+    C().list->SetGraphicsRootSignature(g_r.blitRootSignature.Get());
+    C().list->SetPipelineState(g_r.colorBlit8.Get());
+    C().list->SetGraphicsRootDescriptorTable(0, Gpu(g_r.srvHeap.Get(), slot, g_r.srvStride));
+    const uint32_t blitConstants[5] = { std::bit_cast<uint32_t>(1.0f), 0, 0, 0, 0 };
+    C().list->SetGraphicsRoot32BitConstants(1, 5, blitConstants, 0);
+    const D3D12_VIEWPORT vp{ 0, 0, float(width), float(height), 0, 1 };
+    const D3D12_RECT hostRect = ToHost(sr);
+    C().list->RSSetViewports(1, &vp);
+    C().list->RSSetScissorRects(1, &hostRect);
+    C().list->DrawInstanced(3, 1, 0, 0);
+    std::swap(b.Transition.StateBefore, b.Transition.StateAfter);
+    C().list->ResourceBarrier(1, &b);
+    C().list->OMSetRenderTargets(1, &C().rtv, FALSE, &C().dsv);
+    C().list->SetGraphicsRootSignature(g_r.rootSignature.Get());
+    g_drawState.Invalidate();
+}
+
+// Around the second issue of a composite draw (everything else about the draw is already set): our surface
+// as the only target, no depth buffer. False: not this draw.
+bool HudlessBeginRedraw()
+{
+    if (!g_hudless.redrawThis)
+        return false;
+    g_hudless.redrawThis = false;
+    static LiveSwitch off("FM2_NO_HUDLESS");
+    if (off || !HudlessTracking())
+        return false;
+    const uint32_t width = OutputWidth(), height = OutputHeight();
+    if (!g_hudless.surface || g_hudless.surface->GetDesc().Width != width || g_hudless.surface->GetDesc().Height != height)
+    {
+        D3D12_RESOURCE_DESC td{};
+        td.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        td.Width = width;
+        td.Height = height;
+        td.DepthOrArraySize = 1;
+        td.MipLevels = 1;
+        td.Format = kColorFormat;
+        td.SampleDesc.Count = 1;
+        td.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+        RetireTexture(std::move(g_hudless.surface));
+        g_hudless.surface = CreateTexture(td, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, "hudless surface");
+        if (!g_hudless.surface)
+            return false;
+    }
+    const auto rtv = g_r.blitRtvHeap->GetCPUDescriptorHandleForHeapStart();
+    C().list->CreateRenderTargetView(g_r.device, g_hudless.surface.Get(), rtv); // in order with the recorded commands
+    D3D12_RESOURCE_BARRIER b{};
+    b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    b.Transition.pResource = g_hudless.surface.Get();
+    b.Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    b.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    C().list->ResourceBarrier(1, &b);
+    C().list->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
+    // The composite is blended in BEHIND what is there (source x (1 - destination alpha) + destination: the HUD
+    // was drawn first and left its alpha), so this tile starts empty and transparent: the composite alone.
+    const D3D12_RECT tile = WindowScissor();
+    const D3D12_RECT rows = ToHost(D3D12_RECT{ std::clamp<LONG>(tile.left, 0, kWidth), std::clamp<LONG>(tile.top, 0, kHeight),
+        std::clamp<LONG>(tile.right, 0, kWidth), std::clamp<LONG>(tile.bottom, 0, kHeight) });
+    const float none[4] = { 0, 0, 0, 0 };
+    if (rows.right > rows.left && rows.bottom > rows.top)
+        C().list->ClearRenderTargetView(rtv, none, 1, &rows);
+    return true;
+}
+
+void HudlessEndRedraw()
+{
+    D3D12_RESOURCE_BARRIER b{};
+    b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    b.Transition.pResource = g_hudless.surface.Get();
+    b.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    b.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    C().list->ResourceBarrier(1, &b);
+    C().list->OMSetRenderTargets(1, &C().rtv, FALSE, &C().dsv);
+    g_hudless.redrawn = true;
+    g_hudless.colorBase = C().colorBase;
+    HudlessTrace("composite drawn again without the HUD: blend / depth control", gpureg::Get(RB_BLENDCONTROL0), gpureg::Get(RB_DEPTHCONTROL));
+    HudlessTrace("  colour control / mode control", gpureg::Get(RB_COLORCONTROL), gpureg::Get(RB_MODECONTROL));
+}
+
+// FM2_HUDLESS_TRACE=1 (live): the draws after the upscale, as runs by surface and kind, with the resolves
+// and the copies between them (switch it on for a moment: it logs every frame).
+LiveSwitch g_hudlessTrace("FM2_HUDLESS_TRACE");
+void HudlessTrace(const char* what, uint32_t a, uint32_t b)
+{
+    static uint32_t runBase = ~0u, runCount = 0;
+    static bool runSamples = false;
+    if (!g_hudlessTrace)
+        return;
+    const bool draw = what == nullptr;
+    if (draw && a == runBase && bool(b) == runSamples)
+    {
+        runCount++;
+        return;
+    }
+    if (runCount)
+        Log("hud trace:   %u draws into colour %03X, %s", runCount, runBase, runSamples ? "sampling this frame's full-size image" : "other");
+    runCount = 0;
+    runBase = ~0u;
+    if (draw)
+    {
+        runBase = a;
+        runSamples = bool(b);
+        runCount = 1;
+    }
+    else
+        Log("hud trace: %s %08X %08X (frame %llu)", what, a, b, (unsigned long long)g_r.frame);
+}
+
+// Once a draw's textures are known.
+void HudlessNoteDraw(bool samplesResolve)
+{
+    if (g_upscale.temporalRan)
+        HudlessTrace(nullptr, C().colorBase, samplesResolve);
+    g_hudless.redrawThis = samplesResolve && HudlessTracking();
+}
+
+// The HUD-less picture through the display's gamma table, as GradeFrontBuffer does to the picture shown. Left
+// in NON_PIXEL_SHADER_RESOURCE (AMD's frame generation reads it at the present). Null: not available.
+bool GammaPoints(float points[17]);
+ID3D12Resource* GradeHudless()
+{
+    float points[17];
+    if (!g_hudless.image || !InitUpscale() || !GammaPoints(points))
+        return nullptr;
+    const D3D12_RESOURCE_DESC desc = g_hudless.image->GetDesc();
+    g_hudless.gradedSlot = FsrFgAsync() ? int(g_r.frame & 1) : 0;
+    ComPtr<ID3D12Resource>& graded = g_hudless.graded[g_hudless.gradedSlot];
+    bool& shownBefore = g_hudless.gradedShown[g_hudless.gradedSlot];
+    FrameResources& f = Frame();
+    if (f.descriptorsUsed + 2 > kDescriptorsPerFrame)
+        return nullptr;
+    if (!graded || graded->GetDesc().Width != desc.Width || graded->GetDesc().Height != desc.Height)
+    {
+        D3D12_RESOURCE_DESC td = desc;
+        td.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+        RetireTexture(std::move(graded));
+        shownBefore = false;
+        graded = CreateTexture(td, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, "hudless graded");
+        if (!graded)
+            return nullptr;
+    }
+    const UINT slots = f.descriptorBase + f.descriptorsUsed;
+    f.descriptorsUsed += 2;
+    D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
+    srv.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    srv.Texture2D.MipLevels = 1;
+    g_r.device->CreateShaderResourceView(g_hudless.image.Get(), &srv, Cpu(g_r.srvHeap.Get(), slots, g_r.srvStride));
+    D3D12_UNORDERED_ACCESS_VIEW_DESC uav{};
+    uav.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    uav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+    g_r.device->CreateUnorderedAccessView(graded.Get(), nullptr, &uav, Cpu(g_r.srvHeap.Get(), slots + 1, g_r.srvStride));
+    uint32_t c[24] = {};
+    memcpy(c, points, sizeof(float) * 17);
+    c[20] = uint32_t(desc.Width);
+    c[21] = desc.Height;
+    D3D12_RESOURCE_BARRIER b{};
+    b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    b.Transition.pResource = graded.Get();
+    b.Transition.StateBefore = shownBefore ? D3D12_RESOURCE_STATE_COPY_SOURCE : D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    b.Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    C().list->ResourceBarrier(1, &b);
+    shownBefore = false;
+    b.Transition.StateBefore = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    C().list->SetComputeRootSignature(g_upscale.root.Get());
+    C().list->SetComputeRoot32BitConstants(0, 24, c, 0);
+    C().list->SetPipelineState(g_upscale.gamma.Get());
+    C().list->SetComputeRootDescriptorTable(1, Gpu(g_r.srvHeap.Get(), slots, g_r.srvStride));
+    C().list->SetComputeRootDescriptorTable(2, Gpu(g_r.srvHeap.Get(), slots + 1, g_r.srvStride));
+    C().list->Dispatch(UINT((desc.Width + 7) / 8), (desc.Height + 7) / 8, 1);
+    std::swap(b.Transition.StateBefore, b.Transition.StateAfter);
+    C().list->ResourceBarrier(1, &b);
+    g_drawState.Invalidate();
+    return graded.Get();
+}
+
+// At the swap: this frame's depth and motion (PrepareFrameGen) and, when it was caught whole, the picture
+// without the HUD go to the frame generation. `graded`: the front buffer was shown through the gamma table and
+// nothing else (no enhance, pillar or debug view), so the HUD-less picture can be made to match it.
+// FM2_VIEW_HUDLESS=1 (live): returns that picture to show in place of the frame (in COPY_SOURCE; the frame
+// generation then gets none), to compare the two; otherwise null.
+ID3D12Resource* FinishFrameGen(uint32_t frontBuffer, bool graded)
+{
+    if (!g_fgPendingValid)
+        return nullptr;
+    g_fgPendingValid = false;
+    const bool whole = g_hudless.frame == g_r.frame && g_hudless.base == frontBuffer && g_hudless.plain && g_hudless.top <= 0 &&
+        g_hudless.bottom >= LONG(kHeight);
+    static LiveSwitch off("FM2_NO_HUDLESS");
+    const Settings& st = GetSettings();
+    ID3D12Resource* hudless = nullptr;
+    if (whole && graded && !off && OutputWidth() == st.width && OutputHeight() == st.height)
+        hudless = GradeHudless();
+    static bool had = true;
+    if ((hudless != nullptr) != had)
+    {
+        had = hudless != nullptr;
+        Log("framegen: frame %llu %s the picture without the HUD (%u copies, rows %ld-%ld, resolved to %08X%s, front buffer %08X%s)",
+            (unsigned long long)g_r.frame, had ? "has" : "has NOT", g_hudless.frame == g_r.frame ? g_hudless.snaps : 0u, g_hudless.top, g_hudless.bottom,
+            g_hudless.base, g_hudless.plain ? "" : " not plainly", frontBuffer, graded ? "" : ", shown not just graded");
+    }
+    static LiveSwitch view("FM2_VIEW_HUDLESS");
+    ID3D12Resource* show = view ? hudless : nullptr;
+    if (show)
+    {
+        D3D12_RESOURCE_BARRIER b{};
+        b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        b.Transition.pResource = show;
+        b.Transition.StateBefore = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+        b.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+        C().list->ResourceBarrier(1, &b);
+        g_hudless.gradedShown[g_hudless.gradedSlot] = true;
+        hudless = nullptr;
+    }
+    g_fgPending.hudless = hudless;
+    if (hudless)
+        g_tstat.hudless++;
+    if (FsrFgPrepare(g_r.device, C().list->Real(), g_fgPending))
+        g_tstat.generated++;
+    return show;
+}
+
 void Resolve()
 {
     g_resolveEpoch++; // texture bindings may now map to a new resolve
@@ -6495,8 +7209,32 @@ void Resolve()
         static constexpr float kSigned16[2] = { -32768.0f, 32767.0f }, kUnsigned16[2] = { 0.0f, 65535.0f };
         const float* destRange = !depth && !noFixed16Clamp && destFormat >= 24 && destFormat <= 26
             ? (numberFormat == 1 || numberFormat == 3 ? kSigned16 : kUnsigned16) : nullptr;
+        if (!depth && g_upscale.temporalRan)
+            HudlessTrace("resolve to / from colour", base, C().colorBase);
+        // Frame generation: the front buffer's surface before its HUD (see Hudless), if no draw followed the composite.
+        if (!depth && format == DXGI_FORMAT_R8G8B8A8_UNORM && width == kWidth && height == kHeight && HudlessTracking() && g_hudless.surface &&
+            C().colorBase == g_hudless.colorBase)
+        {
+            if (g_hudless.redrawn)
+                SnapHudless();
+            g_hudless.redrawn = false;
+            if (g_hudless.frame == g_r.frame)
+            {
+                g_hudless.base = base;
+                g_hudless.plain = bias == 0 && !destRange;
+            }
+        }
         BlitResolve(depth, base, width, height, format, rect, depth ? 1.0f : std::ldexp(1.0f, bias), false, destRange);
+        // This frame's first full-screen colour resolve (see Upscale::sceneOk).
+        if (!depth && g_upscale.fullResolveBase == ~0u && width >= kWidth && rect.left == 0 && rect.right >= LONG(kWidth) && rect.bottom >= LONG(kHeight))
+            g_upscale.fullResolveBase = base;
         // Temporal upscaling: each tile of the main view keeps its depth before it is cleared.
+        if (g_temporal && g_scenePhase && !depth)
+        {
+            g_tstat.resolves++;
+            if (width >= kWidth && rect.left == 0 && rect.right >= LONG(kWidth))
+                g_tstat.resolveFullWidth++;
+        }
         if (g_temporal && g_scenePhase && !depth && width >= kWidth && rect.left == 0 && rect.right >= LONG(kWidth))
             CopySceneDepth(rect);
         // The main view's full image (its last tile reaches the bottom): the scene is done.
@@ -6505,6 +7243,7 @@ void Resolve()
         {
             g_upscale.pending = true;
             g_upscale.pendingBase = base;
+            g_tstat.sceneDone++;
         }
         g_r.resolved[base].swapped = swapRB;
         // The title reads some resolved images back on the CPU (the garage thumbnail it renders, then
@@ -8380,11 +9119,27 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
     const bool cullable = (initiator & 0x3F) != 8 && (initiator & 0x3F) != 1;
     static LiveSwitch noMotion("FM2_NO_MOTION"); // A/B: no motion vectors (the upscaler sees a still scene)
     const bool wantMotion = g_temporal && g_scenePhase && edramMode == 4 && WidePass() && !noMotion;
+    if (g_temporal && g_scenePhase)
+    {
+        g_tstat.draws++;
+        if (edramMode == 4)
+            g_tstat.edram4++;
+        if (WidePass())
+            g_tstat.widePass++;
+        if (wantMotion)
+            g_tstat.wantMotion++;
+    }
     const CompiledShader* mvs = wantMotion ? MotionShader(vs) : nullptr;
     const CompiledShader* mps = wantMotion ? MotionShader(ps) : nullptr;
     bool motion = mvs && mps && mvs->IsReady() && mps->IsReady();
+    if (wantMotion && !(mvs && mps))
+        g_tstat.shaderMissing++;
+    else if (wantMotion && !motion)
+        g_tstat.shaderNotReady++;
     D3D12_GPU_VIRTUAL_ADDRESS motionPrevious = 0; // last frame's vertex constants of this draw (b2)
     ID3D12PipelineState* pso = motion ? GetPipeline(*mvs, *mps, false, cullable, true) : nullptr;
+    if (wantMotion && motion && !pso)
+        g_tstat.noPipeline++;
     if (!pso)
     {
         motion = false;
@@ -8531,11 +9286,57 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
             const D3D12_GPU_VIRTUAL_ADDRESS now = f.ring->GetGPUVirtualAddress() + vsOffset;
             const bool known = entry.frame + 1 == g_upscale.constantsFrame && !g_upscale.reset;
             motionPrevious = known ? entry.address[parity ^ 1] : now;
+            g_tstat.motion++;
+            if (known)
+                g_tstat.known++;
+            if (g_motionUnknownFrames)
+            {
+                MotionUnknownStat& u = g_motionUnknown[C().vsHash];
+                u.draws++;
+                if (!known)
+                    u.unknown++;
+                u.psHash = C().psHash;
+                u.vfetch = uint32_t(vs.info.vertexFetchConstants.size());
+                u.dma = dmaBase;
+            }
+            // Camera cut detection (see Upscale::cut): the frame's first kCutSamples draws with motion.
+            constexpr uint32_t kCutSamples = 48;
+            if (g_upscale.cutSamples < kCutSamples && nv >= 4)
+            {
+                float cur[16];
+                for (uint32_t i = 0; i < 4; i++)
+                    _mm_storeu_ps(cur + i * 4, _mm_castsi128_ps(_mm_shuffle_epi8(_mm_loadu_si128(src + i), swap)));
+                if (known && entry.firstFrame + 1 == g_upscale.constantsFrame)
+                {
+                    float dot = 0, a2 = 0, b2 = 0;
+                    for (uint32_t i = 0; i < 16; i++)
+                    {
+                        dot += cur[i] * entry.first[i];
+                        a2 += cur[i] * cur[i];
+                        b2 += entry.first[i] * entry.first[i];
+                    }
+                    if (a2 > 0 && b2 > 0 && std::isfinite(dot))
+                    {
+                        g_upscale.cutSamples++;
+                        if (dot < 0.9f * std::sqrt(a2 * b2))
+                            g_upscale.cutHits++;
+                    }
+                }
+                memcpy(entry.first, cur, sizeof(cur));
+                entry.firstFrame = g_upscale.constantsFrame;
+            }
             entry.address[parity] = now;
             entry.frame = g_upscale.constantsFrame;
             vc->vjitter[0] = g_upscale.jitterNdc[0];
             vc->vjitter[1] = g_upscale.jitterNdc[1];
-            vc->vjitter[2] = vc->vjitter[3] = 0;
+            // Reactive scale (Upscale::reactive): draws not found in last frame are dynamic geometry. Not on the
+            // first frame after a reset, when nothing is found. FM2_NO_REACTIVE=1 (live): no mask (A/B).
+            static LiveSwitch noReactive("FM2_NO_REACTIVE");
+            const float reactive = !known && !g_upscale.reset && !noReactive ? 0.9f : 0.0f;
+            const uint32_t srcBlend = gpureg::Get(RB_BLENDCONTROL0) & 31; // 6, 7: source alpha and its inverse
+            const bool byAlpha = srcBlend == 6 || srcBlend == 7;
+            vc->vjitter[2] = byAlpha ? reactive : 0.0f; // by the draw's alpha
+            vc->vjitter[3] = byAlpha ? 0.0f : reactive; // by its brightness
         }
     }
     Sub(1);
@@ -8925,7 +9726,11 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
         // outside the image (dword 5 bits 0-1: 1 white, else black).
         if (clampX >= 6 && clampY >= 6)
             ti[0] |= (1u << 16) | ((fetch.dwords[5] & 3) == 1 ? 1u << 17 : 0u);
-        tb[0] = fetch.LodBias();
+        // A temporal upscaler's scene (below output resolution): mips biased sharper by log2 of the scale
+        // (-0.58 at 67%), as upscalers ask, so the upscaled image keeps the output's texture detail (from
+        // ReGPU 5924641 / the FM4 port). FSR 1 is left as shipped. FM2_NO_LOD_BIAS=1 (live): the fetch's bias alone.
+        static LiveSwitch noLodBias("FM2_NO_LOD_BIAS");
+        tb[0] = fetch.LodBias() + (g_temporal && g_sceneScale < 1.0f && !noLodBias ? std::log2(g_sceneScale) : 0.0f);
         memcpy(&tb[1], &index, 4);
         // A resolved texture is as wide as the pitch it was resolved with; the fetch
         // constant may declare a narrower image inside it (e.g. 163 of 192 columns):
@@ -8951,6 +9756,7 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
     // HUD and menus sample ordinary textures; full-screen layers sample resolved targets
     // and must keep spanning the width (squeezing them warped the image outside 16:9).
     vc->vwide[3] = g_drawSamplesResolve ? 0.0f : 1.0f;
+    HudlessNoteDraw(g_drawSamplesResolve);
 
     Section(5);
     // Viewport. The viewport transform happens in the vertex shader; D3D maps 1:1.
@@ -9037,8 +9843,8 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
     if (motion != ds.motionTargets)
     {
         ds.motionTargets = motion;
-        const D3D12_CPU_DESCRIPTOR_HANDLE targets[2] = { C().rtv, g_upscale.motionRtv };
-        C().list->OMSetRenderTargets(motion ? 2 : 1, targets, FALSE, &C().dsv);
+        const D3D12_CPU_DESCRIPTOR_HANDLE targets[3] = { C().rtv, g_upscale.motionRtv, g_upscale.reactiveRtv };
+        C().list->OMSetRenderTargets(motion ? 3 : 1, targets, FALSE, &C().dsv);
     }
     if (pso != ds.pso)
     {
@@ -9255,6 +10061,15 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
         }
         else
             C().list->DrawInstanced(directIndex ? directVertices : UINT(list.size()), 1, 0, 0);
+        // Frame generation: a post-processing composite draw goes a second time into the HUD-less surface.
+        if (HudlessBeginRedraw())
+        {
+            if (indexedCount)
+                C().list->DrawIndexedInstanced(indexedCount, 1, 0, 0, 0);
+            else
+                C().list->DrawInstanced(directIndex ? directVertices : UINT(list.size()), 1, 0, 0);
+            HudlessEndRedraw();
+        }
         if (g_perfTiming)
         {
             const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
@@ -9321,9 +10136,9 @@ void BenchmarkWriteReport(const char* path)
         }
     }
     const Settings& st = GetSettings();
-    static const char* upscalers[] = { "off", "FSR 1", "FSR 3", "DLSS" };
+    static const char* upscalers[] = { "off", "FSR 1", "FSR 3", "DLSS", "FSR 4" };
     static const char* qualities[] = { "native (AA)", "quality", "balanced", "performance", "ultra performance" };
-    std::string upscaler = upscalers[std::min<uint32_t>(uint32_t(st.upscaler), 3)];
+    std::string upscaler = upscalers[std::min<uint32_t>(uint32_t(st.upscaler), 4)];
     if (st.upscaler != Settings::Upscaler::Off)
         upscaler += std::string(", ") + qualities[std::min<uint32_t>(st.quality, 4)];
 
@@ -9792,6 +10607,22 @@ void RendererOnSwapImpl(uint64_t frameNumber, uint32_t frontBuffer)
     // FSR 1: the whole frame, HUD included, rendered at the render scale; upscaled and sharpened
     // as it is shown (at 100%: sharpened only). Nothing depends on finding the 3D scene.
     const bool fsr1 = GetSettings().upscaler == Settings::Upscaler::Fsr1;
+    if (g_upscale.fullResolveBase != ~0u && g_upscale.fullResolveBase != frontBuffer)
+        g_logSceneFrames++;
+    // Temporal upscalers: whether this frame had a 3D scene of its own (see Upscale::sceneOk).
+    if (GetSettings().TemporalUpscaler())
+    {
+        const bool sceneOk = g_upscale.fullResolveBase != ~0u && g_upscale.fullResolveBase != frontBuffer;
+        if (sceneOk != g_upscale.sceneOk)
+        {
+            static uint32_t logged = 0;
+            if (logged++ < 20)
+                Log("temporal: frame %llu %s: the temporal upscaler is %s from the next frame", (unsigned long long)g_r.frame,
+                    sceneOk ? "has a 3D scene of its own" : "draws straight into the front buffer (showroom, menus)", sceneOk ? "on" : "off (full size)");
+            g_upscale.reset = true; // no usable history across the change
+        }
+        g_upscale.sceneOk = sceneOk;
+    }
     if (fsr1)
     {
         g_sceneScale = 1.0f;
@@ -9847,9 +10678,15 @@ void RendererOnSwapImpl(uint64_t frameNumber, uint32_t frontBuffer)
     if (fromResolve)
         if (ID3D12Resource* pillared = PillarFrontBuffer(shown))
             shown = pillared;
+    if (fromResolve)
+        if (ID3D12Resource* view = ViewFrontBuffer(shown))
+            shown = view;
     UINT toastW = 0, toastH = 0;
     float toastRise = 0.0f;
     ID3D12Resource* toast = fromResolve ? PrepareToast(toastW, toastH, toastRise) : nullptr;
+    // Frame generation: this frame's depth, motion and HUD-less picture, before the present.
+    if (ID3D12Resource* hudless = FinishFrameGen(frontBuffer, fromResolve && graded && shown == graded))
+        shown = hudless;
     const bool presenting =
         fromResolve && PresenterRecordCopy(C().list->Real(), shown, overlay, kOverlayW, kOverlayH, toast, toastW, toastH, toastRise);
     {
@@ -10171,6 +11008,37 @@ void RendererOnSwapImpl(uint64_t frameNumber, uint32_t frontBuffer)
         std::nth_element(frameMs.begin(), frameMs.begin() + worst, frameMs.end(), std::greater<float>());
         Log("renderer: frames %.2f ms average, %.2f ms 1%% slowest, GPU %.2f ms", frameMs.empty() ? 0.0 : sum / frameMs.size(),
             frameMs.empty() ? 0.0 : double(frameMs[worst]), g_logGpuFrames ? g_logGpuMs / g_logGpuFrames : 0.0);
+        // The same frames as one line for bug reports: the frame rate, what held it there (the frame rate cap,
+        // vsync, the graphics card or the processor) and the upscaling settings in use, so reports from players
+        // trying FSR 3 and frame generation can be compared with and without them. The GPU's time is our own
+        // command list's (start to end); AMD's frame generation work runs after it and is not in it.
+        if (!frameMs.empty())
+        {
+            const Settings& st = GetSettings();
+            const double avg = sum / frameMs.size(), gpu = g_logGpuFrames ? g_logGpuMs / g_logGpuFrames : 0.0;
+            const double cap = st.maxFps ? 1000.0 / st.maxFps : 0.0, refresh = 1000.0 / DisplayRefreshHz();
+            const char* limit = avg <= 0 ? "unknown"
+                : cap > 0 && avg > cap * 0.97 && avg < cap * 1.03 ? "the frame rate cap"
+                : st.vsync && avg > refresh * 0.97 && avg < refresh * 1.03 ? "vsync"
+                : gpu >= avg * 0.85 ? "the graphics card (GPU-bound)"
+                : gpu <= avg * 0.60 ? "the processor (CPU-bound)" : "both (GPU busy most of the frame)";
+            static const char* const upscalers[] = { "off", "FSR 1", "FSR 3", "DLSS", "FSR 4" };
+            static uint64_t madeBefore = 0;
+            const uint64_t made = FsrFgMade() - madeBefore;
+            madeBefore = FsrFgMade();
+            char generated[96] = "off";
+            if (FsrFgHasSwapChain())
+                snprintf(generated, sizeof(generated), "ON, %llu frames made (about %.0f fps shown)", (unsigned long long)made,
+                    1000.0 / avg * (1.0 + double(made) / frameMs.size()));
+            else if (st.frameGen)
+                snprintf(generated, sizeof(generated), "set but not running (needs FSR 3 / 4 at the start)");
+            Log("performance: %.1f fps rendered, limited by %s (frame %.2f ms, GPU %.2f ms = %.0f%%); %zu of %zu frames in a race; "
+                "%ux%u, upscaling %s at %u%%, frame generation %s, MSAA %ux, SMAA %u, cap %u, vsync %s",
+                1000.0 / avg, limit, avg, gpu, avg > 0 ? 100.0 * gpu / avg : 0.0, size_t(std::min<size_t>(g_logSceneFrames, frameMs.size())), frameMs.size(),
+                st.width, st.height, upscalers[std::min<uint32_t>(uint32_t(st.upscaler), 4)], st.upscaler == Settings::Upscaler::Off ? 100u : st.renderScale,
+                generated, st.msaa, st.smaa, st.maxFps, st.vsync ? "on" : "off");
+        }
+        g_logSceneFrames = 0;
         if (g_vertexArena.buffer && !frameMs.empty())
             Log("vertex arena: %.1f MB hashed, %.2f MB uploaded a frame, %llu MB of %llu used", double(g_vertexArena.hashed) / frameMs.size() / 1048576.0,
                 double(g_vertexArena.uploaded) / frameMs.size() / 1048576.0, (unsigned long long)(g_vertexArena.used >> 20),

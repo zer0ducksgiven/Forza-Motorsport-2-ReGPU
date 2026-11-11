@@ -60,11 +60,17 @@ public sealed class GameSettings
     // FSR 1 on the whole frame: render scale (percent per axis) and RCAS sharpening (0 off, 100 max).
     public int RenderScale { get; set; } = 100;
     public int Sharpening { get; set; }
+    // How the render scale is upscaled: "fsr1", or "fsr3" / "fsr4" (experimental: the 3D scene only, rebuilt over
+    // several frames; they replace MSAA and stay on at 100% as anti-aliasing).
+    public string Upscaler { get; set; } = "fsr1";
     public bool Enhance { get; set; } // enhanced lighting: off and out of the launcher until the enhancements update
     public bool SkipIntro { get; set; }
     public bool XboxPrompts { get; set; }
     public bool HideShaderOverlay { get; set; } = true;
     public bool LowPerformance { get; set; }
+    // AMD FSR 3 frame generation (experimental): a made frame between each two rendered ones in races. Only with
+    // the fsr3 / fsr4 upscaler; the game reads it when it starts.
+    public bool FrameGen { get; set; }
     public bool VertexArena { get; set; } = true; // debug: large vertex buffers kept in video memory
     public bool RaceMusic { get; set; } = false; // the player's MP3s from Documents\fm2\music while driving
     public int MusicVolume { get; set; } = 40;
@@ -77,7 +83,7 @@ public sealed class GameSettings
     public int WheelRotation { get; set; }
     public int Language { get; set; } = 1;
 
-    static readonly string[] Known = ["profile", "resolution", "aspect", "fullscreen", "vsync", "max_fps", "msaa", "smaa", "anisotropy", "upscaler", "render_scale", "sharpness", "enhance", "skip_intro", "xbox_prompts", "hide_shader_overlay", "low_performance", "vertex_arena", "race_music", "music_volume", "car_sound_mix", "exhaust_volume", "turbo_volume", "wheel_strength", "wheel_spring", "wheel_reverse", "wheel_rotation", "language", "settings_rev"];
+    static readonly string[] Known = ["profile", "resolution", "aspect", "fullscreen", "vsync", "max_fps", "msaa", "smaa", "anisotropy", "upscaler", "render_scale", "sharpness", "frame_generation", "enhance", "skip_intro", "xbox_prompts", "hide_shader_overlay", "low_performance", "vertex_arena", "race_music", "music_volume", "car_sound_mix", "exhaust_volume", "turbo_volume", "wheel_strength", "wheel_spring", "wheel_reverse", "wheel_rotation", "language", "settings_rev"];
 
     public static GameSettings Load()
     {
@@ -99,6 +105,7 @@ public sealed class GameSettings
                 case "smaa": s.Smaa = int.TryParse(v, out var sm) ? Math.Clamp(sm, 0, 4) : 0; break;
                 case "anisotropy": s.Anisotropy = int.TryParse(v, out var an) ? an : 16; break;
                 case "render_scale": s.RenderScale = int.TryParse(v, out var rs) ? rs : 100; break;
+                case "upscaler": s.Upscaler = v is "fsr3" or "fsr4" ? v : "fsr1"; break;
                 case "sharpness":
                     s.Sharpening = double.TryParse(v, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var sh)
                         ? (int)Math.Round(sh * 100) : 0;
@@ -107,6 +114,7 @@ public sealed class GameSettings
                 case "xbox_prompts": s.XboxPrompts = v == "1"; break;
                 case "hide_shader_overlay": s.HideShaderOverlay = v == "1"; break;
                 case "low_performance": s.LowPerformance = v == "1"; break;
+                case "frame_generation": s.FrameGen = v == "1"; break;
                 case "vertex_arena": s.VertexArena = v != "0"; break;
                 case "race_music": s.RaceMusic = v == "1"; break;
                 case "music_volume": s.MusicVolume = int.TryParse(v, out var mv) ? mv : 40; break;
@@ -145,8 +153,9 @@ public sealed class GameSettings
         sb.Append($"wheel_strength={Math.Clamp(WheelStrength, 0, 100)}\nwheel_spring={Math.Clamp(WheelSpring, 0, 100)}\nwheel_reverse={B(WheelReverse)}\nwheel_rotation={Math.Clamp(WheelRotation, 0, 3600)}\n");
         var scale = Math.Clamp(RenderScale, 50, 100);
         var sharp = Math.Clamp(Sharpening, 0, 100);
-        // FSR 3 and DLSS aren't offered (the game ignores them unless FM2_TEMPORAL_UPSCALERS=1).
-        var upscaler = scale < 100 || sharp > 0 ? "fsr1" : "off";
+        // FSR 3 and 4 stay on at 100% (anti-aliasing only); FSR 1 has nothing to do there without sharpening.
+        var upscaler = Upscaler is "fsr3" or "fsr4" ? Upscaler : scale < 100 || sharp > 0 ? "fsr1" : "off";
+        sb.Append($"frame_generation={B(FrameGen)}\n");
         sb.Append($"upscaler={upscaler}\nrender_scale={scale}\nsharpness={(sharp / 100.0).ToString(System.Globalization.CultureInfo.InvariantCulture)}\n");
         foreach (var (k, v) in keep) sb.Append($"{k}={v}\n");
         Directory.CreateDirectory(Paths.User);
@@ -210,6 +219,7 @@ public static class Options
     public static readonly (int Value, string Name)[] Msaa = [(1, "Off"), (2, "2x MSAA"), (4, "4x MSAA"), (8, "8x MSAA")];
     public static readonly (int Value, string Name)[] Smaa = [(0, "Off"), (1, "Low"), (2, "Medium"), (3, "High"), (4, "Ultra")];
     public static readonly (int Value, string Name)[] RenderScale = [(100, "100% (native)"), (85, "85%"), (77, "77%"), (67, "67%"), (59, "59%"), (50, "50%")];
+    public static readonly (string Value, string Name)[] Upscalers = [("fsr1", "FSR 1"), ("fsr3", "FSR 3 (experimental)"), ("fsr4", "FSR 4 (experimental, AMD RX 9000)")];
     public static readonly (int Value, string Name)[] Sharpening = [(0, "Off"), (25, "Low"), (50, "Medium"), (75, "High"), (100, "Maximum")];
     public static readonly (int Value, string Name)[] Anisotropy = [(0, "Off (trilinear)"), (2, "2x"), (4, "4x"), (8, "8x"), (16, "16x")];
 
