@@ -7,7 +7,8 @@ A native Windows port of **Forza Motorsport 2** (Xbox 360). Nothing is emulated:
   implementation of the Xbox 360 kernel and XAM. No interpreter, no JIT.
 - **GPU:** a native Direct3D 12 renderer replaces Xenos GPU emulation. The game's
   Xenos shader microcode is translated to HLSL, its render state to D3D12 pipelines,
-  EDRAM resolves to GPU copies, and its tiled textures are decoded natively.
+  EDRAM resolves to GPU copies, and its tiled textures are decoded natively. An experimental
+  Vulkan renderer does the same through Vulkan (see [Vulkan renderer](#vulkan-renderer-experimental)).
 
 No game data is included: you need your own copy of the disc. See
 [FM2-native-scope.md](FM2-native-scope.md) for the plan and [TESTING.md](TESTING.md)
@@ -172,7 +173,7 @@ The Start menu and desktop shortcuts open the launcher (`launcher\FM2Launcher.ex
 `launcher/FM2Launcher`: a .NET 10 WinForms window hosting WebView2, its page in `wwwroot`). Hover over any
 option for an explanation.
 
-- **Play**: profile name, resolution, aspect ratio, windowed or fullscreen, max FPS, VSync,
+- **Play**: graphics API (Direct3D 12 by default, Vulkan experimental; applies when the game starts), profile name, resolution, aspect ratio, windowed or fullscreen, max FPS, VSync,
   anti-aliasing (Off, 2x, 4x, 8x MSAA), enhanced lighting (experimental), skip intro videos, and the
   game's language (English, German, French, Spanish, Italian, Japanese, Korean, Simplified and Traditional
   Chinese, as on the disc; the disc's Polish, Czech and Hungarian text can't be picked yet). Every change is
@@ -193,7 +194,7 @@ resolution, aspect ratio (Auto, 16:9, 21:9, 32:9; the image gets black bars when
 differs from the resolution), windowed or borderless fullscreen, VSync, and max FPS
 (30-360). Play saves them to `Documents\fm2\settings.ini`. With VSync on, the cap
 is also the display's refresh rate. `FM2_NO_LAUNCHER=1` skips the launcher and uses the
-saved settings; these variables override the file for one run: `FM2_PROFILE`,
+saved settings; these variables override the file for one run: `FM2_RENDERER`, `FM2_PROFILE`,
 `FM2_RESOLUTION`, `FM2_RENDER_SCALE`, `FM2_MAX_FPS`, `FM2_VSYNC`, `FM2_FULLSCREEN`.
 
 ### Mods
@@ -298,6 +299,31 @@ build\rel\fm2.exe game
 
 Supported: European `default.xex`, SHA-256 `9726066f…9b120a`. The recompiled
 code (`out/ppc`, ~131 MB) is generated from your own copy and never committed.
+
+## Vulkan renderer (experimental)
+
+`src/gpu/vk` is a second renderer behind the same seam as the Direct3D 12 one: the same translated HLSL (compiled to
+SPIR-V with the DirectX Shader Compiler), the same constant blocks, index lists and texture decoding. It is built only
+with `-DFM2_VULKAN=ON` (the Vulkan headers are needed; `FM2_VULKAN_HEADERS` can point at a Vulkan-Headers include
+directory) and chosen with the launcher's **Graphics API** option, `renderer=vulkan` in `settings.ini` or
+`FM2_RENDERER=vulkan`. `dxcompiler.dll` and `dxil.dll` have to sit next to `fm2.exe`; the GPU vendor's Vulkan driver
+provides `vulkan-1.dll`.
+
+- **First start:** the game waits on the "COMPILING SHADERS" screen while every shader in the game data is compiled
+  into `Documents\fm2\cache\vulkan` (about half a minute on a 16-core CPU). Later starts only check the cache.
+- **Presentation:** the finished frame is read back and shown through the existing presenter's swap chain; there is no
+  Vulkan swap chain yet. MSAA, SMAA, the upscalers and the in-game graphics options are Direct3D 12 only for now.
+- **Linux:** `linux/vk.sh` builds the backend's test tools natively and runs them (`FM2_VK_DEVICE` picks the GPU by
+  index or name). `linux/race.sh vulkan` and `linux/race.sh d3d12` drive the menus into a race and write a benchmark
+  report (`FM2_BENCHMARK=<file>`).
+
+Switches (environment variables): `FM2_VK_DEVICE=<index or name>`, `FM2_VK_CACHE_DIR=<dir>`, `FM2_VK_VALIDATION=1`
+(the Khronos validation layer), `FM2_VK_NO_BOOT_COMPILE=1` (compile in the background instead of waiting at the first
+start), `FM2_VK_NO_SHADER_WARM=1`, `FM2_VK_SYNC_PRESENT=1` and `FM2_VK_SYNC_UPLOADS=1` (the blocking paths),
+`FM2_VK_GUEST_SIZE_RESOLVES=1` (render-target copies at 1280x720), `FM2_VK_NO_BC=1` (decode block-compressed textures
+on the CPU), `FM2_VK_DEBUG_PS` / `FM2_VK_DEBUG_VS` (as `FM2_DEBUG_PS` / `FM2_DEBUG_VS`), `FM2_VK_DUMP_FRAME=<n>`,
+`FM2_VK_FRAME_GPU_TIMES=1` with `FM2_VK_PHASE_GPU_TIMES=1|2` (GPU time per pass, or per draw and pixel shader, in the
+`FM2_PERF` log) and `FM2_VK_SAMPLE=1` (a sampling profile of the render thread, written to `out/vk_samples.txt`).
 
 ## Debugging switches
 

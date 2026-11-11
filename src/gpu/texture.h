@@ -43,11 +43,15 @@ uint32_t TextureBCKind(uint32_t format);
 // Copies mip 0 of a block-compressed texture as linear BC blocks (untiled, endian-swapped)
 // to dst, rows of blocks dstRowPitch bytes apart. No swizzle is applied (the GPU does it).
 bool CopyTextureBlocks(const TextureFetch& fetch, uint8_t* dst, uint32_t dstRowPitch);
+// The same from texture data outside guest memory.
+bool CopyTextureBlocks(const TextureFetch& fetch, const uint8_t* source, uint8_t* dst, uint32_t dstRowPitch);
 
 // The fetch constant of mip level `level` (its address, size and pitch), for tiled
 // power-of-two textures, the packed tail's small levels (16 texels and less) included; false
 // otherwise.
 bool TextureMipLevel(const TextureFetch& base, uint32_t level, TextureFetch& out);
+// Bytes from the base address through the last unpacked mip level referenced by the fetch.
+size_t TextureMipSpan(const TextureFetch& base);
 
 // The bytes the base level occupies in memory (rows padded to the pitch, tiled surfaces to 32
 // blocks); 0 for a format this does not know.

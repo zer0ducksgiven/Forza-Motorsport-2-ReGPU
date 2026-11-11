@@ -193,6 +193,7 @@ function render() {
   }
 
   // play and graphics pages
+  fill($("renderer"), o.renderers, set.renderer)
   fill($("resolution"), o.resolutions.map((r) => ({ value: r, name: r.replace("x", " × ") })), set.resolution)
   fill($("aspect"), o.aspects, set.aspect)
   const custom = customFps || !o.fps.includes(set.maxFps)
@@ -223,6 +224,7 @@ function render() {
   $("summary").innerHTML = ""
   const line = (label, value) => { const d = el("div"); d.append(label + ": "); d.append(el("b", "", value)); $("summary").append(d) }
   line("Profile", set.profile || "Player")
+  line("Graphics API", (o.renderers.find((r) => r.value === set.renderer) || o.renderers[0]).name)
   line("Display", `${set.resolution.replace("x", " × ")}, ${set.fullscreen ? "fullscreen" : "windowed"}${aspect && set.aspect !== "auto" ? ", " + aspect.name : ""}`)
   line("Frame rate", `${set.maxFps} fps cap, VSync ${set.vsync ? "on" : "off"}`)
   const msaaName = (o.msaa.find((m) => m.value === set.msaa) || { name: "Off" }).name
@@ -429,6 +431,7 @@ function change(patch) {
     render()
   }), 250)
 }
+$("renderer").onchange = (e) => change({ renderer: e.target.value })
 $("resolution").onchange = (e) => change({ resolution: e.target.value })
 $("aspect").onchange = (e) => change({ aspect: e.target.value })
 $("maxFps").onchange = (e) => {

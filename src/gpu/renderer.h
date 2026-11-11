@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <vector>
 
 // Native renderer, called on the command processor thread.
 void RendererOnShaderLoad(uint32_t type, const uint32_t* microcodeBE, uint32_t dwords);
@@ -8,6 +9,8 @@ void RendererSetShader(uint32_t type, const uint32_t* microcodeBE, uint32_t used
 void RendererOnDraw(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize);
 // frontBuffer: physical address of the resolved image to show.
 void RendererOnSwap(uint64_t frame, uint32_t frontBuffer);
+// Adds the compilation/performance overlay to a CPU RGBA8 frame before presentation.
+void RendererOverlayImage(uint32_t width, uint32_t height, std::vector<uint8_t>& rgba);
 // Lookahead hooks (see GpuLookahead): shader loads and draws the command processor has
 // not executed yet, seen on a shadow copy of the registers.
 void RendererPredictBegin();
@@ -16,10 +19,16 @@ void RendererPredictDraw(uint32_t initiator);
 // True when no shader/pipeline compile is running and none finished in the last 2 s
 // (the shader tour waits for this between steps).
 bool RendererCompileIdle();
+// Captures the next presented frame (the tour's CAPTURE step).
+void RendererRequestCapture();
+bool RendererCaptureComplete();
+void RendererMarkCaptureComplete();
 // Flushes the pipeline library to disk (called when the tour finishes).
 void RendererSaveCaches();
 // The display gamma table entry `index` (10:10:10 RGB), applied when presenting.
 void RendererSetGammaEntry(uint32_t index, uint32_t rgb10);
+// Fill the 17 display-curve points; false when the table is unset or the identity map.
+bool RendererDisplayGamma(float points[17]);
 // Benchmark: frame times are recorded while on; the report summarises them.
 void BenchmarkRecord(bool on);
 void BenchmarkWriteReport(const char* path);

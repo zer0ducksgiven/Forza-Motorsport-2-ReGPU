@@ -343,6 +343,7 @@ public sealed class Bridge
             wheel = WheelCheck.Get(),
             options = new
             {
+                renderers = Options.Renderers.Select(x => new { value = x.Value, name = x.Name }),
                 resolutions = Options.Resolutions(),
                 aspects = Options.Aspects.Select(x => new { value = x.Value, name = x.Name }),
                 fps = Options.Fps,

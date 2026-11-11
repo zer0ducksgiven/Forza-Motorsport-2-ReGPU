@@ -4,6 +4,10 @@
 // whose shade pulses with the frame count, proving the path end to end.
 #include <algorithm>
 #include <atomic>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <condition_variable>
 #include <mutex>
 #include <thread>
@@ -28,7 +32,6 @@ void DealerOnChar(wchar_t c); // hooks/dealer.cpp: a typed easter-egg code
 namespace
 {
 constexpr UINT kBuffers = 3;
-constexpr UINT kWidth = 1280, kHeight = 720;
 
 struct Presenter
 {
@@ -51,7 +54,9 @@ struct Presenter
     std::mutex mutex;
     std::condition_variable cv;
     uint64_t pendingFrame = 0;
-    std::vector<uint8_t> image; // latest submitted RGBA8, kWidth x kHeight
+    std::vector<uint8_t> image; // latest submitted RGBA8, imageWidth x imageHeight
+    uint32_t imageWidth = 0, imageHeight = 0;
+    uint64_t uploadBytes[kBuffers]{};
     ComPtr<ID3D12Resource> upload[kBuffers];
     uint64_t presentedFrame = 0;
     std::atomic<bool> ready{ false };
@@ -312,20 +317,6 @@ void CreateWindowAndDevice()
     Check(g_p.device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&g_p.fence)), "CreateFence");
     g_p.fenceEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
 
-    D3D12_HEAP_PROPERTIES hp{};
-    hp.Type = D3D12_HEAP_TYPE_UPLOAD;
-    D3D12_RESOURCE_DESC rd{};
-    rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-    rd.Width = UINT64(kWidth) * kHeight * 4;
-    rd.Height = 1;
-    rd.DepthOrArraySize = 1;
-    rd.MipLevels = 1;
-    rd.SampleDesc.Count = 1;
-    rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-    for (UINT i = 0; i < kBuffers; i++)
-        Check(g_p.device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
-                  IID_PPV_ARGS(&g_p.upload[i])),
-            "CreateCommittedResource(upload)");
 }
 
 void Transition(ID3D12Resource* resource, D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after)
@@ -351,30 +342,76 @@ void DrawFrame(uint64_t frame)
     g_p.list->Reset(g_p.allocators[i].Get(), nullptr);
     ID3D12Resource* backBuffer = g_p.backBuffers[i].Get();
 
+    // The submitted image is any size (the Vulkan backend sends the output size); it is centred in the back buffer and
+    // cropped to it. It used to be assumed 1280x720 and copied to the top-left corner of a larger swap chain.
     bool copied = false;
+    uint32_t imageW = 0, imageH = 0;
     {
         std::lock_guard lock(g_p.mutex);
-        if (g_p.image.size() == size_t(kWidth) * kHeight * 4)
+        imageW = g_p.imageWidth;
+        imageH = g_p.imageHeight;
+        // D3D12 wants the rows of a placed footprint 256-byte aligned.
+        const uint32_t rowPitch = (imageW * 4 + 255) & ~255u;
+        const uint64_t bytes = uint64_t(rowPitch) * imageH;
+        if (bytes && g_p.image.size() == size_t(imageW) * imageH * 4)
         {
-            void* mapped = nullptr;
-            g_p.upload[i]->Map(0, nullptr, &mapped);
-            memcpy(mapped, g_p.image.data(), g_p.image.size());
-            g_p.upload[i]->Unmap(0, nullptr);
-            copied = true;
+            if (g_p.uploadBytes[i] < bytes)
+            {
+                D3D12_HEAP_PROPERTIES hp{};
+                hp.Type = D3D12_HEAP_TYPE_UPLOAD;
+                D3D12_RESOURCE_DESC rd{};
+                rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+                rd.Width = bytes;
+                rd.Height = 1;
+                rd.DepthOrArraySize = 1;
+                rd.MipLevels = 1;
+                rd.SampleDesc.Count = 1;
+                rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+                // This buffer's last use was waited for above (fenceValues[i]), so it can be replaced.
+                g_p.upload[i].Reset();
+                g_p.uploadBytes[i] = SUCCEEDED(g_p.device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd,
+                    D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&g_p.upload[i]))) ? bytes : 0;
+            }
+            if (g_p.uploadBytes[i] >= bytes)
+            {
+                void* mapped = nullptr;
+                g_p.upload[i]->Map(0, nullptr, &mapped);
+                if (rowPitch == imageW * 4)
+                    memcpy(mapped, g_p.image.data(), g_p.image.size());
+                else
+                    for (uint32_t y = 0; y < imageH; y++)
+                        memcpy(static_cast<uint8_t*>(mapped) + size_t(y) * rowPitch, g_p.image.data() + size_t(y) * imageW * 4, size_t(imageW) * 4);
+                g_p.upload[i]->Unmap(0, nullptr);
+                copied = true;
+            }
         }
     }
 
     if (copied)
     {
-        Transition(backBuffer, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_COPY_DEST);
+        const D3D12_RESOURCE_DESC backDesc = backBuffer->GetDesc();
+        const uint32_t backW = uint32_t(backDesc.Width), backH = backDesc.Height;
+        const uint32_t copyW = std::min(imageW, backW), copyH = std::min(imageH, backH);
+        if (copyW < backW || copyH < backH)
+        {
+            Transition(backBuffer, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET);
+            D3D12_CPU_DESCRIPTOR_HANDLE rtv = g_p.rtvHeap->GetCPUDescriptorHandleForHeapStart();
+            rtv.ptr += SIZE_T(i) * g_p.rtvStride;
+            const float black[4] = { 0, 0, 0, 1 };
+            g_p.list->ClearRenderTargetView(rtv, black, 0, nullptr);
+            Transition(backBuffer, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_DEST);
+        }
+        else
+            Transition(backBuffer, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_COPY_DEST);
         D3D12_TEXTURE_COPY_LOCATION dst{};
         dst.pResource = backBuffer;
         dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
         D3D12_TEXTURE_COPY_LOCATION src{};
         src.pResource = g_p.upload[i].Get();
         src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
-        src.PlacedFootprint.Footprint = { DXGI_FORMAT_R8G8B8A8_UNORM, kWidth, kHeight, 1, kWidth * 4 };
-        g_p.list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+        src.PlacedFootprint.Footprint = { DXGI_FORMAT_R8G8B8A8_UNORM, imageW, imageH, 1, (imageW * 4 + 255) & ~255u };
+        const D3D12_BOX box{ (imageW - copyW) / 2, (imageH - copyH) / 2, 0, (imageW - copyW) / 2 + copyW, (imageH - copyH) / 2 + copyH, 1 };
+        g_p.list->CopyTextureRegion(&dst, (backW - copyW) / 2, (backH - copyH) / 2, 0, &src, &box);
         Transition(backBuffer, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PRESENT);
     }
     else
@@ -545,16 +582,24 @@ bool PresenterAskText(const std::wstring& title, const std::wstring& description
     return box.result == IDOK;
 }
 
-void PresenterSubmitImage(uint32_t width, uint32_t height, std::vector<uint8_t> rgba)
+std::vector<uint8_t> PresenterExchangeImage(uint32_t width, uint32_t height, std::vector<uint8_t> rgba)
 {
-    if (width != kWidth || height != kHeight)
-        return;
+    if (!width || !height || rgba.size() != size_t(width) * height * 4)
+        return rgba;
     {
         std::lock_guard lock(g_p.mutex);
-        g_p.image = std::move(rgba);
+        g_p.image.swap(rgba);
+        g_p.imageWidth = width;
+        g_p.imageHeight = height;
         g_p.pendingFrame++;
     }
     g_p.cv.notify_one();
+    return rgba; // the image shown before this one: its storage, for the caller's next frame
+}
+
+void PresenterSubmitImage(uint32_t width, uint32_t height, std::vector<uint8_t> rgba)
+{
+    PresenterExchangeImage(width, height, std::move(rgba));
 }
 
 ID3D12Device* RenderDevice()
@@ -622,7 +667,8 @@ bool PresenterRecordCopy(ID3D12GraphicsCommandList* list, ID3D12Resource* src, I
         dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
         from.pResource = overlay;
         from.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-        list->CopyTextureRegion(&dst, offsetX + 24, offsetY + 24, 0, &from, nullptr);
+        const D3D12_BOX box{ 0, 0, 0, overlayW, overlayH, 1 };
+        list->CopyTextureRegion(&dst, offsetX + 24, offsetY + 24, 0, &from, &box);
     }
     const UINT shownW = UINT(std::min(sd.Width, bd.Width)), shownH = std::min(sd.Height, bd.Height);
     if (toast && toastW && toastH && toastW <= shownW && toastH < shownH)

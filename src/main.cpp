@@ -15,9 +15,17 @@ void WheelStart();
 void GpuLogState();
 void D3DDebugLog();
 
+#if defined(FM2_VULKAN)
+bool VulkanProbe();
+#endif
+
 int main(int argc, char** argv)
 {
     CrashHandlerInit();
+#if defined(FM2_VULKAN)
+    if (getenv("FM2_VULKAN_PROBE"))
+        return VulkanProbe() ? 0 : 1;
+#endif
     std::filesystem::path gameDir = argc > 1 ? argv[1] : "game";
     Log("fm2: game folder %s", std::filesystem::absolute(gameDir).string().c_str());
 

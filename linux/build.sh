@@ -63,6 +63,17 @@ if [ ! -f "$SHIMBIN/fxc.exe" ]; then
     clang-cl --target=x86_64-pc-windows-msvc -fuse-ld=lld-link /Fe"$SHIMBIN/fxc.exe" "$SHIMBIN/fxc.obj" d3dcompiler.lib ||
         die "could not link the fxc shim"
 fi
+# fxc.exe is linked against Microsoft's d3dcompiler_47, which has to sit next to it (Wine's
+# own compiler cannot do the FSR 1 shaders either).
+if [ ! -f "$SHIMBIN/d3dcompiler_47.dll" ]; then
+    for candidate in ${FM2_D3DCOMPILER:-} "$(find "$HOME/.steam/steam/steamapps/common" \
+        "$HOME/.local/share/Steam/steamapps/common" -maxdepth 5 -iname d3dcompiler_47.dll 2>/dev/null | head -1)"; do
+        if [ -n "$candidate" ] && [ -f "$candidate" ] && [ "$(stat -c%s "$candidate")" -gt 2000000 ]; then
+            cp "$candidate" "$SHIMBIN/d3dcompiler_47.dll"
+            break
+        fi
+    done
+fi
 cat > "$SHIMBIN/fxc" <<EOF
 #!/bin/sh
 # fxc -> d3dcompiler_47 under Wine. d3dcompiler_47.dll must sit next to fxc.exe.

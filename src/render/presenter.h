@@ -15,6 +15,9 @@ uint32_t DisplayRefreshHz();
 void PresenterSubmitFrame(uint64_t frame);
 // Shows a CPU-side RGBA8 image (scaled 1:1 into the 1280x720 back buffer).
 void PresenterSubmitImage(uint32_t width, uint32_t height, std::vector<uint8_t> rgba);
+// The same, handing back the previous image's storage so a caller that submits every frame does not allocate (and
+// page in) a new buffer each time.
+std::vector<uint8_t> PresenterExchangeImage(uint32_t width, uint32_t height, std::vector<uint8_t> rgba);
 // Keyboard input goes to the game only while the window has focus.
 bool PresenterHasFocus();
 // A controller was used: the mouse cursor hides over the game window until the mouse moves (GitHub #12).
