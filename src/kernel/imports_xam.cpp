@@ -955,7 +955,7 @@ bool ReadPad(uint32_t user, PadState& s)
         // FM2_TOUR=<steps>: hands-off route through the menus and races (shader tour).
         // Steps (comma separated): a button name (A, B, X, Y, START, BACK, UP, DOWN, LEFT,
         // RIGHT, LB, RB), "WAIT:<seconds>", "IDLE" (wait until the renderer has no compile
-        // running; at least 2 s), "RT:<seconds>" (hold the right trigger), "STEER:<seconds>" (throttle,
+        // running; at least 2 s), "CAPTURE" (dump the next frame and wait for it), "RT:<seconds>" (hold the right trigger), "STEER:<seconds>" (throttle,
         // steering right then left), "RACE:<seconds>"
         // (the benchmark: the right trigger held, A tapped every 2 s for the first 10 s in case a slow
         // PC was still loading when the race start was pressed, measured from 12 s), "QUIT" (save
@@ -968,6 +968,7 @@ bool ReadPad(uint32_t user, PadState& s)
                 size_t index = 0;
                 Clock::time_point stepStart{};
                 bool started = false;
+                bool captureRequested = false;
                 int downPolls = 0, upPolls = 0; // reads of the current button press
                 double releasedAt = 0;
                 std::string Step() const { return index < steps.size() ? steps[index] : std::string(); }
@@ -1011,7 +1012,12 @@ bool ReadPad(uint32_t user, PadState& s)
                             BenchmarkWriteReport(benchmark);
                         }
                         RendererSaveCaches();
-                        Log("tour: finished, caches saved");
+                        // Say WHAT was measured. A tour that stops in a menu still holds the throttle, so
+                        // its FPS looks like race data; those menu numbers wasted a whole session's worth
+                        // of measurements earlier. The draw count is logged with every frame anyway -
+                        // this line makes you look at it before believing a number.
+                        Log("tour: finished, caches saved - CHECK the captured frame for a driving HUD"
+                            " (gear, rev counter, minimap) before trusting any FPS from this run");
                         WheelStop();
                         fflush(nullptr);
                         ExitProcess(0);
@@ -1022,6 +1028,20 @@ bool ReadPad(uint32_t user, PadState& s)
                 else if (step == "IDLE")
                 {
                     advance = elapsed >= 2.0 && RendererCompileIdle();
+                }
+                else if (step == "CAPTURE")
+                {
+                    if (!tour.captureRequested)
+                    {
+                        RendererRequestCapture();
+                        tour.captureRequested = true;
+                    }
+                    advance = RendererCaptureComplete();
+                    if (elapsed >= 60.0)
+                    {
+                        Log("tour: capture did not complete in 60 s");
+                        advance = true;
+                    }
                 }
                 else if (step.rfind("RACE:", 0) == 0)
                 {
@@ -1071,6 +1091,7 @@ bool ReadPad(uint32_t user, PadState& s)
                 }
                 if (advance)
                 {
+                    tour.captureRequested = false;
                     tour.index++;
                     tour.stepStart = now;
                     tour.downPolls = tour.upPolls = 0;

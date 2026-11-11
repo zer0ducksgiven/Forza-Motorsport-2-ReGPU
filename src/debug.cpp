@@ -24,6 +24,7 @@
 #include <thread>
 #include <vector>
 
+#include "fast_env.h"
 #include "live_switch.h"
 #include "log.h"
 #include "memory.h"
@@ -499,6 +500,7 @@ std::string Handle(const std::string& line)
         value.erase(0, value.find_first_not_of(' '));
         _putenv_s(name.c_str(), value.c_str());
         SetEnvironmentVariableA(name.c_str(), value.empty() ? nullptr : value.c_str());
+        FastEnvChanged();
         return Ok();
     }
     if (cmd == "quit")

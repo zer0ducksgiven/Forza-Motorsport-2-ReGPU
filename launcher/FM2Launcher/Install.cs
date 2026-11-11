@@ -48,6 +48,7 @@ public static class Paths
 /// </summary>
 public sealed class GameSettings
 {
+    public string Renderer { get; set; } = "d3d12";
     public string Profile { get; set; } = "Player";
     public string Resolution { get; set; } = "1280x720";
     public string Aspect { get; set; } = "auto";
@@ -83,7 +84,7 @@ public sealed class GameSettings
     public int WheelRotation { get; set; }
     public int Language { get; set; } = 1;
 
-    static readonly string[] Known = ["profile", "resolution", "aspect", "fullscreen", "vsync", "max_fps", "msaa", "smaa", "anisotropy", "upscaler", "render_scale", "sharpness", "frame_generation", "enhance", "skip_intro", "xbox_prompts", "hide_shader_overlay", "low_performance", "vertex_arena", "race_music", "music_volume", "car_sound_mix", "exhaust_volume", "turbo_volume", "wheel_strength", "wheel_spring", "wheel_reverse", "wheel_rotation", "language", "settings_rev"];
+    static readonly string[] Known = ["renderer", "profile", "resolution", "aspect", "fullscreen", "vsync", "max_fps", "msaa", "smaa", "anisotropy", "upscaler", "render_scale", "sharpness", "frame_generation", "enhance", "skip_intro", "xbox_prompts", "hide_shader_overlay", "low_performance", "vertex_arena", "race_music", "music_volume", "car_sound_mix", "exhaust_volume", "turbo_volume", "wheel_strength", "wheel_spring", "wheel_reverse", "wheel_rotation", "language", "settings_rev"];
 
     public static GameSettings Load()
     {
@@ -95,6 +96,7 @@ public sealed class GameSettings
         foreach (var (k, v) in read)
             switch (k)
             {
+                case "renderer": s.Renderer = v == "vulkan" ? "vulkan" : "d3d12"; break;
                 case "profile": s.Profile = v; break;
                 case "resolution": s.Resolution = v; break;
                 case "aspect": s.Aspect = v; break;
@@ -145,6 +147,7 @@ public sealed class GameSettings
         var keep = Read().Where(kv => !Known.Contains(kv.Key)).ToList();
         var profile = new string(Profile.Trim().Where(c => !char.IsControl(c) && c != '=').Take(15).ToArray());
         var sb = new StringBuilder("# Forza Motorsport 2 (fm2) settings; the launcher edits this file.\n");
+        sb.Append($"renderer={(Renderer == "vulkan" ? "vulkan" : "d3d12")}\n");
         sb.Append($"profile={(profile.Length > 0 ? profile : "Player")}\n");
         sb.Append($"resolution={Resolution}\naspect={Aspect}\nfullscreen={B(Fullscreen)}\nvsync={B(Vsync)}\n");
         sb.Append($"max_fps={Math.Clamp(MaxFps, 30, 360)}\nmsaa={Msaa}\nsmaa={Math.Clamp(Smaa, 0, 4)}\nanisotropy={Anisotropy}\nenhance={B(Enhance)}\nskip_intro={B(SkipIntro)}\nxbox_prompts={B(XboxPrompts)}\nhide_shader_overlay={B(HideShaderOverlay)}\nlow_performance={B(LowPerformance)}\nvertex_arena={B(VertexArena)}\nlanguage={Language}\nsettings_rev=1\n");
@@ -215,6 +218,7 @@ public static class Options
     }
 
     public static readonly int[] Fps = [30, 60, 120, 144, 165, 240, 360];
+    public static readonly (string Value, string Name)[] Renderers = [("d3d12", "Direct3D 12 (default)"), ("vulkan", "Vulkan (experimental)")];
     public static readonly (string Value, string Name)[] Aspects = [("auto", "Auto (match resolution)"), ("16:9", "16:9"), ("21:9", "21:9 (experimental)"), ("32:9", "32:9 (experimental)")];
     public static readonly (int Value, string Name)[] Msaa = [(1, "Off"), (2, "2x MSAA"), (4, "4x MSAA"), (8, "8x MSAA")];
     public static readonly (int Value, string Name)[] Smaa = [(0, "Off"), (1, "Low"), (2, "Medium"), (3, "High"), (4, "Ultra")];
@@ -403,7 +407,7 @@ public static class ShaderCache
 {
     public sealed record Info(bool Exists, int Shaders, long Bytes, DateTime? Built);
 
-    static readonly string[] Dirs = ["shadercache", "shaders"];
+    static readonly string[] Dirs = ["shadercache", "shaders", Path.Combine("cache", "vulkan")];
     static readonly string[] Files = ["pipelines.bin", "pipelines.manifest", "static_shaders.bin"];
 
     public static Info Get()
@@ -415,12 +419,13 @@ public static class ShaderCache
             foreach (var f in new DirectoryInfo(d).EnumerateFiles("*", SearchOption.AllDirectories))
             {
                 bytes += f.Length;
-                if (f.Extension is ".dxbc" or ".ucode") count++;
+                if (f.Extension is ".dxbc" or ".ucode" or ".spv") count++;
+                if (f.Name == "pipelines.bin" && (!built.HasValue || f.LastWriteTime > built)) built = f.LastWriteTime;
             }
         foreach (var f in Files.Select(f => new FileInfo(Path.Combine(Paths.User, f))).Where(f => f.Exists))
         {
             bytes += f.Length;
-            if (f.Name == "pipelines.bin") built = f.LastWriteTime;
+            if (f.Name == "pipelines.bin" && (!built.HasValue || f.LastWriteTime > built)) built = f.LastWriteTime;
         }
         return new Info(bytes > 0, count, bytes, built);
     }

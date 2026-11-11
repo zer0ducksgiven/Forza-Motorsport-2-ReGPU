@@ -3,10 +3,12 @@
 #include <string>
 
 // Player settings: Documents\fm2\settings.ini, edited by the launcher. Environment
-// variables (FM2_RESOLUTION, FM2_RENDER_SCALE, FM2_MAX_FPS, FM2_VSYNC, FM2_FULLSCREEN,
+// variables (FM2_RENDERER, FM2_RESOLUTION, FM2_RENDER_SCALE, FM2_MAX_FPS, FM2_VSYNC, FM2_FULLSCREEN,
 // FM2_PROFILE, FM2_SKIP_INTRO) override the file for testing.
 struct Settings
 {
+    enum class Renderer { D3d12, Vulkan };
+    Renderer renderer = Renderer::D3d12;
     std::string profile = "Player";     // the gamer profile name the game sees
     uint32_t width = 1280, height = 720; // output resolution
     uint32_t aspectW = 0, aspectH = 0;   // forced aspect ratio (0 = from the resolution)
