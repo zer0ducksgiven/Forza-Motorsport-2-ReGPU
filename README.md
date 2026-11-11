@@ -311,8 +311,10 @@ provides `vulkan-1.dll`.
 
 - **First start:** the game waits on the "COMPILING SHADERS" screen while every shader in the game data is compiled
   into `Documents\fm2\cache\vulkan` (about half a minute on a 16-core CPU). Later starts only check the cache.
-- **Presentation:** the finished frame is read back and shown through the existing presenter's swap chain; there is no
-  Vulkan swap chain yet. MSAA, SMAA, the upscalers and the in-game graphics options are Direct3D 12 only for now.
+- **Presentation:** a Vulkan swap chain on the game window (the frame is stretched to the window, VSync as set).
+  If the device cannot present to the window, or with `FM2_VK_NO_SWAPCHAIN=1`, frames are read back and shown
+  through the Direct3D 12 presenter instead. MSAA, SMAA, the upscalers and the in-game graphics options are
+  Direct3D 12 only for now.
 - **Linux:** `linux/vk.sh` builds the backend's test tools natively and runs them (`FM2_VK_DEVICE` picks the GPU by
   index or name). `linux/race.sh vulkan` and `linux/race.sh d3d12` drive the menus into a race and write a benchmark
   report (`FM2_BENCHMARK=<file>`).

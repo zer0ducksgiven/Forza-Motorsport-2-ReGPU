@@ -30,6 +30,7 @@
 #include "gpu/vk/vk_context.h"
 #include "gpu/vk/vk_draw.h"
 #include "gpu/vk/vk_resolve.h"
+#include "gpu/vk/vk_swapchain.h"
 #include "gpu/vk/vk_shader.h"
 #include "gpu/vk/vk_shaders.h"
 #include "gpu/vk/vk_state.h"
@@ -1834,6 +1835,82 @@ void StartSampler()
 // shown): every shader is checked rather than a sample, because an interrupted first boot leaves the head of the list
 // cached and the rest not. FM2_VK_NO_BOOT_COMPILE=1 skips the wait (the warm-up
 // threads carry on in the background).
+// The window's swap chain (vk_swapchain.h). When there is none - headless, FM2_VK_NO_SWAPCHAIN, the synchronous
+// present path, or a device that cannot present to the window - every frame is read back and handed to the presenter
+// instead, which is also how a capture gets its pixels.
+vk::Swapchain g_swapchain;
+bool g_swapchainActive = false;
+// The next submitted frame is also read back (a capture was asked for).
+bool g_readbackWanted = false;
+
+void CreateWindowSwapchain()
+{
+    if (getenv("FM2_VK_NO_SWAPCHAIN") || getenv("FM2_HEADLESS") || !UseAsyncPresent())
+        return;
+    void* const window = PresenterClaimWindow();
+    if (!window)
+        return;
+    g_swapchainActive = vk::SwapchainCreate(g.context, g_swapchain, g.resolve, window, GetSettings().vsync, g.shaders.cacheDir);
+    if (!g_swapchainActive)
+        PresenterReleaseWindow();
+    Log("renderer_vk: %s", g_swapchainActive ? "presenting through a Vulkan swap chain"
+                                               : "no Vulkan swap chain on this window; frames go through the presenter");
+}
+
+// Shows a CPU image (the first-boot screen) through the swap chain, outside the frame loop: uploads it, draws it
+// stretched over the window and waits for the GPU.
+bool PresentCpuImage(const uint8_t* rgba, uint32_t width, uint32_t height)
+{
+    static vk::Image image;
+    static bool uploaded = false;
+    if (image.width != width || image.height != height)
+    {
+        vk::DestroyImage(g.context, image);
+        image = vk::CreateImage(g.context, width, height, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+        uploaded = false;
+    }
+    if (!image.image)
+        return false;
+    vk::UploadImage(g.context, image, rgba, VkDeviceSize(width) * height * 4,
+        uploaded ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED);
+    uploaded = true;
+    vk::FlushUploads(g.context);
+    uint32_t index = 0;
+    VkSemaphore acquired = VK_NULL_HANDLE, rendered = VK_NULL_HANDLE;
+    if (!vk::SwapchainAcquire(g.context, g_swapchain, g.resolve, index, acquired, rendered))
+        return false;
+    VkCommandBufferAllocateInfo allocate{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
+    allocate.commandPool = g.context.pool;
+    allocate.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    allocate.commandBufferCount = 1;
+    VkCommandBuffer cmd = VK_NULL_HANDLE;
+    if (vkAllocateCommandBuffers(g.context.device, &allocate, &cmd) != VK_SUCCESS)
+        return false;
+    const VkCommandBufferBeginInfo begin{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+    vkBeginCommandBuffer(cmd, &begin);
+    const VkRect2D full{ { 0, 0 }, g_swapchain.extent };
+    vk::SwapchainBeginPass(g_swapchain, cmd, index);
+    vk::PresentDraw(g.context, g.resolve, cmd, g_swapchain.pipeline, image.view, full, full, nullptr);
+    vk::SwapchainEndPass(cmd);
+    vkEndCommandBuffer(cmd);
+    const VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    VkSubmitInfo submit{ VK_STRUCTURE_TYPE_SUBMIT_INFO };
+    submit.waitSemaphoreCount = 1;
+    submit.pWaitSemaphores = &acquired;
+    submit.pWaitDstStageMask = &waitStage;
+    submit.commandBufferCount = 1;
+    submit.pCommandBuffers = &cmd;
+    submit.signalSemaphoreCount = 1;
+    submit.pSignalSemaphores = &rendered;
+    const bool submitted = vkQueueSubmit(g.context.queue, 1, &submit, VK_NULL_HANDLE) == VK_SUCCESS;
+    if (submitted)
+        vk::SwapchainPresent(g.context, g_swapchain, index, rendered);
+    vkQueueWaitIdle(g.context.queue);
+    vkFreeCommandBuffers(g.context.device, g.context.pool, 1, &cmd);
+    vk::ResolveFrameComplete(g.context, g.resolve);
+    return submitted;
+}
+
 void FirstBootShaderWait()
 {
     if (getenv("FM2_VK_NO_BOOT_COMPILE") || getenv("FM2_HEADLESS"))
@@ -1857,7 +1934,9 @@ void FirstBootShaderWait()
                 screen.size() == size_t(kWidth) * kHeight * 4)
             {
                 shown = true;
-                if (outWidth == kWidth && outHeight == kHeight)
+                if (g_swapchainActive)
+                    PresentCpuImage(screen.data(), kWidth, kHeight);
+                else if (outWidth == kWidth && outHeight == kHeight)
                     PresenterSubmitImage(kWidth, kHeight, std::vector<uint8_t>(screen));
                 else if (outWidth && outHeight)
                 {
@@ -2011,7 +2090,6 @@ bool Init()
     if (!g.gphys)
         Log("renderer_vk: guest memory is not importable; vertex data will read as zero");
     vk::ShaderWarmStart(g.shaders);
-    FirstBootShaderWait();
     StartSampler();
     if (!vk::ResolveInit(g.context, g.resolve, g.shaders.cacheDir))
     {
@@ -2019,6 +2097,8 @@ bool Init()
         g.failed = true;
         return false;
     }
+    CreateWindowSwapchain();
+    FirstBootShaderWait();
     const VkDeviceSize listBytes = getenv("FM2_VK_GUEST_RING_MB")
         ? std::clamp<VkDeviceSize>(strtoull(getenv("FM2_VK_GUEST_RING_MB"), nullptr, 10), 16, 1024) << 20
         : 384u << 20;
@@ -2077,11 +2157,60 @@ void SubmitAsyncFrame(const State::ResolvedTexture* front)
     g.perfDrawCallMs += g.draw.perfCallMs;
     AsyncFrame& current = g_async[g_asyncIndex];
     const bool haveFront = front && front->index < g.textures0.slots.size();
-    current.hasImage = haveFront || g.lastDrawSurface;
+    const bool haveImage = haveFront || g.lastDrawSurface;
+    // Read back for the presenter when there is no swap chain, and for a capture.
+    current.hasImage = haveImage && (!g_swapchainActive || g_readbackWanted);
+    g_readbackWanted = false;
+    const DisplayGamma* gamma = DisplayGammaCurve();
+    vk::Image* presentSource = nullptr;
+    if (haveFront)
+        presentSource = &g.textures0.slots[front->index];
+    else if (haveImage)
+    {
+        vk::SurfaceShaderRead(g.context, *g.lastDrawSurface, g.cmd);
+        presentSource = &g.lastDrawSurface->color;
+    }
+    // The window: the front buffer drawn straight into the swap chain image, stretched to it, with the display gamma
+    // curve; the overlay on top.
+    uint32_t swapIndex = 0;
+    VkSemaphore swapAcquired = VK_NULL_HANDLE, swapRendered = VK_NULL_HANDLE;
+    const bool presenting = g_swapchainActive && haveImage &&
+        vk::SwapchainAcquire(g.context, g_swapchain, g.resolve, swapIndex, swapAcquired, swapRendered);
+    if (presenting)
+    {
+        // The overlay's pixels live in a small texture, uploaded when they change. The upload goes out with this
+        // frame's other uploads, ahead of the frame itself.
+        static vk::Image overlay;
+        static uint64_t overlayVersion = ~0ull;
+        const uint8_t* overlayPixels = nullptr;
+        uint32_t overlayWidth = 0, overlayHeight = 0, overlayVisible = 0;
+        uint64_t version = 0;
+        const bool showOverlay = RendererOverlayPixels(overlayPixels, overlayWidth, overlayHeight, overlayVisible, version);
+        if (showOverlay && (!overlay.image || version != overlayVersion))
+        {
+            const bool fresh = !overlay.image;
+            if (fresh)
+                overlay = vk::CreateImage(g.context, overlayWidth, overlayHeight, VK_FORMAT_R8G8B8A8_UNORM,
+                    VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+            if (overlay.image)
+                vk::UploadImage(g.context, overlay, overlayPixels, VkDeviceSize(overlayWidth) * overlayHeight * 4,
+                    fresh ? VK_IMAGE_LAYOUT_UNDEFINED : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            overlayVersion = version;
+        }
+        const VkRect2D full{ { 0, 0 }, g_swapchain.extent };
+        vk::SwapchainBeginPass(g_swapchain, g.cmd, swapIndex);
+        vk::PresentDraw(g.context, g.resolve, g.cmd, g_swapchain.pipeline, presentSource->view, full, full, gamma ? gamma->points.data() : nullptr);
+        if (showOverlay && overlay.image && g_swapchain.extent.width > 24 + overlayWidth && g_swapchain.extent.height > 24 + overlayVisible)
+        {
+            const VkRect2D area{ { 24, 24 }, { overlayWidth, overlayHeight } };
+            const VkRect2D visible{ { 24, 24 }, { overlayWidth, overlayVisible } };
+            vk::PresentDraw(g.context, g.resolve, g.cmd, g_swapchain.pipeline, overlay.view, area, visible, nullptr);
+        }
+        vk::SwapchainEndPass(g.cmd);
+    }
     if (current.hasImage)
     {
-        // The window's image is made on the GPU: the front buffer stretched to the output size with the display gamma
-        // curve, as RGBA8.
+        // The same image as RGBA8 at the output size, copied to a buffer the CPU reads next frame.
         uint32_t width = 0, height = 0;
         RenderSize(width, height);
         width = std::clamp<uint32_t>(width, 16, 8192);
@@ -2103,15 +2232,6 @@ void SubmitAsyncFrame(const State::ResolvedTexture* front)
         {
             g.failed = true;
             return;
-        }
-        const DisplayGamma* gamma = DisplayGammaCurve();
-        vk::Image* presentSource = nullptr;
-        if (haveFront)
-            presentSource = &g.textures0.slots[front->index];
-        else
-        {
-            vk::SurfaceShaderRead(g.context, *g.lastDrawSurface, g.cmd);
-            presentSource = &g.lastDrawSurface->color;
         }
         if (!vk::PresentImage(g.context, g.resolve, g.cmd, *presentSource, current.resolved,
                 current.resolvedUsed ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED, gamma ? gamma->points.data() : nullptr))
@@ -2138,6 +2258,15 @@ void SubmitAsyncFrame(const State::ResolvedTexture* front)
     VkSubmitInfo submit{ VK_STRUCTURE_TYPE_SUBMIT_INFO };
     submit.commandBufferCount = 1;
     submit.pCommandBuffers = &g.cmd;
+    const VkPipelineStageFlags swapWaitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    if (presenting)
+    {
+        submit.waitSemaphoreCount = 1;
+        submit.pWaitSemaphores = &swapAcquired;
+        submit.pWaitDstStageMask = &swapWaitStage;
+        submit.signalSemaphoreCount = 1;
+        submit.pSignalSemaphores = &swapRendered;
+    }
     const VkResult reset = AsyncFences().reset(g.context.device, 1, &current.fence);
     vk::FlushUploads(g.context); // this frame's texture uploads must be queued ahead of the draws that sample them
     VkResult submitted;
@@ -2152,6 +2281,11 @@ void SubmitAsyncFrame(const State::ResolvedTexture* front)
         Log("renderer_vk: async submit end %d, submit %d", int(ended), int(submitted));
         g.failed = true;
         return;
+    }
+    if (presenting)
+    {
+        vk::SwapchainPresent(g.context, g_swapchain, swapIndex, swapRendered);
+        PresenterCountFrame();
     }
     current.pending = true;
     g_asyncIndex ^= 1;
@@ -2185,7 +2319,7 @@ void AsyncPresentPrevious(bool swapDraw)
     }
     vk::ResolveFrameComplete(g.context, g.resolve, previous.framebufferCount, previous.viewCount, previous.setCount);
     previous.pending = false;
-    if (previous.hasImage)
+    if (previous.hasImage && !g_swapchainActive)
     {
         ScopedMs convertTimed(g.perf ? &g.perfPresentConvertMs : nullptr);
         // Already RGBA8 with the gamma curve applied (PresentImage): one copy out of the mapped buffer.
@@ -2833,18 +2967,6 @@ void RendererVkOnSwap(uint64_t frame, uint32_t frontBuffer)
             resolved->second.height == 720
         ? &resolved->second
         : nullptr;
-    {
-        ScopedMs timed(g.perf ? &g.perfSubmitMs : nullptr);
-        ClosePass();
-        // Submit the frame and start the next one. The command buffer is reused: waiting keeps it
-        // simple, and the first frames are not where the time goes. It is still a whole frame of
-        // GPU work serialised against the CPU, which is what FM2_PERF reports here.
-        if (UseAsyncPresent())
-            SubmitAsyncFrame(front);
-        else
-            EndFrame();
-    }
-    FrameGpuTimesEnd();
     // FM2_VK_DUMP_AT=<seconds>: dump once, at that point in time, so a Vulkan frame can be
     // compared with a D3D12 one taken at the same moment (FM2_DUMP_AT).
     static const double dumpAt = getenv("FM2_VK_DUMP_AT") ? atof(getenv("FM2_VK_DUMP_AT")) : -1.0;
@@ -2852,31 +2974,6 @@ void RendererVkOnSwap(uint64_t frame, uint32_t frontBuffer)
     static bool dumpedOnce = false;
     const bool timeDump = dumpAt >= 0 && !dumpedOnce &&
         std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count() >= dumpAt;
-    if (timeDump)
-    {
-        Log("present_vk: front buffer %08x, resolved %08x format %u, last surface %03x", frontBuffer,
-            resolved != g.presentable.end() ? resolved->first : 0, front ? front->format : 0, last ? last->base : ~0u);
-        for (const auto& [base, texture] : g.presentable)
-            Log("present_vk: candidate %08x format %u frame %llu", base, texture.format, (unsigned long long)texture.frame);
-    }
-    // Windowed: hand the frame to the presenter (which still uploads and blits it on the D3D12
-    // side — a real Vulkan swap chain is the platform layer's job, this is for looking at it now).
-    static const bool windowed = getenv("FM2_HEADLESS") == nullptr;
-    if (windowed && !UseAsyncPresent() && (front || last) && draws)
-    {
-        ScopedMs timed(g.perf ? &g.perfPresentMs : nullptr);
-        std::vector<uint8_t> rgba;
-        const bool read = front ? ReadResolved(*front, rgba) : ReadSurface(*last, rgba);
-        uint32_t imageWidth = last ? last->width : 0, imageHeight = last ? last->height : 0;
-        if (front)
-            ResolvedSize(*front, imageWidth, imageHeight);
-        if (read && imageWidth && rgba.size() == size_t(imageWidth) * imageHeight * 4)
-        {
-            ScopedMs handoffTimed(g.perf ? &g.perfPresentHandoffMs : nullptr);
-            RendererOverlayImage(imageWidth, imageHeight, rgba);
-            PresenterSubmitImage(imageWidth, imageHeight, std::move(rgba));
-        }
-    }
     // FM2_VK_DUMP_FRAME=<n>: dump that exact frame. Comparing two builds needs the same frame,
     // not the same wall-clock moment — the two land in different scenes otherwise.
     static const uint64_t dumpFrame = getenv("FM2_VK_DUMP_FRAME") ? strtoull(getenv("FM2_VK_DUMP_FRAME"), nullptr, 10) : 0;
@@ -2902,6 +2999,45 @@ void RendererVkOnSwap(uint64_t frame, uint32_t frontBuffer)
     const bool frameDump = (dumpFrame && !dumpFrameDone && frame >= dumpFrame) || captureFileSeen;
     if (frameDump && dumpFrame) dumpFrameDone = true;
     captureFileSeen = false;
+    // A capture needs this frame's pixels on the CPU, which a frame that only goes to the swap chain does not have.
+    g_readbackWanted = frameDump || timeDump;
+    {
+        ScopedMs timed(g.perf ? &g.perfSubmitMs : nullptr);
+        ClosePass();
+        // Submit the frame and start the next one. The command buffer is reused: waiting keeps it
+        // simple, and the first frames are not where the time goes. It is still a whole frame of
+        // GPU work serialised against the CPU, which is what FM2_PERF reports here.
+        if (UseAsyncPresent())
+            SubmitAsyncFrame(front);
+        else
+            EndFrame();
+    }
+    FrameGpuTimesEnd();
+    if (timeDump)
+    {
+        Log("present_vk: front buffer %08x, resolved %08x format %u, last surface %03x", frontBuffer,
+            resolved != g.presentable.end() ? resolved->first : 0, front ? front->format : 0, last ? last->base : ~0u);
+        for (const auto& [base, texture] : g.presentable)
+            Log("present_vk: candidate %08x format %u frame %llu", base, texture.format, (unsigned long long)texture.frame);
+    }
+    // Windowed: hand the frame to the presenter (which still uploads and blits it on the D3D12
+    // side — a real Vulkan swap chain is the platform layer's job, this is for looking at it now).
+    static const bool windowed = getenv("FM2_HEADLESS") == nullptr;
+    if (windowed && !UseAsyncPresent() && (front || last) && draws)
+    {
+        ScopedMs timed(g.perf ? &g.perfPresentMs : nullptr);
+        std::vector<uint8_t> rgba;
+        const bool read = front ? ReadResolved(*front, rgba) : ReadSurface(*last, rgba);
+        uint32_t imageWidth = last ? last->width : 0, imageHeight = last ? last->height : 0;
+        if (front)
+            ResolvedSize(*front, imageWidth, imageHeight);
+        if (read && imageWidth && rgba.size() == size_t(imageWidth) * imageHeight * 4)
+        {
+            ScopedMs handoffTimed(g.perf ? &g.perfPresentHandoffMs : nullptr);
+            RendererOverlayImage(imageWidth, imageHeight, rgba);
+            PresenterSubmitImage(imageWidth, imageHeight, std::move(rgba));
+        }
+    }
     if (frameDump || timeDump)
         Log("renderer_vk: capture frame %llu, front buffer %08x, source %s", (unsigned long long)frame, frontBuffer,
             front ? "resolved" : "surface");

@@ -95,6 +95,28 @@ bool Init(Context& context, const std::filesystem::path& cacheDir)
         ici.enabledLayerCount = 1;
         ici.ppEnabledLayerNames = &validationLayer;
     }
+#if defined(_WIN32)
+    // The window-system extensions, when the loader has them: without them the frame is read back for the presenter.
+    const char* const surfaceNames[] = { "VK_KHR_surface", "VK_KHR_win32_surface" };
+    if (const auto enumerate = reinterpret_cast<PFN_vkEnumerateInstanceExtensionProperties>(
+            vkldr::GetInstanceProcAddr(VK_NULL_HANDLE, "vkEnumerateInstanceExtensionProperties")))
+    {
+        uint32_t instanceExtensionCount = 0;
+        enumerate(nullptr, &instanceExtensionCount, nullptr);
+        std::vector<VkExtensionProperties> instanceExtensions(instanceExtensionCount);
+        enumerate(nullptr, &instanceExtensionCount, instanceExtensions.data());
+        uint32_t found = 0;
+        for (const auto& extension : instanceExtensions)
+            for (const char* name : surfaceNames)
+                found += !strcmp(extension.extensionName, name);
+        if (found == 2)
+        {
+            context.surfaceExtensions = true;
+            ici.enabledExtensionCount = 2;
+            ici.ppEnabledExtensionNames = surfaceNames;
+        }
+    }
+#endif
     if (vkCreateInstance(&ici, nullptr, &context.instance) != VK_SUCCESS)
         return Fail("vkCreateInstance", VK_ERROR_INITIALIZATION_FAILED);
     if (!vkldr::ResolveInstance(context.instance))
@@ -156,6 +178,11 @@ bool Init(Context& context, const std::filesystem::path& cacheDir)
         {
             context.externalMemoryHost = true;
             deviceExtensions.push_back(VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME);
+        }
+        else if (context.surfaceExtensions && !strcmp(extension.extensionName, VK_KHR_SWAPCHAIN_EXTENSION_NAME))
+        {
+            context.swapchainExtension = true;
+            deviceExtensions.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
         }
 
     float priority = 1.0f;

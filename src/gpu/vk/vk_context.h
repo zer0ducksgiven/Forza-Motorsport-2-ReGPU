@@ -37,6 +37,10 @@ struct Context
     // shaders read vertex and index data where the game wrote it (the D3D12 path opens the same
     // memory as a heap).
     bool externalMemoryHost = false;
+    // VK_KHR_surface + the platform's surface extension on the instance, VK_KHR_swapchain on the device: what
+    // presenting to a window needs (vk_swapchain.h).
+    bool surfaceExtensions = false;
+    bool swapchainExtension = false;
 };
 
 bool Init(Context& context, const std::filesystem::path& cacheDir = {});

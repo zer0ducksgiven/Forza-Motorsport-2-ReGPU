@@ -60,6 +60,9 @@ struct Presenter
     ComPtr<ID3D12Resource> upload[kBuffers];
     uint64_t presentedFrame = 0;
     std::atomic<bool> ready{ false };
+    // The Vulkan renderer presents through its own swap chain on the window: this one is then never made. It is
+    // made late instead if that renderer has to fall back to handing over images (PresenterSubmitImage).
+    std::atomic<bool> claimed{ false };
 };
 
 Presenter g_p;
@@ -269,7 +272,12 @@ void CreateWindowAndDevice()
         LayoutSurface();
     }
     Log("presenter: picture in %s", g_p.surface ? "a child window (black bars)" : "the game window");
+}
 
+void CreateSwapChain()
+{
+    const Settings& settings = GetSettings();
+    const uint32_t outW = settings.width, outH = settings.height;
     ComPtr<IDXGIFactory4> factory;
     Check(CreateDXGIFactory2(0, IID_PPV_ARGS(&factory)), "CreateDXGIFactory2");
     EnsureDevice();
@@ -439,8 +447,15 @@ void RenderThread()
 {
     SetThreadDescription(GetCurrentThread(), L"presenter");
     CreateWindowAndDevice();
+#if defined(FM2_VULKAN)
+    const bool deferSwapChain = GetSettings().renderer == Settings::Renderer::Vulkan;
+#else
+    const bool deferSwapChain = false;
+#endif
+    if (!deferSwapChain)
+        CreateSwapChain();
     g_p.ready = true;
-    Log("presenter: window and D3D12 swap chain ready");
+    Log("presenter: window %s", deferSwapChain ? "ready (the Vulkan renderer presents)" : "and D3D12 swap chain ready");
     for (;;)
     {
         MSG msg;
@@ -458,6 +473,15 @@ void RenderThread()
             if (frame == g_p.presentedFrame || g_rendererActive)
                 continue;
             g_p.presentedFrame = frame;
+            // Without a swap chain there is nothing to draw into, unless an image was handed over: then the
+            // renderer that deferred it is falling back to this path and the swap chain is made now.
+            if (!g_p.swapChain && (g_p.claimed || g_p.image.empty()))
+                continue;
+        }
+        if (!g_p.swapChain)
+        {
+            CreateSwapChain();
+            Log("presenter: D3D12 swap chain made for handed-over images");
         }
         DrawFrame(frame);
     }
@@ -614,6 +638,28 @@ ID3D12CommandQueue* RenderQueue()
     return g_queue.Get();
 }
 
+void* PresenterClaimWindow()
+{
+    if (getenv("FM2_HEADLESS"))
+        return nullptr;
+    for (int i = 0; i < 2000 && !g_p.ready; i++) // the window is made on the presenter's thread
+        Sleep(5);
+    if (!g_p.ready || g_p.swapChain)
+        return nullptr;
+    g_p.claimed = true;
+    return g_p.surface ? g_p.surface : g_p.window;
+}
+
+void PresenterReleaseWindow()
+{
+    g_p.claimed = false;
+}
+
+void PresenterCountFrame()
+{
+    g_presents++;
+}
+
 void PresenterUseRenderer()
 {
     g_rendererActive = true;
@@ -622,7 +668,7 @@ void PresenterUseRenderer()
 bool PresenterRecordCopy(ID3D12GraphicsCommandList* list, ID3D12Resource* src, ID3D12Resource* overlay, uint32_t overlayW, uint32_t overlayH,
                          ID3D12Resource* toast, uint32_t toastW, uint32_t toastH, float toastRise)
 {
-    if (!g_p.ready)
+    if (!g_p.ready || !g_p.swapChain)
         return false;
     const UINT i = g_p.swapChain->GetCurrentBackBufferIndex();
     ID3D12Resource* backBuffer = g_p.backBuffers[i].Get();
@@ -752,7 +798,7 @@ void PresenterSetFullscreen(bool on)
 void PresenterPresent()
 {
     // Vsync: wait for the display's refresh; off: present at once (tearing allowed).
-    if (g_p.ready)
+    if (g_p.ready && g_p.swapChain)
     {
         FsrFgBeforePresent();
         if (GetSettings().vsync)

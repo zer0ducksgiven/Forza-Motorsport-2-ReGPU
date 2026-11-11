@@ -525,8 +525,8 @@ bool ResolveImage(const Context& context, Resolve& resolve, VkCommandBuffer cmd,
     return true;
 }
 
-bool PresentImage(const Context& context, Resolve& resolve, VkCommandBuffer cmd, Image& source, Image& destination,
-    VkImageLayout destinationLayout, const float* gamma)
+bool PresentDraw(const Context& context, Resolve& resolve, VkCommandBuffer cmd, VkPipeline pipeline, VkImageView source,
+    const VkRect2D& area, const VkRect2D& scissor, const float* gamma)
 {
     VkDescriptorSetAllocateInfo allocate{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
     allocate.descriptorPool = resolve.pool;
@@ -536,7 +536,7 @@ bool PresentImage(const Context& context, Resolve& resolve, VkCommandBuffer cmd,
     if (vkAllocateDescriptorSets(context.device, &allocate, &set) != VK_SUCCESS)
         return false;
     resolve.pendingSets.push_back(set);
-    VkDescriptorImageInfo image{ VK_NULL_HANDLE, source.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+    VkDescriptorImageInfo image{ VK_NULL_HANDLE, source, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
     VkDescriptorImageInfo sampler{ resolve.linearSampler, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED };
     VkWriteDescriptorSet writes[2]{};
     writes[0] = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
@@ -550,6 +550,44 @@ bool PresentImage(const Context& context, Resolve& resolve, VkCommandBuffer cmd,
     writes[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
     writes[1].pImageInfo = &sampler;
     vkUpdateDescriptorSets(context.device, 2, writes, 0, nullptr);
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, resolve.layout, 0, 1, &set, 0, nullptr);
+    float constants[18]{};
+    if (gamma)
+    {
+        for (uint32_t i = 0; i < 17; i++)
+            constants[i] = gamma[i];
+        constants[17] = 1.0f;
+    }
+    vkCmdPushConstants(cmd, resolve.layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof constants, constants);
+    const VkViewport viewport{ float(area.offset.x), float(area.offset.y), float(area.extent.width), float(area.extent.height), 0, 1 };
+    vkCmdSetViewport(cmd, 0, 1, &viewport);
+    vkCmdSetScissor(cmd, 0, 1, &scissor);
+    vkCmdDraw(cmd, 3, 1, 0, 0);
+    return true;
+}
+
+VkPipeline ResolveMakePresentPipeline(const Context& context, Resolve& resolve, VkRenderPass pass, const std::filesystem::path& cacheDir)
+{
+    // The same two shaders as resolve.present, for a render pass of another format (the swap chain's). Both come out
+    // of the disk cache ResolveInit filled.
+    std::vector<uint32_t> vsCode, psCode;
+    std::string error;
+    if (!CompileHlsl(kResolveVs, false, HashSource(kResolveVs), cacheDir, vsCode, &error) ||
+        !CompileHlsl(kPresentPs, true, HashSource(kPresentPs), cacheDir, psCode, &error))
+        return VK_NULL_HANDLE;
+    const VkShaderModule vs = Module(context, vsCode), ps = Module(context, psCode);
+    const VkPipeline pipeline = vs && ps ? MakePipeline(context, vs, ps, resolve.layout, pass) : VK_NULL_HANDLE;
+    if (vs)
+        vkDestroyShaderModule(context.device, vs, nullptr);
+    if (ps)
+        vkDestroyShaderModule(context.device, ps, nullptr);
+    return pipeline;
+}
+
+bool PresentImage(const Context& context, Resolve& resolve, VkCommandBuffer cmd, Image& source, Image& destination,
+    VkImageLayout destinationLayout, const float* gamma)
+{
     if (!destination.resolveFramebuffer)
     {
         VkFramebufferCreateInfo framebufferInfo{ VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO };
@@ -578,21 +616,8 @@ bool PresentImage(const Context& context, Resolve& resolve, VkCommandBuffer cmd,
     begin.framebuffer = destination.resolveFramebuffer;
     begin.renderArea = full;
     vkCmdBeginRenderPass(cmd, &begin, VK_SUBPASS_CONTENTS_INLINE);
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, resolve.present);
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, resolve.layout, 0, 1, &set, 0, nullptr);
-    float constants[18]{};
-    if (gamma)
-    {
-        for (uint32_t i = 0; i < 17; i++)
-            constants[i] = gamma[i];
-        constants[17] = 1.0f;
-    }
-    vkCmdPushConstants(cmd, resolve.layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof constants, constants);
-    VkViewport viewport{ 0, 0, float(destination.width), float(destination.height), 0, 1 };
-    vkCmdSetViewport(cmd, 0, 1, &viewport);
-    vkCmdSetScissor(cmd, 0, 1, &full);
-    vkCmdDraw(cmd, 3, 1, 0, 0);
+    const bool drawn = PresentDraw(context, resolve, cmd, resolve.present, source.view, full, full, gamma);
     vkCmdEndRenderPass(cmd); // leaves the image in TRANSFER_SRC (the pass's finalLayout), ready for the readback copy
-    return true;
+    return drawn;
 }
 }

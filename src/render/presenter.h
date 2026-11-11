@@ -48,5 +48,13 @@ void PresenterPresent();
 void PresenterResize(uint32_t width, uint32_t height);
 void PresenterSetWindowSize(uint32_t width, uint32_t height);
 void PresenterSetFullscreen(bool on);
+// The Vulkan renderer's swap chain: the window to make it on (an HWND; null when headless or when this presenter
+// already has its own swap chain on it). From then on the presenter draws nothing itself. Release hands the window
+// back, so that images handed over with PresenterSubmitImage are shown again (the fallback when the Vulkan swap
+// chain cannot be made).
+void* PresenterClaimWindow();
+void PresenterReleaseWindow();
+// A frame shown by that swap chain (the fps in the window's title bar).
+void PresenterCountFrame();
 // Called by the renderer: the presenter stops drawing its own frames.
 void PresenterUseRenderer();

@@ -56,4 +56,9 @@ bool ResolveImage(const Context& context, Resolve& resolve, VkCommandBuffer cmd,
 // TRANSFER_SRC. destinationLayout is UNDEFINED the first time and TRANSFER_SRC afterwards.
 bool PresentImage(const Context& context, Resolve& resolve, VkCommandBuffer cmd, Image& source, Image& destination,
     VkImageLayout destinationLayout, const float* gamma);
+// The same draw inside a render pass the caller began: `source` (a SHADER_READ view) stretched over `area`, clipped to
+// `scissor`. `pipeline` is resolve.present or one from ResolveMakePresentPipeline for that pass.
+bool PresentDraw(const Context& context, Resolve& resolve, VkCommandBuffer cmd, VkPipeline pipeline, VkImageView source,
+    const VkRect2D& area, const VkRect2D& scissor, const float* gamma);
+VkPipeline ResolveMakePresentPipeline(const Context& context, Resolve& resolve, VkRenderPass pass, const std::filesystem::path& cacheDir);
 }

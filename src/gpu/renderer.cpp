@@ -11158,29 +11158,45 @@ std::string RendererDrawStats()
     return out;
 }
 
-void RendererOverlayImage(uint32_t width, uint32_t height, std::vector<uint8_t>& rgba)
+bool RendererOverlayPixels(const uint8_t*& rgba, uint32_t& width, uint32_t& height, uint32_t& visibleHeight, uint64_t& version)
 {
-    if (rgba.size() != size_t(width) * height * 4)
-        return;
     std::vector<std::string> lines;
     g_overlay.visible = OverlayWanted(lines);
     if (!g_overlay.visible)
-        return;
+        return false;
     std::string text;
     for (const auto& line : lines)
         text += line + "\n";
     const auto now = std::chrono::steady_clock::now();
+    static uint64_t rendered = 0;
     if (g_overlay.cpuPixels.empty() || (text != g_overlay.lastText && now - g_overlay.lastRender > std::chrono::milliseconds(200)))
     {
         RenderOverlayPixels(lines, g_overlay.cpuPixels);
         g_overlay.lastText = text;
         g_overlay.lastRender = now;
+        rendered++;
     }
-    const uint8_t* source = reinterpret_cast<const uint8_t*>(g_overlay.cpuPixels.data());
-    const uint32_t copyWidth = std::min(kOverlayW, width > 24 ? width - 24 : 0);
-    const uint32_t copyHeight = std::min(g_overlay.height, height > 24 ? height - 24 : 0);
+    rgba = reinterpret_cast<const uint8_t*>(g_overlay.cpuPixels.data());
+    width = kOverlayW;
+    height = kOverlayH;
+    visibleHeight = g_overlay.height;
+    version = rendered;
+    return g_overlay.cpuPixels.size() == size_t(kOverlayW) * kOverlayH;
+}
+
+void RendererOverlayImage(uint32_t width, uint32_t height, std::vector<uint8_t>& rgba)
+{
+    if (rgba.size() != size_t(width) * height * 4)
+        return;
+    const uint8_t* source = nullptr;
+    uint32_t overlayWidth = 0, overlayHeight = 0, visibleHeight = 0;
+    uint64_t version = 0;
+    if (!RendererOverlayPixels(source, overlayWidth, overlayHeight, visibleHeight, version))
+        return;
+    const uint32_t copyWidth = std::min(overlayWidth, width > 24 ? width - 24 : 0);
+    const uint32_t copyHeight = std::min(visibleHeight, height > 24 ? height - 24 : 0);
     for (uint32_t y = 0; y < copyHeight; y++)
-        memcpy(rgba.data() + (size_t(y + 24) * width + 24) * 4, source + size_t(y) * kOverlayW * 4, size_t(copyWidth) * 4);
+        memcpy(rgba.data() + (size_t(y + 24) * width + 24) * 4, source + size_t(y) * overlayWidth * 4, size_t(copyWidth) * 4);
 }
 
 // The graphics options screen (hooks/graphics_menu.cpp): `change` edits the settings at the next frame start.

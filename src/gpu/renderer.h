@@ -11,6 +11,9 @@ void RendererOnDraw(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize);
 void RendererOnSwap(uint64_t frame, uint32_t frontBuffer);
 // Adds the compilation/performance overlay to a CPU RGBA8 frame before presentation.
 void RendererOverlayImage(uint32_t width, uint32_t height, std::vector<uint8_t>& rgba);
+// The overlay itself, for a renderer that draws it on the GPU: RGBA8 rows of `width` pixels, of which the top
+// `visibleHeight` are in use; `version` changes when the pixels do. False when there is nothing to show.
+bool RendererOverlayPixels(const uint8_t*& rgba, uint32_t& width, uint32_t& height, uint32_t& visibleHeight, uint64_t& version);
 // Lookahead hooks (see GpuLookahead): shader loads and draws the command processor has
 // not executed yet, seen on a shadow copy of the registers.
 void RendererPredictBegin();
