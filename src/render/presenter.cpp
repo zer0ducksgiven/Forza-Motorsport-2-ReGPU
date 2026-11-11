@@ -18,6 +18,7 @@
 #include <wrl/client.h>
 
 #include "gpu/fsrfg.h"
+#include "gpu/renderer.h"
 #include "input/wheel.h"
 #include "log.h"
 #include "render/presenter.h"
@@ -103,6 +104,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     {
         Log("presenter: window closed, exiting");
         WheelStop();
+        RendererSaveOnClose();
         std::_Exit(0);
     }
     if (msg == WM_CHAR)

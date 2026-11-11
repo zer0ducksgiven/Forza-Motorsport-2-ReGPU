@@ -8091,11 +8091,16 @@ void BootPresent(const std::vector<uint8_t>& rgba)
 
 void RendererPredictBegin()
 {
+    // The lookahead only queues Direct3D 12 pipelines: nothing would ever take them off the queue on Vulkan.
+    if (VulkanRendererEnabled())
+        return;
     PredictBeginImpl();
 }
 
 void RendererPredictShader(uint32_t type, const uint32_t* microcodeBE, uint32_t dwords)
 {
+    if (VulkanRendererEnabled())
+        return;
     dwords = ucode::UsedDwords(microcodeBE, dwords);
     auto& hash = type == 0 ? g_predVs : g_predPs;
     auto& code = type == 0 ? g_predVsCode : g_predPsCode;
@@ -8116,6 +8121,8 @@ void RendererPredictShader(uint32_t type, const uint32_t* microcodeBE, uint32_t 
 
 void RendererPredictDraw(uint32_t initiator)
 {
+    if (VulkanRendererEnabled())
+        return;
     const uint32_t edramMode = gpureg::Get(RB_MODECONTROL) & 7;
     if ((edramMode != 4 && edramMode != 5) || !g_predVs || !g_predPs || !g_predVsDwords || !g_predPsDwords)
         return;
@@ -8732,6 +8739,11 @@ bool RendererIsResolveDraw()
 
 void RendererOcclusionBegin()
 {
+    // Not on Vulkan: this started the whole Direct3D 12 renderer next to it (device, upload ring, vertex arena and a
+    // rebuild of every pipeline in the manifest, on the CPU for minutes) for a query that never saw a draw.
+    // RendererOcclusionEnd then has no result, and the game gets the fixed "visible" answer.
+    if (VulkanRendererEnabled())
+        return;
     if (!g_r.ok)
         Init();
     BeginFrameIfNeeded();
@@ -11204,4 +11216,39 @@ void RendererChangeSettings(std::function<void(Settings&)> change)
 {
     std::lock_guard lock(g_settingsChangeMutex);
     g_settingsChange = std::move(change);
+}
+
+// The Vulkan renderer's compile activity, once a frame, in the counters the overlay reads: it compiles on its own
+// threads and never touched these, so the pop-up stayed hidden on that path. Totals so far; `running` compiles in
+// progress, described by `what`; `waited` when a draw this frame had to wait for a compile (the overlay then stays up
+// for a few seconds); the pipeline warm-up and the first-boot shader compile as done / total (total 0: none).
+void RendererReportCompiles(const RendererCompileReport& r)
+{
+    g_stats.shadersBuilt = r.shadersBuilt;
+    g_stats.shadersCached = r.shadersCached;
+    g_stats.pipelinesBuilt = r.pipelinesBuilt;
+    g_stats.pipelinesLoaded = r.pipelinesCached;
+    {
+        std::lock_guard lock(g_stats.mutex);
+        if (r.running && !g_stats.busy.load())
+            g_stats.currentSince = std::chrono::steady_clock::now();
+        g_stats.current = r.what ? r.what : "";
+        g_stats.busy = int(r.running);
+    }
+    if (r.waited)
+        g_stats.lastColdMs = uint64_t(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
+    g_stats.warmDone = r.warmDone;
+    g_stats.warmTotal = r.warmTotal;
+    g_stats.staticDone = r.staticDone;
+    g_stats.staticTotal = r.staticTotal;
+}
+
+// The window was closed: the process exits right after this. The Vulkan pipeline cache is otherwise only written
+// by the periodic save in renderer_vk.cpp, so a short session would lose what it built.
+void RendererSaveOnClose()
+{
+#if defined(FM2_VULKAN)
+    if (VulkanRendererEnabled())
+        RendererVkSavePipelineCache();
+#endif
 }

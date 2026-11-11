@@ -25,6 +25,7 @@
 #include <vector>
 
 #include "fast_env.h"
+#include "gpu/renderer.h"
 #include "live_switch.h"
 #include "log.h"
 #include "memory.h"
@@ -506,6 +507,7 @@ std::string Handle(const std::string& line)
     if (cmd == "quit")
     {
         Log("debug: quit requested");
+        RendererSaveOnClose(); // the pipeline cache, as closing the window does
         fflush(nullptr);
         std::thread([] {
             std::this_thread::sleep_for(std::chrono::milliseconds(200));

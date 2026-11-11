@@ -46,7 +46,8 @@ struct Context
 bool Init(Context& context, const std::filesystem::path& cacheDir = {});
 void Shutdown(Context& context);
 // Persists the pipeline cache without tearing the device down: a game run does not reach Shutdown.
-void SavePipelineCache(Context& context);
+// Returns the bytes written (0: nothing saved). Safe while other threads create pipelines with the cache.
+size_t SavePipelineCache(Context& context);
 
 uint32_t FindMemory(const Context& context, uint32_t bits, VkMemoryPropertyFlags want);
 

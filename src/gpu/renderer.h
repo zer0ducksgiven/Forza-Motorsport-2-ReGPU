@@ -28,6 +28,18 @@ bool RendererCaptureComplete();
 void RendererMarkCaptureComplete();
 // Flushes the pipeline library to disk (called when the tour finishes).
 void RendererSaveCaches();
+// Saves what can be saved quickly when the window is closed (the Vulkan pipeline cache), just before the process exits.
+void RendererSaveOnClose();
+// Compile activity of a renderer that compiles on its own (Vulkan), for the shader compile pop-up: see renderer.cpp.
+struct RendererCompileReport
+{
+    uint32_t shadersBuilt = 0, shadersCached = 0, pipelinesBuilt = 0, pipelinesCached = 0;
+    uint32_t running = 0;
+    const char* what = nullptr;
+    bool waited = false;
+    uint32_t warmDone = 0, warmTotal = 0, staticDone = 0, staticTotal = 0;
+};
+void RendererReportCompiles(const RendererCompileReport& report);
 // The display gamma table entry `index` (10:10:10 RGB), applied when presenting.
 void RendererSetGammaEntry(uint32_t index, uint32_t rgb10);
 // Fill the 17 display-curve points; false when the table is unset or the identity map.

@@ -247,28 +247,30 @@ bool Init(Context& context, const std::filesystem::path& cacheDir)
 
 // Writes the pipeline cache to disk without tearing anything down: a game run does not reach Shutdown(),
 // so the renderer calls this from its save path.
-void SavePipelineCache(Context& context)
+size_t SavePipelineCache(Context& context)
 {
     if (!context.device || !context.pipelineCache || context.pipelineCachePath.empty())
-        return;
-    {
-        {
-            size_t bytes = 0;
-            if (vkGetPipelineCacheData(context.device, context.pipelineCache, &bytes, nullptr) == VK_SUCCESS && bytes)
-            {
-                std::vector<char> data(bytes);
-                if (vkGetPipelineCacheData(context.device, context.pipelineCache, &bytes, data.data()) == VK_SUCCESS)
-                {
-                    std::filesystem::create_directories(context.pipelineCachePath.parent_path());
-                    if (FILE* f = fopen(context.pipelineCachePath.string().c_str(), "wb"))
-                    {
-                        fwrite(data.data(), 1, bytes, f);
-                        fclose(f);
-                    }
-                }
-            }
-        }
-    }
+        return 0;
+    // The renderer saves while the game runs (and the process can be ended at any moment): written to a temporary
+    // file and renamed over the old one, so a cut-off write never leaves half a cache behind.
+    size_t bytes = 0;
+    if (vkGetPipelineCacheData(context.device, context.pipelineCache, &bytes, nullptr) != VK_SUCCESS || !bytes)
+        return 0;
+    std::vector<char> data(bytes);
+    if (vkGetPipelineCacheData(context.device, context.pipelineCache, &bytes, data.data()) != VK_SUCCESS)
+        return 0;
+    std::error_code ec;
+    std::filesystem::create_directories(context.pipelineCachePath.parent_path(), ec);
+    std::filesystem::path temporary = context.pipelineCachePath;
+    temporary += ".tmp";
+    FILE* f = fopen(temporary.string().c_str(), "wb");
+    if (!f)
+        return 0;
+    const bool written = fwrite(data.data(), 1, bytes, f) == bytes;
+    if (fclose(f) != 0 || !written)
+        return 0;
+    std::filesystem::rename(temporary, context.pipelineCachePath, ec);
+    return ec ? 0 : bytes;
 }
 
 namespace

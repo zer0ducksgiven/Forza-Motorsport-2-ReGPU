@@ -214,6 +214,14 @@ bool ShaderWarmProgress(uint32_t& done, uint32_t& total, uint32_t& compiled)
     return g_warm.started.load() && (!g_warm.staticListed.load() || done < total);
 }
 
+void ShaderWarmStats(uint32_t& compiled, uint32_t& cached, uint32_t& pending)
+{
+    compiled = g_warm.compiled.load();
+    cached = g_warm.cached.load();
+    std::lock_guard lock(g_warm.mutex);
+    pending = uint32_t(g_warm.queue.size() + g_warm.inFlight.size());
+}
+
 namespace
 {
 // context and set are null on a warm-up thread: translate, compile and write the disk cache, nothing else.
@@ -433,6 +441,7 @@ const VkShader* ShaderBuild(Context* contextPtr, ShaderSet* setPtr, const std::f
     }
     shader.ok = true;
     set.compiled++;
+    (cachedAhead ? set.cached : set.fromCompiler)++;
     {
         static uint32_t logged = 0;
         if (logged < 12)

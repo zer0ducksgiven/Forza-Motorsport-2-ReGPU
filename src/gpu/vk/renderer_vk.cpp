@@ -5,6 +5,7 @@
 // The backend owns Vulkan device initialization, guest shader conversion, draw submission,
 // EDRAM surfaces and resolves. The existing D3D12 presenter displays the resulting frames.
 #include <thread>
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -103,6 +104,14 @@ struct State
     VkSampler samplers[4]{};
     VkBuffer gphys = VK_NULL_HANDLE;
     std::unordered_map<vk::StateKey, VkPipeline, StateKeyHash> pipelines;
+    // Pipeline builds, for the compile pop-up and the periodic cache save: built by the driver, or quick enough to
+    // have come out of a cache; whether a draw this frame waited for a compile; builds not yet saved, and when the
+    // last one happened.
+    uint32_t pipelinesBuilt = 0, pipelinesCached = 0;
+    bool waitedThisFrame = false;
+    uint32_t pipelinesUnsaved = 0;
+    std::chrono::steady_clock::time_point lastPipelineAt, lastSaveAt = std::chrono::steady_clock::now();
+    std::atomic<bool> saving{ false };
 
     uint64_t vsHash = 0, psHash = 0;
 
@@ -597,8 +606,19 @@ VkPipeline PipelineFor(const vk::StateKey& key, const vk::VkShader* vs, const vk
     vk::TargetFormats targets;
     targets.samples = surface.samples;
     VkPipeline pipeline = VK_NULL_HANDLE;
+    const auto start = std::chrono::steady_clock::now();
     if (!vk::CreatePipeline(g.context, key, vs->module, ps->module, g.draw.layout, surface.pass, targets, pipeline))
         return VK_NULL_HANDLE;
+    g.lastPipelineAt = std::chrono::steady_clock::now();
+    // A pipeline the driver finds in a cache (ours, or its own) takes well under a millisecond; a real compile, tens.
+    if (g.lastPipelineAt - start < std::chrono::milliseconds(3))
+        g.pipelinesCached++;
+    else
+    {
+        g.pipelinesBuilt++;
+        g.waitedThisFrame = true;
+    }
+    g.pipelinesUnsaved++;
     g.pipelines[cacheKey] = pipeline;
     return pipeline;
 }
@@ -1707,11 +1727,66 @@ bool VulkanRendererEnabled()
 // device may not exist (the seam can be enabled without a successful Init).
 void RendererVkSavePipelineCache()
 {
-    // Log the guard's inputs, so a missing pipelines.bin can be told from a save that never ran.
-    fprintf(stderr, "vk: save pipeline cache: initialised %d failed %d device %d path %s\n", int(g.initialised), int(g.failed),
-        g.context.device != VK_NULL_HANDLE, g.context.pipelineCachePath.string().c_str());
-    if (g.initialised && !g.failed && g.context.device)
-        vk::SavePipelineCache(g.context);
+    // One save at a time: the periodic one (render thread), the quit button and closing the window can meet.
+    static std::mutex mutex;
+    std::lock_guard lock(mutex);
+    if (!g.initialised || g.failed || !g.context.device)
+    {
+        Log("vk: pipeline cache not saved (initialised %d failed %d device %d)", int(g.initialised), int(g.failed),
+            g.context.device != VK_NULL_HANDLE);
+        return;
+    }
+    const auto start = std::chrono::steady_clock::now();
+    const size_t bytes = vk::SavePipelineCache(g.context);
+    Log("vk: pipeline cache %s (%zu KB, %.0f ms) %s", bytes ? "saved" : "NOT saved", bytes / 1024,
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count(),
+        g.context.pipelineCachePath.string().c_str());
+}
+
+namespace
+{
+// Once a frame: the periodic pipeline cache save, and the compile pop-up's counters.
+void CompileHousekeeping()
+{
+    // The cache used to be written only at shutdown, which the game never reaches: every start rebuilt every pipeline.
+    // Saved on a background thread (about 5 ms for 700 KB) once 5 s pass without a new pipeline, or every 20 s while
+    // they keep coming: in a race new ones trickle in every few seconds, so a quiet gap alone may never come.
+    const auto now = std::chrono::steady_clock::now();
+    if (g.pipelinesUnsaved &&
+        (now - g.lastPipelineAt > std::chrono::seconds(5) || now - g.lastSaveAt > std::chrono::seconds(20)) &&
+        !g.saving.exchange(true))
+    {
+        g.lastSaveAt = now;
+        Log("vk: %u new pipelines, saving the pipeline cache", g.pipelinesUnsaved);
+        g.pipelinesUnsaved = 0;
+        std::thread([] {
+            SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+            RendererVkSavePipelineCache();
+            g.saving = false;
+        }).detach();
+    }
+
+    RendererCompileReport report;
+    uint32_t warmCompiled = 0, warmCached = 0, warmPending = 0;
+    vk::ShaderWarmStats(warmCompiled, warmCached, warmPending);
+    report.shadersBuilt = g.shaders.fromCompiler + warmCompiled;
+    report.shadersCached = g.shaders.cached + warmCached;
+    report.pipelinesBuilt = g.pipelinesBuilt;
+    report.pipelinesCached = g.pipelinesCached;
+    report.running = warmPending;
+    static char what[64];
+    snprintf(what, sizeof(what), "shaders in the background (%u waiting)", warmPending);
+    report.what = what;
+    report.waited = g.waitedThisFrame;
+    g.waitedThisFrame = false;
+    uint32_t done = 0, total = 0, compiled = 0;
+    if (vk::ShaderWarmProgress(done, total, compiled))
+    {
+        report.staticDone = done;
+        report.staticTotal = total;
+    }
+    RendererReportCompiles(report);
+}
 }
 
 namespace
@@ -2693,8 +2768,11 @@ void RendererVkOnDraw(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
     const vk::VkShader* ps;
     {
         ScopedMs shaderTimed(g.perf ? &g.perfShaderMs : nullptr);
+        const uint32_t compilesBefore = g.shaders.fromCompiler;
         vs = vk::ShaderGet(g.context, g.shaders, vsHash, g.vsCode.data(), uint32_t(g.vsCode.size()), false);
         ps = vk::ShaderGet(g.context, g.shaders, psHash, g.psCode.data(), uint32_t(g.psCode.size()), true);
+        if (g.shaders.fromCompiler != compilesBefore)
+            g.waitedThisFrame = true; // compiled here, on the render thread: the draw waited for it
     }
     if (!vs || !vs->ok || !ps || !ps->ok)
     {
@@ -2920,6 +2998,8 @@ uint64_t SubmittedSinceLastSummary()
 
 void RendererVkOnSwap(uint64_t frame, uint32_t frontBuffer)
 {
+    if (g.initialised && !g.failed)
+        CompileHousekeeping();
     const auto swapNow = std::chrono::steady_clock::now();
     static auto previousSwap = swapNow;
     const double swapMs = std::chrono::duration<double, std::milli>(swapNow - previousSwap).count();

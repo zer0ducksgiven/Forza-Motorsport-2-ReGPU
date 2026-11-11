@@ -30,7 +30,8 @@ struct ShaderSet
 {
     std::unordered_map<uint64_t, VkShader> shaders;
     std::filesystem::path cacheDir;
-    uint32_t compiled = 0, failed = 0, cached = 0;
+    uint32_t compiled = 0, failed = 0, cached = 0; // modules made; failures; of the made, read from the SPIR-V cache
+    uint32_t fromCompiler = 0;                      // of the made, compiled by dxc on the render thread
 };
 
 void ShaderSetDestroy(Context& context, ShaderSet& set);
@@ -48,4 +49,6 @@ void ShaderWarmStart(const ShaderSet& set);
 // The static set's progress, for the first-boot screen: true while it is still being listed or compiled. `compiled`
 // counts shaders that really went through the compiler (zero on a boot whose cache is complete).
 bool ShaderWarmProgress(uint32_t& done, uint32_t& total, uint32_t& compiled);
+// The warm-up's totals, for the compile overlay: shaders compiled, found in the cache, and waiting or being compiled now.
+void ShaderWarmStats(uint32_t& compiled, uint32_t& cached, uint32_t& pending);
 }
