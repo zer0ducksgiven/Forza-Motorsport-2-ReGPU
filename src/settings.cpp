@@ -1,6 +1,10 @@
 // Player settings (see settings.h): a small key=value file.
 #include "settings.h"
 
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
@@ -55,9 +59,17 @@ const char* UpscalerName(Settings::Upscaler u)
     }
 }
 
+// Proton/Wine: the game is the same fm2.exe on Linux, so this is how it knows.
+static bool UnderWine()
+{
+    const HMODULE ntdll = GetModuleHandleA("ntdll.dll");
+    return ntdll && GetProcAddress(ntdll, "wine_get_version");
+}
+
 void Load()
 {
     std::ifstream in(Path());
+    bool rendererChosen = false;
     std::string line;
     while (std::getline(in, line))
     {
@@ -66,7 +78,10 @@ void Load()
             continue;
         const std::string key = line.substr(0, eq), value = line.substr(eq + 1);
         if (key == "renderer")
+        {
             g_settings.renderer = ParseRenderer(value);
+            rendererChosen = true;
+        }
         else if (key == "profile" && !value.empty())
             g_settings.profile = value.substr(0, 15);
         else if (key == "online_server")
@@ -133,6 +148,10 @@ void Load()
         else if (key == "sharpness")
             g_settings.sharpness = float(atof(value.c_str()));
     }
+    // Linux: Vulkan unless the player picked a renderer. D3D12 there goes through vkd3d-proton to Vulkan anyway, and
+    // the Vulkan renderer skips that layer (4x the frame rate on the author's RTX 5090). The launcher shows the same.
+    if (!rendererChosen && UnderWine())
+        g_settings.renderer = Settings::Renderer::Vulkan;
     // Online: the server's URL turns on Live (kernel/net.cpp, title_relay.cpp, leaderboards.cpp read these),
     // unless the environment already says
     if (!g_settings.onlineServer.empty() && !getenv("FM2_LIVE"))

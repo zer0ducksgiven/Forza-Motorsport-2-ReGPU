@@ -48,7 +48,9 @@ public static class Paths
 /// </summary>
 public sealed class GameSettings
 {
-    public string Renderer { get; set; } = "d3d12";
+    // Linux (Proton): Vulkan until the player picks, as fm2.exe does when settings.ini has no renderer line. D3D12
+    // there goes through vkd3d-proton to Vulkan anyway; the Vulkan renderer skips that layer.
+    public string Renderer { get; set; } = OperatingSystem.IsLinux() ? "vulkan" : "d3d12";
     public string Profile { get; set; } = "Player";
     public string Resolution { get; set; } = "1280x720";
     public string Aspect { get; set; } = "auto";

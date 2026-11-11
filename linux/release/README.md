@@ -1,8 +1,13 @@
 # Forza Motorsport 2 ReGPU on Linux (Proton)
 
-This is the same `fm2.exe` as the Windows release, run through Proton. Direct3D 12 goes through
-vkd3d-proton, and Microsoft's `d3dcompiler_47.dll` (included) replaces Wine's shader compiler,
-which can't compile the port's shaders (that was the cause of the black screen in earlier builds).
+This is the same `fm2.exe` as the Windows release, run through Proton.
+
+**Renderer:** on Linux the game uses its **Vulkan renderer** by default (experimental, new in 0.12.0). It
+talks to your Vulkan driver directly instead of going through vkd3d-proton, which is much faster on most
+GPUs. MSAA, SMAA, the upscalers and frame generation are Direct3D 12 only for now. To go back to Direct3D 12,
+turn off **Vulkan renderer** on the launcher's Play page, or put `renderer=d3d12` in `settings.ini`.
+With Direct3D 12, Microsoft's `d3dcompiler_47.dll` (included) replaces Wine's shader compiler, which
+can't compile the port's shaders (that was the cause of the black screen in earlier builds).
 
 Nothing from the game is included. You need your own **European** Forza Motorsport 2 disc image
 (`.iso`) and its **title update** file (`TU_16L61VA_...`), the same ones the Windows installer asks for.
@@ -32,6 +37,7 @@ prefix (`~/.fm2-linux/compatdata`). Saves, settings and the shader cache live th
 `pfx/drive_c/users/steamuser/Documents/fm2`.
 
 The first start compiles every shader (a few minutes on a fast CPU). Later starts reuse the cache.
+Each renderer has its own cache, so switching renderer compiles once more.
 
 ## Launcher
 
@@ -58,6 +64,8 @@ Download the new release, unpack it over this folder (your `game/` folder and th
 
 ## Known gaps
 
-Tested with Proton 11 on NVIDIA with keyboard and an Xbox controller. Not yet tested: this title-update build of the exe under Proton (the base-disc build was), AMD GPUs and the
+Tested with Proton 11 on NVIDIA with keyboard and an Xbox controller. The Vulkan renderer was developed
+under Proton (NVIDIA and AMD's RADV); on integrated AMD graphics it measured slightly slower than Direct3D 12,
+so try both there. Not yet tested: this title-update build of the exe under Proton (the base-disc build was), AMD GPUs and the
 Steam Deck, DLC, ultrawide. DLSS is not available under Proton. Please report what works and what
 doesn't on GitHub, with the end of the terminal output if something fails.
