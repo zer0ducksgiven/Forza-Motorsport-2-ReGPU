@@ -11,3 +11,8 @@ ref/
 /thirdparty/fidelityfx/
 /thirdparty/dlss/
 /thirdparty/sdl3/
+/thirdparty/vulkan-headers/
+/thirdparty/dxc/
+
+# Python bytecode from the tooling in tools/ (created by imports during debugging)
+__pycache__/

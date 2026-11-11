@@ -60,6 +60,37 @@
 #include "log.h"
 #include "png.h"
 #include "render/presenter.h"
+#if defined(FM2_VULKAN)
+// FM2_RENDERER=vulkan: the same seam, implemented in gpu/vk/renderer_vk.cpp.
+bool VulkanRendererEnabled();
+void RendererVkSavePipelineCache();
+void RendererVkOnShaderLoad(uint32_t type, const uint32_t* microcodeBE, uint32_t dwords);
+void RendererVkSetShader(uint32_t type, const uint32_t* microcodeBE, uint32_t usedDwords, uint64_t hash);
+void RendererVkOnDraw(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize);
+void RendererVkOnSwap(uint64_t frame, uint32_t frontBuffer);
+#define FM2_VK_IF_ENABLED(call)                                                                                           \
+    if (VulkanRendererEnabled())                                                                                          \
+    {                                                                                                                     \
+        call;                                                                                                             \
+        return;                                                                                                           \
+    }
+#else
+#define FM2_VK_IF_ENABLED(call)
+// RendererRequestCapture() asks the Vulkan seam whether it owns the capture. Without FM2_VULKAN the
+// seam does not exist at all, so answer for it: a D3D12-only build must still compile. (It did not:
+// `use of undeclared identifier 'VulkanRendererEnabled'` in a fresh D3D12 tree.)
+inline bool VulkanRendererEnabled()
+{
+    return false;
+}
+#endif
+
+// getenv is a linear, case-insensitive search of the environment, and debugging switches are read with it on
+// every draw: on an RTX 5090 a 1080p race went from 70 to 162 fps with the lookups cached (fast_env.h).
+#include "fast_env.h"
+#define getenv(name) FastEnv(name)
+#include "gpu/constants.h"
+#include "gpu/indices.h"
 #include "gpu/renderer.h"
 #include "gpu/shader_scan.h"
 #include "gpu/boot_screen.h"
@@ -366,12 +397,12 @@ constexpr uint32_t kDirectFetchBytes = 16 * 1024; // buffers that change (UI qua
 // Registers.
 constexpr uint32_t RB_STENCILREFMASK = 0x210D;
 constexpr uint32_t RB_COLOR_MASK = 0x2104, RB_ALPHA_REF = 0x210E, RB_DEPTHCONTROL = 0x2200, RB_BLENDCONTROL0 = 0x2201;
-constexpr uint32_t RB_COLORCONTROL = 0x2202, PA_CL_VTE_CNTL = 0x2206, RB_MODECONTROL = 0x2208, VGT_INDX_OFFSET = 0x2102;
-constexpr uint32_t VGT_MULTI_PRIM_IB_RESET_INDX = 0x2103;
+constexpr uint32_t RB_COLORCONTROL = 0x2202, PA_CL_VTE_CNTL = 0x2206, RB_MODECONTROL = 0x2208;
+constexpr uint32_t VGT_INDX_OFFSET = gpureg::VGT_INDX_OFFSET, VGT_MULTI_PRIM_IB_RESET_INDX = gpureg::VGT_MULTI_PRIM_IB_RESET_INDX;
 constexpr uint32_t PA_CL_VPORT_XSCALE = 0x210F, PA_CL_VPORT_XOFFSET = 0x2110, PA_CL_VPORT_YSCALE = 0x2111, PA_CL_VPORT_YOFFSET = 0x2112;
 constexpr uint32_t PA_CL_VPORT_ZSCALE = 0x2113, PA_CL_VPORT_ZOFFSET = 0x2114;
 constexpr uint32_t PA_SC_WINDOW_OFFSET = 0x2080, PA_SC_WINDOW_SCISSOR_TL = 0x2081, PA_SC_WINDOW_SCISSOR_BR = 0x2082;
-constexpr uint32_t PA_SU_SC_MODE_CNTL = 0x2205;
+constexpr uint32_t PA_SU_SC_MODE_CNTL = gpureg::PA_SU_SC_MODE_CNTL;
 constexpr uint32_t RB_COPY_CONTROL = 0x2318, RB_COPY_DEST_BASE = 0x2319, RB_COPY_DEST_PITCH = 0x231A, RB_COPY_DEST_INFO = 0x231B;
 constexpr uint32_t SQ_PROGRAM_CNTL = 0x2180, SQ_CONTEXT_MISC = 0x2181, PA_SU_POINT_SIZE = 0x2280, PA_SU_POINT_MINMAX = 0x2281;
 constexpr uint32_t RB_DEPTH_CLEAR = 0x231D, RB_COLOR_CLEAR = 0x231E;
@@ -974,6 +1005,7 @@ thread_local uint64_t g_bindingsFrame = ~0ull, g_bindingsEpoch = ~0ull;
 // The frame to trace (draws and resolves logged, the image and resolves written out):
 // FM2_TRACE_DRAWS=<frame>, or the one after F12 is pressed in the game window.
 std::atomic<uint64_t> g_hotkeyFrame{ 0 };
+std::atomic<bool> g_captureComplete{ false };
 // (Read once at startup: a function-local static checks its initialisation guard on every call, and
 // RendererTracing asks several times a draw.)
 const uint64_t g_traceDrawsEnv = getenv("FM2_TRACE_DRAWS") ? strtoull(getenv("FM2_TRACE_DRAWS"), nullptr, 10) : 0;
@@ -5204,141 +5236,6 @@ void CaptureTexture(const TextureFetch& fetch, uint32_t slot, bool cube, bool bo
     summary.flush();
 }
 
-uint32_t ReadIndex(uint32_t base, uint32_t i, bool is32, uint32_t endian)
-{
-    if (is32)
-    {
-        uint32_t v = *GuestPtr<uint32_t>(base + i * 4);
-        if (endian == 2)
-            v = __builtin_bswap32(v);
-        else if (endian == 1)
-            v = ((v & 0x00FF00FF) << 8) | ((v >> 8) & 0x00FF00FF);
-        return v;
-    }
-    uint16_t v = *GuestPtr<uint16_t>(base + i * 2);
-    if (endian == 1 || endian == 2)
-        v = __builtin_bswap16(v);
-    return v;
-}
-
-// Expanded host vertex list: guest indices, or rectangle markers
-// (bit 31 | role << 29 | list position of the rectangle's first vertex).
-bool BuildIndexList(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize, std::vector<uint32_t>& out)
-{
-    const uint32_t prim = initiator & 0x3F, source = (initiator >> 6) & 3, count = initiator >> 16;
-    const bool is32 = (initiator >> 11) & 1;
-    const uint32_t offset = gpureg::Get(VGT_INDX_OFFSET);
-    // Reused between draws (no allocation per draw).
-    thread_local std::vector<uint32_t> g;
-    thread_local std::vector<uint8_t> cut;
-    g.resize(count);
-    cut.clear();
-    // Primitive restart: a raw index equal to the reset value ends the strip/fan.
-    const bool restart = (gpureg::Get(PA_SU_SC_MODE_CNTL) >> 21) & 1;
-    const uint32_t resetIndex = gpureg::Get(VGT_MULTI_PRIM_IB_RESET_INDX) & (is32 ? 0xFFFFFF : 0xFFFF);
-    if (source == 0) // DMA
-    {
-        const uint32_t base = GpuPhysToGuest(dmaBase & ~(is32 ? 3u : 1u));
-        const uint32_t endian = dmaSize >> 30;
-        const uint32_t available = (dmaSize & 0xFFFFFF) * (is32 ? 1 : 2);
-        for (uint32_t i = 0; i < count && i < available; i++)
-        {
-            const uint32_t raw = ReadIndex(base, i, is32, endian);
-            if (restart && (raw & (is32 ? 0xFFFFFF : 0xFFFF)) == resetIndex)
-            {
-                cut.resize(count);
-                cut[i] = 1;
-            }
-            g[i] = raw + offset;
-        }
-        // A draw whose count runs past the index buffer (DMA size) reads zero indices there, as the
-        // indexed path's buffer view does: the vector is reused between draws, so those entries kept
-        // an earlier draw's indices (stray triangles). From the FM4 port. FM2_STALE_INDICES=1: as before (A/B).
-        static LiveSwitch staleIndices("FM2_STALE_INDICES");
-        if (count > available && !staleIndices)
-            for (uint32_t i = available; i < count; i++)
-                g[i] = offset;
-    }
-    else if (source == 2) // auto
-    {
-        for (uint32_t i = 0; i < count; i++)
-            g[i] = i + offset;
-    }
-    else
-        return false;
-
-    out.clear();
-    switch (prim)
-    {
-    case 1: // point list: a quad per point, corner in bits 29-30
-    {
-        out.resize(size_t(count) * 6);
-        uint32_t* o = out.data();
-        for (uint32_t i = 0; i < count; i++)
-            for (uint32_t corner : { 0u, 1u, 2u, 2u, 1u, 3u })
-                *o++ = (corner << 29) | (g[i] & 0x1FFFFFFF);
-        return true;
-    }
-    case 4: // triangle list
-        out.assign(g.begin(), g.begin() + (count / 3) * 3);
-        return true;
-    case 6: // triangle strip(s), split at restart indices
-    case 5: // triangle fan(s)
-    {
-        out.resize(count >= 3 ? size_t(count - 2) * 3 : 0); // upper bound
-        uint32_t* o = out.data();
-        for (uint32_t start = 0; start < count;)
-        {
-            uint32_t end = start;
-            if (cut.empty())
-                end = count;
-            else
-                while (end < count && !cut[end])
-                    end++;
-            for (uint32_t i = start; i + 2 < end; i++)
-            {
-                const uint32_t k = i - start;
-                if (prim == 5)
-                    o[0] = g[start], o[1] = g[i + 1], o[2] = g[i + 2];
-                else if (k & 1)
-                    o[0] = g[i + 1], o[1] = g[i], o[2] = g[i + 2];
-                else
-                    o[0] = g[i], o[1] = g[i + 1], o[2] = g[i + 2];
-                o += 3;
-            }
-            start = end + 1;
-        }
-        out.resize(size_t(o - out.data()));
-        return true;
-    }
-    case 13: // quad list
-    {
-        out.resize(size_t(count / 4) * 6);
-        uint32_t* o = out.data();
-        for (uint32_t i = 0; i + 3 < count; i += 4, o += 6)
-            o[0] = g[i], o[1] = g[i + 1], o[2] = g[i + 2], o[3] = g[i], o[4] = g[i + 2], o[5] = g[i + 3];
-        return true;
-    }
-    case 8: // rectangle list: first triangle as given, second from the
-            // hypotenuse ends and the computed fourth corner
-        for (uint32_t i = 0; i + 2 < count; i += 3)
-        {
-            const uint32_t pos = uint32_t(out.size());
-            out.insert(out.end(), { g[i], g[i + 1], g[i + 2] });
-            // The Xenos draws each rectangle as one primitive with the given triangle's facing. The second
-            // triangle is ordered (first hypotenuse end, fourth corner, second end), which keeps that
-            // winding: the other order faced the other way, so a draw with separate back-face stencil ops
-            // applied them to half of every rectangle. From the FM4 port. FM2_OLD_RECT_WINDING=1 (read
-            // at start): the old order (A/B).
-            static const bool oldWinding = getenv("FM2_OLD_RECT_WINDING") != nullptr;
-            for (uint32_t role : oldWinding ? std::initializer_list<uint32_t>{ 1u, 2u, 0u } : std::initializer_list<uint32_t>{ 1u, 0u, 2u })
-                out.push_back(0x80000000u | (role << 29) | pos);
-        }
-        return true;
-    default:
-        return false;
-    }
-}
 }
 
 namespace
@@ -5379,7 +5276,7 @@ IndexListEntry* CachedIndexList(uint32_t initiator, uint32_t dmaBase, uint32_t d
         e.valid = true;
         e.sample = sample;
         e.frame = ~0ull;
-        e.ok = BuildIndexList(initiator, dmaBase, dmaSize, e.list);
+        e.ok = gpu::BuildIndexList(initiator, dmaBase, dmaSize, e.list);
     }
     return e.ok ? &e : nullptr;
 }
@@ -7857,16 +7754,95 @@ void WarmupStep()
     }
 }
 
-// ---- Overlay: a small panel in the corner while shaders are compiling.
-constexpr UINT kOverlayW = 520, kOverlayH = 140;
+// ---- Overlay: shader compilation progress and the optional performance counter.
+constexpr UINT kOverlayW = 520, kOverlayH = 216;
 struct Overlay
 {
     ComPtr<ID3D12Resource> texture;
     D3D12_RESOURCE_STATES state = D3D12_RESOURCE_STATE_COPY_DEST;
     std::chrono::steady_clock::time_point lastRender{};
     std::string lastText;
+    std::vector<uint32_t> cpuPixels;
+    UINT height = kOverlayH;
     bool visible = false;
 } g_overlay;
+
+struct FpsOverlay
+{
+    using Clock = std::chrono::steady_clock;
+    struct Sample
+    {
+        Clock::time_point time;
+        float milliseconds;
+    };
+    std::deque<Sample> samples;
+    Clock::time_point last{};
+    bool visible = false;
+    bool wasDown = false;
+
+    void Toggle()
+    {
+        visible = !visible;
+        samples.clear();
+        last = {};
+        Log("overlay: performance counter %s", visible ? "shown (10-second window)" : "hidden");
+    }
+
+    void Record(Clock::time_point now)
+    {
+        const bool down = (GetAsyncKeyState(VK_F11) & 0x8000) != 0;
+        DWORD pid = 0;
+        GetWindowThreadProcessId(GetForegroundWindow(), &pid);
+        if (down && !wasDown && pid == GetCurrentProcessId())
+            Toggle();
+        wasDown = down;
+        if (!visible)
+            return;
+        if (last.time_since_epoch().count())
+            samples.push_back({ now, std::chrono::duration<float, std::milli>(now - last).count() });
+        last = now;
+        while (!samples.empty() && now - samples.front().time > std::chrono::seconds(10))
+            samples.pop_front();
+    }
+
+    void AppendLines(std::vector<std::string>& lines)
+    {
+        if (samples.empty())
+        {
+            lines.push_back("FPS  collecting samples...");
+            lines.push_back("1% low  --  (last 10 s, F11 hides)");
+            return;
+        }
+        const auto now = Clock::now();
+        double total = 0, currentTotal = 0, slowest = 0;
+        size_t currentFrames = 0;
+        std::vector<float> sorted;
+        sorted.reserve(samples.size());
+        for (const Sample& sample : samples)
+        {
+            total += sample.milliseconds;
+            slowest = std::max(slowest, double(sample.milliseconds));
+            sorted.push_back(sample.milliseconds);
+            if (now - sample.time <= std::chrono::seconds(1))
+            {
+                currentTotal += sample.milliseconds;
+                currentFrames++;
+            }
+        }
+        std::sort(sorted.begin(), sorted.end(), std::greater<float>());
+        const size_t lowFrames = std::max<size_t>(1, size_t(sorted.size() * 0.01));
+        double lowTotal = 0;
+        for (size_t i = 0; i < lowFrames; i++)
+            lowTotal += sorted[i];
+        char line[160];
+        const double currentFps = currentFrames ? 1000.0 * currentFrames / currentTotal : 1000.0 / samples.back().milliseconds;
+        snprintf(line, sizeof(line), "FPS  %.1f  Min  %.1f  Avg  %.1f", currentFps,
+            1000.0 / slowest, 1000.0 * samples.size() / total);
+        lines.push_back(line);
+        snprintf(line, sizeof(line), "1%% low  %.1f  (last 10 s, F11 hides)", 1000.0 * lowFrames / lowTotal);
+        lines.push_back(line);
+    }
+} g_fpsOverlay;
 
 bool OverlayWanted(std::vector<std::string>& lines)
 {
@@ -7876,38 +7852,45 @@ bool OverlayWanted(std::vector<std::string>& lines)
     const uint64_t nowMs = uint64_t(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
     const bool recentCold = g_stats.lastColdMs.load() && nowMs - g_stats.lastColdMs.load() < 4000;
     const bool warming = g_stats.warmTotal.load() && g_stats.warmDone.load() < g_stats.warmTotal.load();
-    if (g_stats.busy.load() == 0 && !recentCold && !warming && !g_hold.active)
+    const bool compiling = g_stats.busy.load() != 0 || recentCold || warming || g_hold.active;
+    if (!compiling && !g_fpsOverlay.visible)
         return false;
     char l[160];
-    lines.push_back(g_hold.active ? "FM2  preparing shaders - please wait" : "FM2  shader compiler");
-    if (g_stats.busy.load() > 0)
+    lines.push_back(g_hold.active ? "FM2  preparing shaders - please wait" : compiling ? "FM2  shader compiler" : "FM2  performance");
+    if (compiling)
     {
-        std::lock_guard lock(g_stats.mutex);
-        const double sec = std::chrono::duration<double>(std::chrono::steady_clock::now() - g_stats.currentSince).count();
-        snprintf(l, sizeof(l), "Compiling %s  (%.1f s, %d in progress)", g_stats.current.c_str(), sec, g_stats.busy.load());
+        if (g_stats.busy.load() > 0)
+        {
+            std::lock_guard lock(g_stats.mutex);
+            const double sec = std::chrono::duration<double>(std::chrono::steady_clock::now() - g_stats.currentSince).count();
+            snprintf(l, sizeof(l), "Compiling %s  (%.1f s, %d in progress)", g_stats.current.c_str(), sec, g_stats.busy.load());
+            lines.push_back(l);
+        }
+        else
+            lines.push_back("Idle");
+        snprintf(l, sizeof(l), "Shaders    %u compiled, %u from cache", g_stats.shadersBuilt.load(), g_stats.shadersCached.load());
         lines.push_back(l);
-    }
-    else
-        lines.push_back("Idle");
-    snprintf(l, sizeof(l), "Shaders    %u compiled, %u from cache", g_stats.shadersBuilt.load(), g_stats.shadersCached.load());
-    lines.push_back(l);
-    snprintf(l, sizeof(l), "Pipelines  %u built, %u from cache", g_stats.pipelinesBuilt.load(), g_stats.pipelinesLoaded.load());
-    lines.push_back(l);
-    if (g_hold.active)
-    {
-        snprintf(l, sizeof(l), "This race  %u pipelines found, %u done, %zu waiting", g_lookStarted + uint32_t(g_look.size()), g_lookFinished, g_look.size());
+        snprintf(l, sizeof(l), "Pipelines  %u built, %u from cache", g_stats.pipelinesBuilt.load(), g_stats.pipelinesLoaded.load());
         lines.push_back(l);
+        if (g_hold.active)
+        {
+            snprintf(l, sizeof(l), "This race  %u pipelines found, %u done, %zu waiting", g_lookStarted + uint32_t(g_look.size()), g_lookFinished, g_look.size());
+            lines.push_back(l);
+        }
+        if (g_stats.warmTotal.load())
+        {
+            snprintf(l, sizeof(l), "Warm-up    %u / %u pipelines", std::min(g_stats.warmDone.load(), g_stats.warmTotal.load()), g_stats.warmTotal.load());
+            lines.push_back(l);
+        }
+        if (g_stats.staticTotal.load())
+        {
+            snprintf(l, sizeof(l), "First boot %u / %u game shaders compiled", std::min(g_stats.staticDone.load(), g_stats.staticTotal.load()), g_stats.staticTotal.load());
+            lines.push_back(l);
+        }
     }
-    if (g_stats.warmTotal.load())
-    {
-        snprintf(l, sizeof(l), "Warm-up    %u / %u pipelines", std::min(g_stats.warmDone.load(), g_stats.warmTotal.load()), g_stats.warmTotal.load());
-        lines.push_back(l);
-    }
-    if (g_stats.staticTotal.load())
-    {
-        snprintf(l, sizeof(l), "First boot %u / %u game shaders compiled", std::min(g_stats.staticDone.load(), g_stats.staticTotal.load()), g_stats.staticTotal.load());
-        lines.push_back(l);
-    }
+    if (g_fpsOverlay.visible)
+        g_fpsOverlay.AppendLines(lines);
+    g_overlay.height = std::min<UINT>(kOverlayH, UINT(18 + lines.size() * 22));
     return true;
 }
 
@@ -8238,7 +8221,7 @@ void HoldPresent()
     b.Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
     b.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
     g_hold.list->ResourceBarrier(1, &b);
-    const bool ok = PresenterRecordCopy(g_hold.list.Get(), g_hold.image.Get(), overlay, kOverlayW, kOverlayH);
+    const bool ok = PresenterRecordCopy(g_hold.list.Get(), g_hold.image.Get(), overlay, kOverlayW, g_overlay.height);
     std::swap(b.Transition.StateBefore, b.Transition.StateAfter);
     g_hold.list->ResourceBarrier(1, &b);
     g_hold.list->Close();
@@ -8347,11 +8330,16 @@ void BootPresent(const std::vector<uint8_t>& rgba)
 
 void RendererPredictBegin()
 {
+    // The lookahead only queues Direct3D 12 pipelines: nothing would ever take them off the queue on Vulkan.
+    if (VulkanRendererEnabled())
+        return;
     PredictBeginImpl();
 }
 
 void RendererPredictShader(uint32_t type, const uint32_t* microcodeBE, uint32_t dwords)
 {
+    if (VulkanRendererEnabled())
+        return;
     dwords = ucode::UsedDwords(microcodeBE, dwords);
     auto& hash = type == 0 ? g_predVs : g_predPs;
     auto& code = type == 0 ? g_predVsCode : g_predPsCode;
@@ -8372,6 +8360,8 @@ void RendererPredictShader(uint32_t type, const uint32_t* microcodeBE, uint32_t 
 
 void RendererPredictDraw(uint32_t initiator)
 {
+    if (VulkanRendererEnabled())
+        return;
     const uint32_t edramMode = gpureg::Get(RB_MODECONTROL) & 7;
     if ((edramMode != 4 && edramMode != 5) || !g_predVs || !g_predPs || !g_predVsDwords || !g_predPsDwords)
         return;
@@ -8398,17 +8388,26 @@ void RendererSaveCaches()
 {
     g_diskWriter.Flush();
     g_pipelineLibrary.MaybeSave(true);
+#if defined(FM2_VULKAN)
+    // The Vulkan backend's pipeline cache was only ever written by vk::Shutdown, which nothing in the
+    // game calls - so every launch rebuilt every pipeline. Save it here, on the normal save path.
+    if (VulkanRendererEnabled())
+        RendererVkSavePipelineCache();
+#endif
 }
 
 void RendererSetShader(uint32_t type, const uint32_t* microcodeBE, uint32_t usedDwords, uint64_t hash)
 {
+    FM2_VK_IF_ENABLED(RendererVkSetShader(type, microcodeBE, usedDwords, hash))
     std::vector<uint32_t>& code = type == 0 ? C().vsCode : C().psCode;
     code.assign(microcodeBE, microcodeBE + usedDwords);
     (type == 0 ? C().vsHash : C().psHash) = hash;
 }
 
+
 void RendererOnShaderLoad(uint32_t type, const uint32_t* microcodeBE, uint32_t dwords)
 {
+    FM2_VK_IF_ENABLED(RendererVkOnShaderLoad(type, microcodeBE, dwords))
     std::vector<uint32_t>& code = type == 0 ? C().vsCode : C().psCode;
     code.assign(microcodeBE, microcodeBE + ucode::UsedDwords(microcodeBE, dwords));
     (type == 0 ? C().vsHash : C().psHash) = Fnv(code.data(), code.size() * 4) ^ type;
@@ -8979,6 +8978,11 @@ bool RendererIsResolveDraw()
 
 void RendererOcclusionBegin()
 {
+    // Not on Vulkan: this started the whole Direct3D 12 renderer next to it (device, upload ring, vertex arena and a
+    // rebuild of every pipeline in the manifest, on the CPU for minutes) for a query that never saw a draw.
+    // RendererOcclusionEnd then has no result, and the game gets the fixed "visible" answer.
+    if (VulkanRendererEnabled())
+        return;
     if (!g_r.ok)
         Init();
     BeginFrameIfNeeded();
@@ -9116,6 +9120,7 @@ void RendererRunPieces(uint32_t n, const std::function<void(uint32_t)>& translat
 
 void RendererOnDraw(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
 {
+    FM2_VK_IF_ENABLED(RendererVkOnDraw(initiator, dmaBase, dmaSize))
     if (g_gpuShaders)
         PassMark("vs %08X ps %08X", uint32_t(C().vsHash), uint32_t(C().psHash));
     if (!g_perfTiming)
@@ -9425,34 +9430,9 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
         return;
     }
 
-    // Vertex constants: c[256], bools, fetch table, info.
-    struct VSConstants
-    {
-        float c[256][4];
-        uint32_t b[8];
-        uint32_t l[32]; // loop constants
-        uint32_t vf[96][4];
-        uint32_t info[4];
-        float point[4];
-        float vscale[4], voffset[4];
-        uint32_t vte[4];
-        uint32_t vfl[32][4]; // vertex fetch layout of the bound shader
-        float vsquash[4][4]; // the easter egg's squash of car meshes (hlsl.cpp); zero = off
-        float vpoly[4];      // x: polygon offset (window-space depth)
-        float vwide[4];      // x: Hor+ factor (see hlsl.cpp)
-        float vjitter[4];     // motion-vector variants: this frame's jitter (NDC)
-    };
-    struct PSConstants
-    {
-        float c[256][4];
-        uint32_t b[8];
-        uint32_t l[32]; // loop constants
-        uint32_t info[4];
-        float info2[4];
-        uint32_t tinfo[32][4];
-        float tbias[32][4];
-        float forceLod[4]; // x: forced absolute LOD (FM2_FORCE_LOD), -1 = implicit
-    };
+    // The constant blocks the shaders read (see gpu/constants.h: shared with the Vulkan backend).
+    using VSConstants = gpu::VSConstants;
+    using PSConstants = gpu::PSConstants;
     Sub(0);
     const UINT64 vsOffset = RingAlloc(sizeof(VSConstants)), psOffset = RingAlloc(sizeof(PSConstants));
     if (vsOffset == ~0ull || psOffset == ~0ull)
@@ -10446,6 +10426,17 @@ void BenchmarkWriteReport(const char* path)
 void RendererOnSwapImpl(uint64_t frameNumber, uint32_t frontBuffer);
 void RendererOnSwap(uint64_t frameNumber, uint32_t frontBuffer)
 {
+    const auto swapStart = std::chrono::steady_clock::now();
+    g_fpsOverlay.Record(swapStart);
+    static auto benchmarkLastSwap = swapStart;
+    const double benchmarkDt = std::chrono::duration<double>(swapStart - benchmarkLastSwap).count() * 1000.0;
+    benchmarkLastSwap = swapStart;
+    if (g_benchRecording.load(std::memory_order_relaxed))
+    {
+        std::lock_guard lock(g_benchMutex);
+        g_benchFrames.push_back(float(benchmarkDt));
+    }
+    FM2_VK_IF_ENABLED(RendererVkOnSwap(frameNumber, frontBuffer))
     const auto t0 = std::chrono::steady_clock::now();
     RendererOnSwapImpl(frameNumber, frontBuffer);
     const auto now = std::chrono::steady_clock::now();
@@ -10457,11 +10448,6 @@ void RendererOnSwap(uint64_t frameNumber, uint32_t frontBuffer)
     {
         const double dt = std::chrono::duration<double>(now - lastSwap).count() * 1000.0;
         lastSwap = now;
-        if (g_benchRecording.load(std::memory_order_relaxed))
-        {
-            std::lock_guard lock(g_benchMutex);
-            g_benchFrames.push_back(float(dt));
-        }
         g_perf.maxFrame = std::max(g_perf.maxFrame, dt);
         if (dt > 20.0)
             g_perf.slowFrames++;
@@ -11256,6 +11242,7 @@ void RendererOnSwapImpl(uint64_t frameNumber, uint32_t frontBuffer)
             WritePng(g_r.frame == dumpFrame ? "frame.png" : "frame2.png", dw, dh, full);
         Log("renderer: wrote frame.png (frame %llu: %u draws, %u skipped)", (unsigned long long)frameNumber, g_r.drawsThisFrame.load(),
             g_r.skippedThisFrame.load());
+        RendererMarkCaptureComplete();
         }
     }
     // Frame times since the last line: the average, the slowest 1% and the GPU's share.
@@ -11342,9 +11329,46 @@ void RendererSetGammaEntry(uint32_t index, uint32_t rgb10)
     }
 }
 
+bool RendererDisplayGamma(float points[17])
+{
+    if (!g_gammaSet.load(std::memory_order_relaxed))
+        return false;
+    bool identity = true;
+    for (uint32_t k = 0; k <= 16; k++)
+    {
+        const float at = k * 255.0f / 16.0f;
+        const uint32_t i = std::min(uint32_t(at), 254u);
+        const float t = at - float(i);
+        const float a = float((g_gammaTable[i].load(std::memory_order_relaxed) >> 10) & 0x3FF) / 1023.0f;
+        const float b = float((g_gammaTable[i + 1].load(std::memory_order_relaxed) >> 10) & 0x3FF) / 1023.0f;
+        points[k] = a + (b - a) * t;
+        identity &= std::fabs(points[k] - k / 16.0f) < 0.002f;
+    }
+    return !identity;
+}
+
 // The debug server's "capture": what F12 does.
-// Two ahead, as F12: the next frame may already be part drawn (its first draws went untraced).
-void RendererRequestCapture() { g_hotkeyFrame = g_r.frame + 2; }
+void RendererRequestCapture()
+{
+    g_captureComplete.store(false, std::memory_order_release);
+    if (VulkanRendererEnabled())
+    {
+        std::filesystem::create_directories("out");
+        std::ofstream("out/capture.request").put('\n');
+        return;
+    }
+    g_hotkeyFrame = g_r.frame + 2; // two ahead, as F12: the next frame may already be part drawn
+}
+
+bool RendererCaptureComplete()
+{
+    return g_captureComplete.load(std::memory_order_acquire);
+}
+
+void RendererMarkCaptureComplete()
+{
+    g_captureComplete.store(true, std::memory_order_release);
+}
 
 // The debug server's "ps HASH [EXPR]": an empty expression drops the edit. Returns the alias (0 if dropped).
 uint64_t RendererEditPixelShader(uint64_t hash, const std::string& expr)
@@ -11414,9 +11438,85 @@ std::string RendererDrawStats()
     return out;
 }
 
+bool RendererOverlayPixels(const uint8_t*& rgba, uint32_t& width, uint32_t& height, uint32_t& visibleHeight, uint64_t& version)
+{
+    std::vector<std::string> lines;
+    g_overlay.visible = OverlayWanted(lines);
+    if (!g_overlay.visible)
+        return false;
+    std::string text;
+    for (const auto& line : lines)
+        text += line + "\n";
+    const auto now = std::chrono::steady_clock::now();
+    static uint64_t rendered = 0;
+    if (g_overlay.cpuPixels.empty() || (text != g_overlay.lastText && now - g_overlay.lastRender > std::chrono::milliseconds(200)))
+    {
+        RenderOverlayPixels(lines, g_overlay.cpuPixels);
+        g_overlay.lastText = text;
+        g_overlay.lastRender = now;
+        rendered++;
+    }
+    rgba = reinterpret_cast<const uint8_t*>(g_overlay.cpuPixels.data());
+    width = kOverlayW;
+    height = kOverlayH;
+    visibleHeight = g_overlay.height;
+    version = rendered;
+    return g_overlay.cpuPixels.size() == size_t(kOverlayW) * kOverlayH;
+}
+
+void RendererOverlayImage(uint32_t width, uint32_t height, std::vector<uint8_t>& rgba)
+{
+    if (rgba.size() != size_t(width) * height * 4)
+        return;
+    const uint8_t* source = nullptr;
+    uint32_t overlayWidth = 0, overlayHeight = 0, visibleHeight = 0;
+    uint64_t version = 0;
+    if (!RendererOverlayPixels(source, overlayWidth, overlayHeight, visibleHeight, version))
+        return;
+    const uint32_t copyWidth = std::min(overlayWidth, width > 24 ? width - 24 : 0);
+    const uint32_t copyHeight = std::min(visibleHeight, height > 24 ? height - 24 : 0);
+    for (uint32_t y = 0; y < copyHeight; y++)
+        memcpy(rgba.data() + (size_t(y + 24) * width + 24) * 4, source + size_t(y) * overlayWidth * 4, size_t(copyWidth) * 4);
+}
+
 // The graphics options screen (hooks/graphics_menu.cpp): `change` edits the settings at the next frame start.
 void RendererChangeSettings(std::function<void(Settings&)> change)
 {
     std::lock_guard lock(g_settingsChangeMutex);
     g_settingsChange = std::move(change);
+}
+
+// The Vulkan renderer's compile activity, once a frame, in the counters the overlay reads: it compiles on its own
+// threads and never touched these, so the pop-up stayed hidden on that path. Totals so far; `running` compiles in
+// progress, described by `what`; `waited` when a draw this frame had to wait for a compile (the overlay then stays up
+// for a few seconds); the pipeline warm-up and the first-boot shader compile as done / total (total 0: none).
+void RendererReportCompiles(const RendererCompileReport& r)
+{
+    g_stats.shadersBuilt = r.shadersBuilt;
+    g_stats.shadersCached = r.shadersCached;
+    g_stats.pipelinesBuilt = r.pipelinesBuilt;
+    g_stats.pipelinesLoaded = r.pipelinesCached;
+    {
+        std::lock_guard lock(g_stats.mutex);
+        if (r.running && !g_stats.busy.load())
+            g_stats.currentSince = std::chrono::steady_clock::now();
+        g_stats.current = r.what ? r.what : "";
+        g_stats.busy = int(r.running);
+    }
+    if (r.waited)
+        g_stats.lastColdMs = uint64_t(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
+    g_stats.warmDone = r.warmDone;
+    g_stats.warmTotal = r.warmTotal;
+    g_stats.staticDone = r.staticDone;
+    g_stats.staticTotal = r.staticTotal;
+}
+
+// The window was closed: the process exits right after this. The Vulkan pipeline cache is otherwise only written
+// by the periodic save in renderer_vk.cpp, so a short session would lose what it built.
+void RendererSaveOnClose()
+{
+#if defined(FM2_VULKAN)
+    if (VulkanRendererEnabled())
+        RendererVkSavePipelineCache();
+#endif
 }

@@ -17,6 +17,16 @@ bool g_loaded = false;
 
 std::filesystem::path Path() { return UserDir() / "settings.ini"; }
 
+Settings::Renderer ParseRenderer(const std::string& v)
+{
+    return v == "vulkan" ? Settings::Renderer::Vulkan : Settings::Renderer::D3d12;
+}
+
+const char* RendererName(Settings::Renderer renderer)
+{
+    return renderer == Settings::Renderer::Vulkan ? "vulkan" : "d3d12";
+}
+
 Settings::Upscaler ParseUpscaler(const std::string& v)
 {
     if (v == "fsr1")
@@ -55,7 +65,9 @@ void Load()
         if (eq == std::string::npos || line[0] == '#' || line[0] == ';')
             continue;
         const std::string key = line.substr(0, eq), value = line.substr(eq + 1);
-        if (key == "profile" && !value.empty())
+        if (key == "renderer")
+            g_settings.renderer = ParseRenderer(value);
+        else if (key == "profile" && !value.empty())
             g_settings.profile = value.substr(0, 15);
         else if (key == "online_server")
             g_settings.onlineServer = value == "off" ? "" : value;
@@ -140,6 +152,8 @@ void Load()
             _putenv_s("FM2_STATS_URL", base.find("://") == std::string::npos ? ("https://" + base).c_str() : base.c_str());
     }
     // Overrides for testing.
+    if (const char* v = getenv("FM2_RENDERER"))
+        g_settings.renderer = ParseRenderer(v);
     if (const char* v = getenv("FM2_PROFILE"))
         g_settings.profile = std::string(v).substr(0, 15);
     if (const char* v = getenv("FM2_RESOLUTION"))
@@ -272,6 +286,7 @@ void SaveSettings()
     const Settings& s = GetSettings();
     std::ofstream out(Path());
     out << "# Forza Motorsport 2 (fm2) settings; the launcher edits this file.\n";
+    out << "renderer=" << RendererName(s.renderer) << "\n";
     out << "profile=" << s.profile << "\n";
     out << "online_server=" << (s.onlineServer.empty() ? "off" : s.onlineServer) << "\n";
     out << "resolution=" << s.width << "x" << s.height << "\n";

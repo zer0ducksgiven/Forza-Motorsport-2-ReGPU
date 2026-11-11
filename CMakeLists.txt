@@ -33,9 +33,18 @@ target_compile_options(fm2_ppc PUBLIC -msse4.1 -fno-strict-aliasing)
 # Function names in crash reports and profiles.
 target_compile_options(fm2_ppc PRIVATE -gline-tables-only "/FI${CMAKE_SOURCE_DIR}/src/ppc_hooks.h")
 
+# The Python that runs the build's tools: the Windows launcher where there is one, python3 when cross-building.
+find_program(FM2_PY_LAUNCHER py)
+if(FM2_PY_LAUNCHER)
+    set(FM2_PYTHON "${FM2_PY_LAUNCHER}" -3)
+else()
+    find_program(FM2_PYTHON3 NAMES python3 python REQUIRED)
+    set(FM2_PYTHON "${FM2_PYTHON3}")
+endif()
+
 # The recompiled code reads the host's raw timestamp counter for mftb; give it the console's
 # timebase instead (tools/patch_mftb.py, Fm2Timebase in src/kernel/runtime.cpp).
-execute_process(COMMAND py -3 -I "${CMAKE_SOURCE_DIR}/tools/patch_mftb.py" "${FM2_PPC_DIR}"
+execute_process(COMMAND ${FM2_PYTHON} -I "${CMAKE_SOURCE_DIR}/tools/patch_mftb.py" "${FM2_PPC_DIR}"
                 OUTPUT_VARIABLE FM2_MFTB_RESULT RESULT_VARIABLE FM2_MFTB_CODE OUTPUT_STRIP_TRAILING_WHITESPACE)
 if(NOT FM2_MFTB_CODE EQUAL 0)
     message(FATAL_ERROR "tools/patch_mftb.py failed on ${FM2_PPC_DIR}")
@@ -43,11 +52,32 @@ endif()
 message(STATUS "mftb: ${FM2_MFTB_RESULT}")
 
 file(GLOB_RECURSE FM2_SOURCES CONFIGURE_DEPENDS src/*.cpp)
+# The native Vulkan renderer (experimental; the launcher's Vulkan switch). It needs the Vulkan headers
+# and dxc (see README), and is on by default when thirdparty/vulkan-headers is there.
+# linux/vk.sh builds its test tools natively.
+set(FM2_VULKAN_DEFAULT_HEADERS "${CMAKE_SOURCE_DIR}/thirdparty/vulkan-headers/include")
+if(EXISTS "${FM2_VULKAN_DEFAULT_HEADERS}/vulkan/vulkan.h")
+    option(FM2_VULKAN "Build the native Vulkan renderer backend" ON)
+    set(FM2_VULKAN_HEADERS "${FM2_VULKAN_DEFAULT_HEADERS}" CACHE PATH "Vulkan headers directory (containing vulkan/vulkan.h)")
+else()
+    option(FM2_VULKAN "Build the native Vulkan renderer backend" OFF)
+    # Vulkan is loaded at runtime (see gpu/vk/vk_loader.h), so only the headers are needed: point
+    # FM2_VULKAN_HEADERS at a Vulkan-Headers checkout, or leave it to find_package.
+    set(FM2_VULKAN_HEADERS "" CACHE PATH "Vulkan headers directory (containing vulkan/vulkan.h)")
+endif()
+if(FM2_VULKAN)
+    if(NOT FM2_VULKAN_HEADERS)
+        find_package(Vulkan REQUIRED)
+        set(FM2_VULKAN_HEADERS "${Vulkan_INCLUDE_DIR}")
+    endif()
+else()
+    list(FILTER FM2_SOURCES EXCLUDE REGEX "src/gpu/vk/")
+endif()
 if(FM2_TITLE_UPDATE)
     set(FM2_TU_DIR "${CMAKE_SOURCE_DIR}/out/tu4")
     set(FM2_REMAP_DIR "${CMAKE_BINARY_DIR}/remapped")
     set(FM2_REMAP_ARGS "${FM2_TU_DIR}/map.json" "${CMAKE_SOURCE_DIR}/out/base.bin" "${FM2_TU_DIR}/image.bin")
-    execute_process(COMMAND py -3 -I "${CMAKE_SOURCE_DIR}/tools/xexremap.py" scan ${FM2_REMAP_ARGS} "${CMAKE_SOURCE_DIR}/src"
+    execute_process(COMMAND ${FM2_PYTHON} -I "${CMAKE_SOURCE_DIR}/tools/xexremap.py" scan ${FM2_REMAP_ARGS} "${CMAKE_SOURCE_DIR}/src"
                     OUTPUT_VARIABLE FM2_REMAP_LIST RESULT_VARIABLE FM2_REMAP_RESULT OUTPUT_STRIP_TRAILING_WHITESPACE)
     if(NOT FM2_REMAP_RESULT EQUAL 0)
         message(FATAL_ERROR "FM2_TITLE_UPDATE needs out/tu4/map.json (tools/xexmap.py build ...)")
@@ -59,7 +89,7 @@ if(FM2_TITLE_UPDATE)
         if(rel MATCHES "\\.cpp$")
             list(REMOVE_ITEM FM2_SOURCES "${CMAKE_SOURCE_DIR}/src/${rel}")
             add_custom_command(OUTPUT "${FM2_REMAP_DIR}/${rel}"
-                COMMAND py -3 -I "${CMAKE_SOURCE_DIR}/tools/xexremap.py" source ${FM2_REMAP_ARGS} "${CMAKE_SOURCE_DIR}/src/${rel}" "${FM2_REMAP_DIR}/${rel}"
+                COMMAND ${FM2_PYTHON} -I "${CMAKE_SOURCE_DIR}/tools/xexremap.py" source ${FM2_REMAP_ARGS} "${CMAKE_SOURCE_DIR}/src/${rel}" "${FM2_REMAP_DIR}/${rel}"
                 DEPENDS "${CMAKE_SOURCE_DIR}/src/${rel}" "${FM2_TU_DIR}/map.json" "${CMAKE_SOURCE_DIR}/tools/xexremap.py"
                 COMMENT "Translating guest addresses in ${rel}")
             list(APPEND FM2_SOURCES "${FM2_REMAP_DIR}/${rel}")
@@ -68,7 +98,7 @@ if(FM2_TITLE_UPDATE)
     # Weak fallbacks for the patched executable's imports instead of src/kernel/stubs.cpp.
     list(REMOVE_ITEM FM2_SOURCES "${CMAKE_SOURCE_DIR}/src/kernel/stubs.cpp")
     add_custom_command(OUTPUT "${CMAKE_BINARY_DIR}/generated/stubs_tu.cpp"
-        COMMAND py -3 -I "${CMAKE_SOURCE_DIR}/tools/genstubs.py" "${FM2_PPC_DIR}/ppc_recomp_shared.h" "${CMAKE_BINARY_DIR}/generated/stubs_tu.cpp"
+        COMMAND ${FM2_PYTHON} -I "${CMAKE_SOURCE_DIR}/tools/genstubs.py" "${FM2_PPC_DIR}/ppc_recomp_shared.h" "${CMAKE_BINARY_DIR}/generated/stubs_tu.cpp"
         DEPENDS "${FM2_PPC_DIR}/ppc_recomp_shared.h" "${CMAKE_SOURCE_DIR}/tools/genstubs.py"
         COMMENT "Generating import stubs for the patched executable")
     list(APPEND FM2_SOURCES "${CMAKE_BINARY_DIR}/generated/stubs_tu.cpp")
@@ -82,7 +112,7 @@ endif()
 # FSR 1 compute shaders, compiled with fxc at build time and embedded.
 set(FM2_GENERATED "${CMAKE_BINARY_DIR}/generated")
 add_custom_command(OUTPUT "${FM2_GENERATED}/fsr1_cs.h"
-    COMMAND py -3 -I "${CMAKE_SOURCE_DIR}/tools/embed_hlsl.py" "${CMAKE_SOURCE_DIR}/src/gpu/fsr1.hlsl" "${FM2_GENERATED}/fsr1_cs.h"
+    COMMAND ${FM2_PYTHON} -I "${CMAKE_SOURCE_DIR}/tools/embed_hlsl.py" "${CMAKE_SOURCE_DIR}/src/gpu/fsr1.hlsl" "${FM2_GENERATED}/fsr1_cs.h"
             EasuMain,RcasMain,DepthCopyMain,GammaMain,EnhanceMain,PillarMain,ViewMain,TurnMain "${FM2_FFX}/api/internal/gpu" "${FM2_FFX}/upscalers/fsr3/include/gpu/fsr1"
     DEPENDS "${CMAKE_SOURCE_DIR}/src/gpu/fsr1.hlsl" "${CMAKE_SOURCE_DIR}/tools/embed_hlsl.py"
     COMMENT "Compiling FSR 1 shaders")
@@ -97,7 +127,7 @@ foreach(preset Low Medium High Ultra)
 endforeach()
 string(REPLACE ";" "," FM2_SMAA_ENTRIES "${FM2_SMAA_ENTRIES}")
 add_custom_command(OUTPUT "${FM2_GENERATED}/smaa_cs.h"
-    COMMAND py -3 -I "${CMAKE_SOURCE_DIR}/tools/embed_hlsl.py" "${CMAKE_SOURCE_DIR}/src/gpu/smaa_passes.hlsl" "${FM2_GENERATED}/smaa_cs.h"
+    COMMAND ${FM2_PYTHON} -I "${CMAKE_SOURCE_DIR}/tools/embed_hlsl.py" "${CMAKE_SOURCE_DIR}/src/gpu/smaa_passes.hlsl" "${FM2_GENERATED}/smaa_cs.h"
             "${FM2_SMAA_ENTRIES}" "${CMAKE_SOURCE_DIR}/thirdparty/smaa"
     DEPENDS "${CMAKE_SOURCE_DIR}/src/gpu/smaa_passes.hlsl" "${CMAKE_SOURCE_DIR}/thirdparty/smaa/SMAA.hlsl" "${CMAKE_SOURCE_DIR}/tools/embed_hlsl.py"
     COMMENT "Compiling SMAA shaders")
@@ -111,6 +141,23 @@ if(FM2_TITLE_UPDATE)
     target_compile_definitions(fm2 PRIVATE FM2_TITLE_UPDATE=1)
 endif()
 target_include_directories(fm2 PRIVATE src "${FM2_GENERATED}" "${FM2_DLSS}/include" "${CMAKE_SOURCE_DIR}/thirdparty/smaa/Textures")
+if(FM2_VULKAN)
+    target_include_directories(fm2 PRIVATE "${FM2_VULKAN_HEADERS}")
+    target_compile_definitions(fm2 PRIVATE FM2_VULKAN=1)
+    # The renderer loads dxcompiler.dll (which loads dxil.dll) from beside fm2.exe. The Windows SDK's copy has no
+    # SPIR-V output, so this is the bin/x64 folder of a DirectXShaderCompiler release.
+    set(FM2_DXC_DIR_DEFAULT "")
+    if(EXISTS "${CMAKE_SOURCE_DIR}/thirdparty/dxc/bin/x64/dxcompiler.dll")
+        set(FM2_DXC_DIR_DEFAULT "${CMAKE_SOURCE_DIR}/thirdparty/dxc/bin/x64")
+    endif()
+    set(FM2_DXC_DIR "${FM2_DXC_DIR_DEFAULT}" CACHE PATH "DirectXShaderCompiler release bin/x64 (dxcompiler.dll, dxil.dll)")
+    if(FM2_DXC_DIR)
+        add_custom_command(TARGET fm2 POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${FM2_DXC_DIR}/dxcompiler.dll" "${FM2_DXC_DIR}/dxil.dll" $<TARGET_FILE_DIR:fm2>)
+    else()
+        message(WARNING "FM2_VULKAN: set FM2_DXC_DIR, or put dxcompiler.dll and dxil.dll next to fm2.exe yourself")
+    endif()
+endif()
 target_link_libraries(fm2 PRIVATE "${FM2_DLSS}/lib/Windows_x86_64/x64/nvsdk_ngx_s.lib" "${FM2_FFX}/signedbin/amd_fidelityfx_loader_dx12.lib")
 target_include_directories(fm2 PRIVATE "${FM2_FFX}/api/include" "${FM2_FFX}/upscalers/include" "${FM2_FFX}/framegeneration/include")
 add_custom_command(TARGET fm2 POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different

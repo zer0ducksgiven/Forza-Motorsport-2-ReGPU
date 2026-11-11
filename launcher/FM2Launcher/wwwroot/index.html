@@ -134,6 +134,10 @@
           <button data-full="1" data-tip="Fills the main display without changing its mode. A narrower aspect ratio is centred with black bars.">Fullscreen</button>
         </div>
       </div>
+      <div class="toggle-row" id="vulkanRow" data-tip="Draws the game with Vulkan instead of Direct3D 12 (experimental). It can be faster on some PCs and slower on others: compare both ways. The first start with it on compiles the game's shaders for Vulkan once (about a minute, on the COMPILING SHADERS screen). With it on, MSAA, SMAA, the upscalers, frame generation and the in-game graphics options are not used yet. It applies when the game starts. Please tell us how it runs on your PC (Report tab).">
+        <div><div class="toggle-title">Vulkan renderer</div><div class="toggle-sub">Experimental. Off: Direct3D 12</div></div>
+        <button class="switch" id="vulkan" role="switch"></button>
+      </div>
     </section>
 
     <section class="panel">

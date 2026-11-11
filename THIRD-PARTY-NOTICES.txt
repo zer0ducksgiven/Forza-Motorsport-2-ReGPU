@@ -280,5 +280,11 @@ https://github.com/hedge-dev/XenonRecomp
 Microsoft D3DCompiler (build\tu\d3dcompiler_47.dll): Microsoft's
 redistributable shader compiler, shipped unmodified.
 
+DirectX Shader Compiler v1.9.2609 (build\tu\dxcompiler.dll and dxil.dll, for
+the Vulkan renderer): Microsoft's release binaries, shipped unmodified.
+dxcompiler.dll is under the LLVM Release License (University of
+Illinois/NCSA); dxil.dll under the Microsoft DirectX Shader Compiler licence
+terms. https://github.com/microsoft/DirectXShaderCompiler
+
 Controller button icons: Kenney's Input Prompts (CC0) and Button Icons and
 Controls by Zacksly (CC BY 3.0, zacksly.itch.io), recoloured and resized.

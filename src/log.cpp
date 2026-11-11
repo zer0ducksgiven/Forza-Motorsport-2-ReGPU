@@ -53,8 +53,10 @@ void Fatal(const char* fmt, ...)
     va_start(args, fmt);
     Write("FATAL: ", fmt, args);
     va_end(args);
+#ifdef _WIN32 // (the native Linux test tools link this file without the wheel code)
     void WheelStop();
     WheelStop();
+#endif
     std::_Exit(1);
 }
 

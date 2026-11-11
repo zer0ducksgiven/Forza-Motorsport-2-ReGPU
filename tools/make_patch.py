@@ -2,7 +2,7 @@
 
   make_patch.py <version> [launcher dir]
 
-Contents (paths relative to the install): build/tu/fm2.exe, d3dcompiler_47.dll, AMD's frame generation DLL (not SDL3.dll, see below), the launcher (launcher/..., from the given folder or
+Contents (paths relative to the install): build/tu/fm2.exe, d3dcompiler_47.dll, AMD's frame generation DLL, dxcompiler.dll and dxil.dll (not SDL3.dll, see below), the launcher (launcher/..., from the given folder or
 installer/payload/launcher, which build-installer.ps1 publishes) and changelog.txt. Names are written with '/',
 and the zip is read back and checked: no control characters, nothing outside the install.
 """
@@ -27,6 +27,9 @@ def main(argv):
              # AMD's frame generation (new with the frame generation option: installs before it lack the DLL;
              # nothing holds it open while the game is not running).
              (os.path.join(ROOT, 'build', 'tu', 'amd_fidelityfx_framegeneration_dx12.dll'), 'build/tu/amd_fidelityfx_framegeneration_dx12.dll'),
+             # The DirectX Shader Compiler for the Vulkan renderer (new with it; only the game loads them).
+             (os.path.join(ROOT, 'build', 'tu', 'dxcompiler.dll'), 'build/tu/dxcompiler.dll'),
+             (os.path.join(ROOT, 'build', 'tu', 'dxil.dll'), 'build/tu/dxil.dll'),
              # The licences of what ships with the port (AMD FidelityFX, SMAA, SDL, FFmpeg).
              (os.path.join(ROOT, 'THIRD-PARTY-NOTICES.txt'), 'THIRD-PARTY-NOTICES.txt')]
     if not os.path.isfile(os.path.join(launcher, 'FM2Launcher.exe')):

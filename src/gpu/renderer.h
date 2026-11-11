@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <vector>
 
 // Native renderer, called on the command processor thread.
 void RendererOnShaderLoad(uint32_t type, const uint32_t* microcodeBE, uint32_t dwords);
@@ -8,6 +9,11 @@ void RendererSetShader(uint32_t type, const uint32_t* microcodeBE, uint32_t used
 void RendererOnDraw(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize);
 // frontBuffer: physical address of the resolved image to show.
 void RendererOnSwap(uint64_t frame, uint32_t frontBuffer);
+// Adds the compilation/performance overlay to a CPU RGBA8 frame before presentation.
+void RendererOverlayImage(uint32_t width, uint32_t height, std::vector<uint8_t>& rgba);
+// The overlay itself, for a renderer that draws it on the GPU: RGBA8 rows of `width` pixels, of which the top
+// `visibleHeight` are in use; `version` changes when the pixels do. False when there is nothing to show.
+bool RendererOverlayPixels(const uint8_t*& rgba, uint32_t& width, uint32_t& height, uint32_t& visibleHeight, uint64_t& version);
 // Lookahead hooks (see GpuLookahead): shader loads and draws the command processor has
 // not executed yet, seen on a shadow copy of the registers.
 void RendererPredictBegin();
@@ -16,10 +22,28 @@ void RendererPredictDraw(uint32_t initiator);
 // True when no shader/pipeline compile is running and none finished in the last 2 s
 // (the shader tour waits for this between steps).
 bool RendererCompileIdle();
+// Captures the next presented frame (the tour's CAPTURE step).
+void RendererRequestCapture();
+bool RendererCaptureComplete();
+void RendererMarkCaptureComplete();
 // Flushes the pipeline library to disk (called when the tour finishes).
 void RendererSaveCaches();
+// Saves what can be saved quickly when the window is closed (the Vulkan pipeline cache), just before the process exits.
+void RendererSaveOnClose();
+// Compile activity of a renderer that compiles on its own (Vulkan), for the shader compile pop-up: see renderer.cpp.
+struct RendererCompileReport
+{
+    uint32_t shadersBuilt = 0, shadersCached = 0, pipelinesBuilt = 0, pipelinesCached = 0;
+    uint32_t running = 0;
+    const char* what = nullptr;
+    bool waited = false;
+    uint32_t warmDone = 0, warmTotal = 0, staticDone = 0, staticTotal = 0;
+};
+void RendererReportCompiles(const RendererCompileReport& report);
 // The display gamma table entry `index` (10:10:10 RGB), applied when presenting.
 void RendererSetGammaEntry(uint32_t index, uint32_t rgb10);
+// Fill the 17 display-curve points; false when the table is unset or the identity map.
+bool RendererDisplayGamma(float points[17]);
 // Benchmark: frame times are recorded while on; the report summarises them.
 void BenchmarkRecord(bool on);
 void BenchmarkWriteReport(const char* path);

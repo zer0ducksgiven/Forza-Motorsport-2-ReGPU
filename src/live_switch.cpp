@@ -4,8 +4,11 @@
 #include <map>
 #include <mutex>
 
+#if defined(_WIN32)
 #include <windows.h>
+#endif
 
+#include "fast_env.h"
 #include "log.h"
 
 namespace
@@ -26,8 +29,13 @@ Registry& Get()
 void SetEnv(const std::string& name, bool on)
 {
     // getenv() readers of the same name (startup code, other copies) see it too.
+#if defined(_WIN32)
     _putenv_s(name.c_str(), on ? "1" : "");
     SetEnvironmentVariableA(name.c_str(), on ? "1" : nullptr);
+#else
+    setenv(name.c_str(), on ? "1" : "", 1);
+#endif
+    FastEnvChanged();
 }
 }
 
