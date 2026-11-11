@@ -173,7 +173,7 @@ The Start menu and desktop shortcuts open the launcher (`launcher\FM2Launcher.ex
 `launcher/FM2Launcher`: a .NET 10 WinForms window hosting WebView2, its page in `wwwroot`). Hover over any
 option for an explanation.
 
-- **Play**: graphics API (Direct3D 12 by default, Vulkan experimental; applies when the game starts), profile name, resolution, aspect ratio, windowed or fullscreen, max FPS, VSync,
+- **Play**: the Vulkan renderer switch (experimental, off = Direct3D 12; applies when the game starts), profile name, resolution, aspect ratio, windowed or fullscreen, max FPS, VSync,
   anti-aliasing (Off, 2x, 4x, 8x MSAA), enhanced lighting (experimental), skip intro videos, and the
   game's language (English, German, French, Spanish, Italian, Japanese, Korean, Simplified and Traditional
   Chinese, as on the disc; the disc's Polish, Czech and Hungarian text can't be picked yet). Every change is
@@ -286,6 +286,16 @@ git clone --depth 1 --branch v2.3.0 https://github.com/GPUOpen-LibrariesAndSDKs/
 git clone --depth 1 --branch v310.9.16 https://github.com/NVIDIA/DLSS.git thirdparty/dlss
 ```
 
+The experimental Vulkan renderer is built when `thirdparty/vulkan-headers` exists. It needs the Vulkan
+headers and the DirectX Shader Compiler release (the Windows SDK's `dxcompiler.dll` has no SPIR-V output):
+extract `dxc_2026_09_29.zip` from
+[microsoft/DirectXShaderCompiler v1.9.2609](https://github.com/microsoft/DirectXShaderCompiler/releases/tag/v1.9.2609)
+to `thirdparty/dxc`. The build copies `dxcompiler.dll` and `dxil.dll` next to `fm2.exe`.
+
+```
+git clone --depth 1 --branch vulkan-sdk-1.4.363.0 https://github.com/KhronosGroup/Vulkan-Headers.git thirdparty/vulkan-headers
+```
+
 ```
 git submodule update --init --recursive
 git -C thirdparty/XenonRecomp apply ../../patches/xenonrecomp-fm2.patch
@@ -303,10 +313,11 @@ code (`out/ppc`, ~131 MB) is generated from your own copy and never committed.
 ## Vulkan renderer (experimental)
 
 `src/gpu/vk` is a second renderer behind the same seam as the Direct3D 12 one: the same translated HLSL (compiled to
-SPIR-V with the DirectX Shader Compiler), the same constant blocks, index lists and texture decoding. It is built only
-with `-DFM2_VULKAN=ON` (the Vulkan headers are needed; `FM2_VULKAN_HEADERS` can point at a Vulkan-Headers include
-directory) and chosen with the launcher's **Graphics API** option, `renderer=vulkan` in `settings.ini` or
-`FM2_RENDERER=vulkan`. `dxcompiler.dll` and `dxil.dll` have to sit next to `fm2.exe`; the GPU vendor's Vulkan driver
+SPIR-V with the DirectX Shader Compiler), the same constant blocks, index lists and texture decoding. It is built when
+`thirdparty/vulkan-headers` exists, or with `-DFM2_VULKAN=ON` (`FM2_VULKAN_HEADERS` can point at a Vulkan-Headers
+include directory), and chosen with the launcher's **Vulkan renderer** switch (shown when `dxcompiler.dll` is next to
+`fm2.exe`), `renderer=vulkan` in `settings.ini` or `FM2_RENDERER=vulkan`. The build copies `dxcompiler.dll` and
+`dxil.dll` from `FM2_DXC_DIR` (default `thirdparty/dxc/bin/x64`) next to `fm2.exe`; the GPU vendor's Vulkan driver
 provides `vulkan-1.dll`.
 
 - **First start:** the game waits on the "COMPILING SHADERS" screen while every shader in the game data is compiled

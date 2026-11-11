@@ -218,7 +218,8 @@ public static class Options
     }
 
     public static readonly int[] Fps = [30, 60, 120, 144, 165, 240, 360];
-    public static readonly (string Value, string Name)[] Renderers = [("d3d12", "Direct3D 12 (default)"), ("vulkan", "Vulkan (experimental)")];
+    /// <summary>The game was built with the Vulkan renderer: its DirectX Shader Compiler ships beside fm2.exe.</summary>
+    public static bool VulkanAvailable() => File.Exists(Path.Combine(Path.GetDirectoryName(Paths.Exe)!, "dxcompiler.dll"));
     public static readonly (string Value, string Name)[] Aspects = [("auto", "Auto (match resolution)"), ("16:9", "16:9"), ("21:9", "21:9 (experimental)"), ("32:9", "32:9 (experimental)")];
     public static readonly (int Value, string Name)[] Msaa = [(1, "Off"), (2, "2x MSAA"), (4, "4x MSAA"), (8, "8x MSAA")];
     public static readonly (int Value, string Name)[] Smaa = [(0, "Off"), (1, "Low"), (2, "Medium"), (3, "High"), (4, "Ultra")];

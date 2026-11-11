@@ -193,7 +193,10 @@ function render() {
   }
 
   // play and graphics pages
-  fill($("renderer"), o.renderers, set.renderer)
+  // The Vulkan switch shows only when this install's game was built with Vulkan (dxcompiler.dll beside it).
+  const vulkan = o.vulkan && set.renderer === "vulkan"
+  $("vulkanRow").hidden = !o.vulkan
+  $("vulkan").classList.toggle("on", vulkan)
   fill($("resolution"), o.resolutions.map((r) => ({ value: r, name: r.replace("x", " × ") })), set.resolution)
   fill($("aspect"), o.aspects, set.aspect)
   const custom = customFps || !o.fps.includes(set.maxFps)
@@ -207,11 +210,13 @@ function render() {
   fill($("upscaler"), o.upscalers, set.upscaler)
   // FSR 3 and 4 do the anti-aliasing of races themselves: the game turns MSAA off with them. SMAA still smooths the menus.
   const temporal = set.upscaler === "fsr3" || set.upscaler === "fsr4"
-  $("msaa").disabled = temporal
+  $("msaa").disabled = temporal || vulkan
   // Frame generation works from what FSR 3 / 4 draw: without them it is off.
-  $("frameGen").disabled = !temporal
-  $("frameGen").classList.toggle("on", temporal && !!set.frameGen)
+  $("frameGen").disabled = !temporal || vulkan
+  $("frameGen").classList.toggle("on", temporal && !vulkan && !!set.frameGen)
   fill($("sharpening"), o.sharpening, set.sharpening)
+  // The Vulkan renderer has no MSAA, SMAA or upscalers yet.
+  for (const k of ["smaa", "renderScale", "upscaler", "sharpening"]) $(k).disabled = vulkan
   fill($("language"), o.languages.map((l) => ({ value: l.id, name: l.name })), set.language)
   fill($("musicVolume"), [10, 20, 30, 40, 50, 60, 70, 80, 90, 100].map((v) => ({ value: v, name: v + "%" })), set.musicVolume)
   $("lang-note").textContent = o.missingLanguages.length
@@ -224,12 +229,12 @@ function render() {
   $("summary").innerHTML = ""
   const line = (label, value) => { const d = el("div"); d.append(label + ": "); d.append(el("b", "", value)); $("summary").append(d) }
   line("Profile", set.profile || "Player")
-  line("Graphics API", (o.renderers.find((r) => r.value === set.renderer) || o.renderers[0]).name)
+  if (o.vulkan) line("Renderer", vulkan ? "Vulkan (experimental)" : "Direct3D 12")
   line("Display", `${set.resolution.replace("x", " × ")}, ${set.fullscreen ? "fullscreen" : "windowed"}${aspect && set.aspect !== "auto" ? ", " + aspect.name : ""}`)
   line("Frame rate", `${set.maxFps} fps cap, VSync ${set.vsync ? "on" : "off"}`)
   const msaaName = (o.msaa.find((m) => m.value === set.msaa) || { name: "Off" }).name
   const smaaName = set.smaa ? "SMAA " + (o.smaa.find((m) => m.value === set.smaa) || { name: "" }).name : ""
-  line("Anti-aliasing", temporal ? (set.upscaler === "fsr4" ? "FSR 4" : "FSR 3") + (set.smaa ? ` + ${smaaName} in menus` : "") : set.msaa > 1 && set.smaa ? `${msaaName} + ${smaaName}` : set.smaa ? smaaName : msaaName)
+  line("Anti-aliasing", vulkan ? "Off (Vulkan)" : temporal ? (set.upscaler === "fsr4" ? "FSR 4" : "FSR 3") + (set.smaa ? ` + ${smaaName} in menus` : "") : set.msaa > 1 && set.smaa ? `${msaaName} + ${smaaName}` : set.smaa ? smaaName : msaaName)
   line("Language", lang ? lang.name : "English")
   line("Intro", set.skipIntro ? "skipped" : "plays")
   if (s.wheel && s.wheel.found) line("Wheel", `${s.wheel.name}, force feedback ${set.wheelStrength}%`)
@@ -431,7 +436,7 @@ function change(patch) {
     render()
   }), 250)
 }
-$("renderer").onchange = (e) => change({ renderer: e.target.value })
+$("vulkan").onclick = () => change({ renderer: state.settings.renderer === "vulkan" ? "d3d12" : "vulkan" })
 $("resolution").onchange = (e) => change({ resolution: e.target.value })
 $("aspect").onchange = (e) => change({ aspect: e.target.value })
 $("maxFps").onchange = (e) => {

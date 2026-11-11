@@ -52,12 +52,19 @@ endif()
 message(STATUS "mftb: ${FM2_MFTB_RESULT}")
 
 file(GLOB_RECURSE FM2_SOURCES CONFIGURE_DEPENDS src/*.cpp)
-# The native Vulkan renderer is opt-in: it needs the Vulkan headers and dxc, which the
-# default (Windows, Direct3D 12) build neither has nor wants. linux/vk.sh builds it natively.
-option(FM2_VULKAN "Build the native Vulkan renderer backend" OFF)
-# Vulkan is loaded at runtime (see gpu/vk/vk_loader.h), so only the headers are needed: point
-# FM2_VULKAN_HEADERS at a Vulkan-Headers checkout, or leave it to find_package.
-set(FM2_VULKAN_HEADERS "" CACHE PATH "Vulkan headers directory (containing vulkan/vulkan.h)")
+# The native Vulkan renderer (experimental; the launcher's Vulkan switch). It needs the Vulkan headers
+# and dxc (see README), and is on by default when thirdparty/vulkan-headers is there.
+# linux/vk.sh builds its test tools natively.
+set(FM2_VULKAN_DEFAULT_HEADERS "${CMAKE_SOURCE_DIR}/thirdparty/vulkan-headers/include")
+if(EXISTS "${FM2_VULKAN_DEFAULT_HEADERS}/vulkan/vulkan.h")
+    option(FM2_VULKAN "Build the native Vulkan renderer backend" ON)
+    set(FM2_VULKAN_HEADERS "${FM2_VULKAN_DEFAULT_HEADERS}" CACHE PATH "Vulkan headers directory (containing vulkan/vulkan.h)")
+else()
+    option(FM2_VULKAN "Build the native Vulkan renderer backend" OFF)
+    # Vulkan is loaded at runtime (see gpu/vk/vk_loader.h), so only the headers are needed: point
+    # FM2_VULKAN_HEADERS at a Vulkan-Headers checkout, or leave it to find_package.
+    set(FM2_VULKAN_HEADERS "" CACHE PATH "Vulkan headers directory (containing vulkan/vulkan.h)")
+endif()
 if(FM2_VULKAN)
     if(NOT FM2_VULKAN_HEADERS)
         find_package(Vulkan REQUIRED)
@@ -137,6 +144,19 @@ target_include_directories(fm2 PRIVATE src "${FM2_GENERATED}" "${FM2_DLSS}/inclu
 if(FM2_VULKAN)
     target_include_directories(fm2 PRIVATE "${FM2_VULKAN_HEADERS}")
     target_compile_definitions(fm2 PRIVATE FM2_VULKAN=1)
+    # The renderer loads dxcompiler.dll (which loads dxil.dll) from beside fm2.exe. The Windows SDK's copy has no
+    # SPIR-V output, so this is the bin/x64 folder of a DirectXShaderCompiler release.
+    set(FM2_DXC_DIR_DEFAULT "")
+    if(EXISTS "${CMAKE_SOURCE_DIR}/thirdparty/dxc/bin/x64/dxcompiler.dll")
+        set(FM2_DXC_DIR_DEFAULT "${CMAKE_SOURCE_DIR}/thirdparty/dxc/bin/x64")
+    endif()
+    set(FM2_DXC_DIR "${FM2_DXC_DIR_DEFAULT}" CACHE PATH "DirectXShaderCompiler release bin/x64 (dxcompiler.dll, dxil.dll)")
+    if(FM2_DXC_DIR)
+        add_custom_command(TARGET fm2 POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${FM2_DXC_DIR}/dxcompiler.dll" "${FM2_DXC_DIR}/dxil.dll" $<TARGET_FILE_DIR:fm2>)
+    else()
+        message(WARNING "FM2_VULKAN: set FM2_DXC_DIR, or put dxcompiler.dll and dxil.dll next to fm2.exe yourself")
+    endif()
 endif()
 target_link_libraries(fm2 PRIVATE "${FM2_DLSS}/lib/Windows_x86_64/x64/nvsdk_ngx_s.lib" "${FM2_FFX}/signedbin/amd_fidelityfx_loader_dx12.lib")
 target_include_directories(fm2 PRIVATE "${FM2_FFX}/api/include" "${FM2_FFX}/upscalers/include" "${FM2_FFX}/framegeneration/include")
