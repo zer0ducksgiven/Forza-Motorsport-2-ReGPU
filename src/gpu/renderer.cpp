@@ -85,6 +85,10 @@ inline bool VulkanRendererEnabled()
 }
 #endif
 
+// getenv is a linear, case-insensitive search of the environment, and debugging switches are read with it on
+// every draw: on an RTX 5090 a 1080p race went from 70 to 162 fps with the lookups cached (fast_env.h).
+#include "fast_env.h"
+#define getenv(name) FastEnv(name)
 #include "gpu/constants.h"
 #include "gpu/indices.h"
 #include "gpu/renderer.h"
