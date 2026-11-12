@@ -1813,6 +1813,9 @@ void Init()
         const bool queried = SUCCEEDED(d->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS16, &o16, sizeof(o16)));
         g_gpuUploadHeap = queried && o16.GPUUploadHeapSupported;
         Log("renderer: GPU upload heaps %s", !queried ? "unknown (OPTIONS16 not reported)" : g_gpuUploadHeap ? "supported (resizable BAR on)" : "not supported");
+        // The launcher's "Upload ring in VRAM" (vram_upload_ring=1) starts with the switch on.
+        if (GetSettings().vramUploadRing && !getenv("FM2_GPU_UPLOAD_RING"))
+            _putenv("FM2_GPU_UPLOAD_RING=1");
         if (getenv("FM2_NO_GPU_UPLOAD_RING"))
             g_gpuUploadHeap = false;
     }

@@ -222,7 +222,7 @@ function render() {
   $("lang-note").textContent = o.missingLanguages.length
     ? `Your disc also has ${o.missingLanguages.join(", ")} text. Those can't be picked yet.` : ""
   for (const b of $("display").children) b.classList.toggle("on", (b.dataset.full === "1") === set.fullscreen)
-  for (const k of ["vsync", "skipIntro", "xboxPrompts", "hideShaderOverlay", "lowPerformance", "vertexArena", "raceMusic", "carSoundMix"]) $(k).classList.toggle("on", !!set[k])
+  for (const k of ["vsync", "skipIntro", "xboxPrompts", "hideShaderOverlay", "lowPerformance", "vertexArena", "vramUploadRing", "raceMusic", "carSoundMix"]) $(k).classList.toggle("on", !!set[k])
 
   const lang = o.languages.find((l) => l.id === set.language)
   const aspect = o.aspects.find((a) => a.value === set.aspect)
@@ -458,7 +458,7 @@ $("sharpening").onchange = (e) => change({ sharpening: +e.target.value })
 $("language").onchange = (e) => change({ language: +e.target.value })
 $("musicVolume").onchange = (e) => change({ musicVolume: +e.target.value })
 $("display").onclick = (e) => { const b = e.target.closest("button"); if (b) change({ fullscreen: b.dataset.full === "1" }) }
-for (const k of ["vsync", "skipIntro", "xboxPrompts", "hideShaderOverlay", "lowPerformance", "vertexArena", "raceMusic", "carSoundMix"]) $(k).onclick = () => change({ [k]: !state.settings[k] })
+for (const k of ["vsync", "skipIntro", "xboxPrompts", "hideShaderOverlay", "lowPerformance", "vertexArena", "vramUploadRing", "raceMusic", "carSoundMix"]) $(k).onclick = () => change({ [k]: !state.settings[k] })
 
 // ---- actions
 

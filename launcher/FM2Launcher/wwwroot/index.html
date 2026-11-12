@@ -199,6 +199,10 @@
         <div><div class="toggle-title">Vertex arena</div><div class="toggle-sub">Vertex data in video memory</div></div>
         <button class="switch" id="vertexArena" role="switch"></button>
       </div>
+      <div class="toggle-row" data-tip="Puts the data the game sends to your graphics card each frame straight into the card's own memory. Needs Resizable BAR (Smart Access Memory) on; without it this does nothing. Faster when your graphics card is the limit (high resolutions), slower when your CPU is (low resolutions, high frame rates). Off by default.">
+        <div><div class="toggle-title">Upload ring in VRAM</div><div class="toggle-sub">Needs Resizable BAR</div></div>
+        <button class="switch" id="vramUploadRing" role="switch"></button>
+      </div>
       <div class="toggle-row" data-tip="The box in the top left that shows shaders being compiled. Turning it off doesn't stop the compiling, only hides it.">
         <div><div class="toggle-title">Hide shader compile pop-up</div><div class="toggle-sub">The box in the top left of the screen</div></div>
         <button class="switch" id="hideShaderOverlay" role="switch"></button>
