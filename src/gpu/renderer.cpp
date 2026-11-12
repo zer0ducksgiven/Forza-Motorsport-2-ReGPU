@@ -501,6 +501,12 @@ struct FrameResources
     uint8_t* ringCpu = nullptr;
     std::atomic<UINT64> ringUsed{ 0 }; // draw workers allocate concurrently
     UINT64 ringSize = 0; // this slot's ring (grows, see RingAlloc)
+    // FM2_GPU_UPLOAD_RING (live, from FM3-ReGPU): the same ring in a GPU upload heap (VRAM the CPU writes through
+    // resizable BAR), swapped with `ring` at the frame start; made only when the device reports GPU upload heaps.
+    ComPtr<ID3D12Resource> ringAlt;
+    uint8_t* ringAltCpu = nullptr;
+    UINT64 ringAltSize = 0;
+    bool ringInVram = false;
     // Guest ranges already uploaded this frame: (address << 32 | bytes) -> (offset, sample hash).
     std::unordered_map<uint64_t, std::pair<UINT64, uint64_t>> uploads;
     UINT descriptorBase = 0;
@@ -1273,6 +1279,33 @@ D3D12_GPU_DESCRIPTOR_HANDLE Gpu(ID3D12DescriptorHeap* heap, UINT index, UINT str
     return h;
 }
 
+bool g_gpuUploadHeap = false; // GPU upload heaps reported and allowed (see the ring set-up)
+
+// An upload ring in a GPU upload heap, mapped (write-combined VRAM: the CPU only writes it); null if refused.
+ComPtr<ID3D12Resource> CreateGpuUploadRing(UINT64 size, uint8_t*& cpu)
+{
+    D3D12_HEAP_PROPERTIES hp{};
+    hp.Type = D3D12_HEAP_TYPE_GPU_UPLOAD;
+    D3D12_RESOURCE_DESC rd{};
+    rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    rd.Width = size;
+    rd.Height = 1;
+    rd.DepthOrArraySize = 1;
+    rd.MipLevels = 1;
+    rd.SampleDesc.Count = 1;
+    rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    ComPtr<ID3D12Resource> r;
+    const HRESULT hr = g_r.device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&r));
+    if (FAILED(hr) || FAILED(r->Map(0, nullptr, reinterpret_cast<void**>(&cpu))))
+    {
+        Log("renderer: GPU upload heap ring of %llu MB failed (0x%08X): ring stays in system memory", (unsigned long long)(size >> 20), unsigned(hr));
+        cpu = nullptr;
+        return nullptr;
+    }
+    CountCreate("buffer");
+    return r;
+}
+
 ComPtr<ID3D12Resource> CreateBuffer(UINT64 size, D3D12_HEAP_TYPE heap, D3D12_RESOURCE_STATES state)
 {
     D3D12_HEAP_PROPERTIES hp{};
@@ -1772,6 +1805,17 @@ void Init()
 
     kRingSize = (getenv("FM2_RING_MB") ? std::clamp<UINT64>(UINT64(atoi(getenv("FM2_RING_MB"))), 16, 2048) : g_r.physical && !getenv("FM2_NO_DIRECT_FETCH") ? 128 : 384) << 20;
     Log("renderer: upload ring %llu MB per frame", (unsigned long long)(kRingSize >> 20));
+    // GPU upload heaps (OPTIONS16; true only with resizable BAR / Smart Access Memory on): the upload ring can live
+    // in VRAM. A second ring per frame slot is made there for the live switch FM2_GPU_UPLOAD_RING
+    // (FM2_NO_GPU_UPLOAD_RING=1: not made).
+    {
+        D3D12_FEATURE_DATA_D3D12_OPTIONS16 o16{};
+        const bool queried = SUCCEEDED(d->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS16, &o16, sizeof(o16)));
+        g_gpuUploadHeap = queried && o16.GPUUploadHeapSupported;
+        Log("renderer: GPU upload heaps %s", !queried ? "unknown (OPTIONS16 not reported)" : g_gpuUploadHeap ? "supported (resizable BAR on)" : "not supported");
+        if (getenv("FM2_NO_GPU_UPLOAD_RING"))
+            g_gpuUploadHeap = false;
+    }
     for (UINT i = 0; i < kFrames; i++)
     {
         FrameResources& f = g_r.frames[i];
@@ -1779,6 +1823,9 @@ void Init()
         f.ring = CreateBuffer(kRingSize, D3D12_HEAP_TYPE_UPLOAD, D3D12_RESOURCE_STATE_GENERIC_READ);
         f.ring->Map(0, nullptr, reinterpret_cast<void**>(&f.ringCpu));
         f.ringSize = kRingSize;
+        if (g_gpuUploadHeap && !(f.ringAlt = CreateGpuUploadRing(kRingSize, f.ringAltCpu)))
+            g_gpuUploadHeap = false;
+        f.ringAltSize = f.ringAlt ? kRingSize : 0;
         f.descriptorBase = i * kDescriptorsPerFrame;
     }
     Check(d->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, g_r.frames[0].allocator.Get(), nullptr, IID_PPV_ARGS(&g_r.realList)),
@@ -2464,11 +2511,31 @@ void BeginFrameIfNeeded()
         if (used > f.ringSize / 2)
             Log("renderer: upload ring peak %llu MB of %llu", (unsigned long long)(used >> 20), (unsigned long long)(f.ringSize >> 20));
     }
+    // FM2_GPU_UPLOAD_RING: this slot's ring in VRAM or system memory (its last use finished with its frame).
+    if (static LiveSwitch vramRing("FM2_GPU_UPLOAD_RING"); f.ringAlt && bool(vramRing) != f.ringInVram)
+    {
+        std::swap(f.ring, f.ringAlt);
+        std::swap(f.ringCpu, f.ringAltCpu);
+        std::swap(f.ringSize, f.ringAltSize);
+        f.ringInVram = !f.ringInVram;
+        if (frameIndex == 0)
+            Log("renderer: upload ring in %s", f.ringInVram ? "VRAM (GPU upload heap)" : "system memory");
+    }
     if (const UINT64 want = g_ringWant.load(); want > f.ringSize)
     {
         f.garbage.push_back(f.ring); // the old ring may still be referenced by views until this frame's end
-        f.ring = CreateBuffer(want, D3D12_HEAP_TYPE_UPLOAD, D3D12_RESOURCE_STATE_GENERIC_READ);
-        f.ring->Map(0, nullptr, reinterpret_cast<void**>(&f.ringCpu));
+        uint8_t* cpu = nullptr;
+        ComPtr<ID3D12Resource> vram = f.ringInVram ? CreateGpuUploadRing(want, cpu) : nullptr;
+        if (vram)
+        {
+            f.ring = vram;
+            f.ringCpu = cpu;
+        }
+        else
+        {
+            f.ring = CreateBuffer(want, D3D12_HEAP_TYPE_UPLOAD, D3D12_RESOURCE_STATE_GENERIC_READ);
+            f.ring->Map(0, nullptr, reinterpret_cast<void**>(&f.ringCpu));
+        }
         f.ringSize = want;
         Log("renderer: upload ring grown to %llu MB", (unsigned long long)(want >> 20));
     }
