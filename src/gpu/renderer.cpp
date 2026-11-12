@@ -989,17 +989,56 @@ struct FrameMap
         uint64_t frame;
         V value;
     };
-    std::unordered_map<uint64_t, Entry> map;
+    // Open addressing, linear probing: a slot is in use only if it holds this frame's entry, so a new frame
+    // starts empty with nothing cleared. Within a frame, entries are only added, so a probe can stop at the
+    // first slot not in use. (The std::unordered_map this replaced was ~2% of the command processor a lookup
+    // site: node hops and a modulo per find.)
+    struct Slot
+    {
+        uint64_t key = 0, frame = ~0ull;
+        V value{};
+    };
+    std::vector<Slot> slots = std::vector<Slot>(4096);
+    uint64_t liveFrame = ~0ull;
+    size_t live = 0;
+    static size_t Home(uint64_t key, size_t mask) { return size_t((key * 0x9E3779B97F4A7C15ull) >> 40) & mask; }
     V* Find(uint64_t key, uint64_t frame)
     {
-        auto it = map.find(key);
-        return it != map.end() && it->second.frame == frame ? &it->second.value : nullptr;
+        const size_t mask = slots.size() - 1;
+        for (size_t i = Home(key, mask);; i = (i + 1) & mask)
+        {
+            Slot& s = slots[i];
+            if (s.frame != frame)
+                return nullptr;
+            if (s.key == key)
+                return &s.value;
+        }
     }
     void Put(uint64_t key, uint64_t frame, const V& value)
     {
-        if (map.size() > (1u << 15)) // (stale entries of old frames)
-            map.clear();
-        map[key] = { frame, value };
+        if (frame != liveFrame)
+            liveFrame = frame, live = 0;
+        if ((live + 1) * 2 > slots.size()) // keep it at most half full: grow, keeping this frame's entries
+        {
+            std::vector<Slot> old(slots.size() * 2);
+            old.swap(slots);
+            live = 0;
+            for (const Slot& s : old)
+                if (s.frame == frame)
+                    Put(s.key, frame, s.value);
+        }
+        const size_t mask = slots.size() - 1;
+        for (size_t i = Home(key, mask);; i = (i + 1) & mask)
+        {
+            Slot& s = slots[i];
+            if (s.frame != frame || s.key == key)
+            {
+                if (s.frame != frame)
+                    live++;
+                s = { key, frame, value };
+                return;
+            }
+        }
     }
 };
 
