@@ -437,6 +437,7 @@ struct CompiledShader
     TranslatedShader info;
     const CompiledShader* hlslSource = nullptr; // canonical variants: the shader whose code (and HLSL) this reuses
     mutable const CompiledShader* motion = nullptr; // its motion-vector variant, once looked up
+    mutable const CompiledShader* noKill = nullptr; // pixel shaders: the variant without the alpha test (NoKillVariantOf)
     bool carBody = false; // a car-body vertex shader (ApplyDirtSeamFix): takes the easter egg's squash
     bool carPart = false; // another car-mesh vertex shader (tyres, brakes, the driver): moves with its car in the egg
     uint8_t carOriginRow = 3; // the constant holding a car part's origin on screen (31 for the driver)
@@ -3792,6 +3793,74 @@ const CompiledShader* MotionShaderLookup(const CompiledShader& base)
     return &cs;
 }
 
+// FM2_SPLIT_ALPHA_TEST (from FM3-ReGPU; FM2_NO_SPLIT_ALPHA_TEST=1 live = off): draws with the alpha test off use a
+// variant of their pixel shader without the run-time alpha test (the `switch (pinfo.x)` ending in `discard`). A
+// shader that may discard can lose early depth rejection on PC GPUs, so hidden pixels run the whole shader; Xenos
+// tests alpha in fixed function after the shader. The guest's own kill instructions stay in both. Key flag 8.
+std::string NoKillVariant(const std::string& hlsl)
+{
+    const std::string start = "    switch (pinfo.x)\n    {\n", end = "    }\n";
+    const size_t a = hlsl.find(start);
+    if (a == std::string::npos || hlsl.find(start, a + 1) != std::string::npos)
+        return {};
+    const size_t b = hlsl.find(end, a);
+    if (b == std::string::npos)
+        return {};
+    std::string h = hlsl;
+    h.erase(a, b + end.size() - a);
+    return h;
+}
+
+std::unordered_map<uint64_t, std::unique_ptr<CompiledShader>> g_noKillShaders;
+// The variant (its compile queued on first use unless the shader cache has it); may be pending or failed.
+// The base shader must be ready (its HLSL). Called with g_shaderMutex held.
+const CompiledShader* NoKillVariantOf(const CompiledShader& base)
+{
+    if (const CompiledShader* k = base.noKill)
+        return k;
+    const CompiledShader& source = base.hlslSource ? *base.hlslSource : base;
+    auto [it, inserted] = g_noKillShaders.try_emplace(source.cacheKey);
+    if (inserted)
+    {
+        it->second = std::make_unique<CompiledShader>();
+        CompiledShader& cs = *it->second;
+        cs.hash = source.hash;
+        cs.pixel = true;
+        cs.ucodeBE = source.ucodeBE;
+        cs.info = source.info;
+        cs.info.hlsl = NoKillVariant(source.info.hlsl);
+        if (cs.info.hlsl.empty())
+        {
+            LOG_ONCE("renderer: no alpha-test-free variant for ps %016llx", (unsigned long long)source.hash);
+            cs.state = CompiledShader::Failed;
+        }
+        else
+        {
+            cs.cacheKey = Fnv(cs.info.hlsl.data(), cs.info.hlsl.size(), CacheSeed(true));
+            if (auto b = g_bytecode.find(cs.cacheKey); b != g_bytecode.end())
+            {
+                cs.code = b->second;
+                cs.state = CompiledShader::Ready;
+            }
+            else if (std::ifstream in{ ShaderCachePath(cs.cacheKey), std::ios::binary | std::ios::ate })
+            {
+                const auto size = size_t(in.tellg());
+                if (size && SUCCEEDED(D3DCreateBlob(size, &cs.code)))
+                {
+                    in.seekg(0);
+                    in.read(static_cast<char*>(cs.code->GetBufferPointer()), std::streamsize(size));
+                    cs.state = CompiledShader::Ready;
+                    g_bytecode.emplace(cs.cacheKey, cs.code);
+                }
+            }
+            if (!cs.IsReady())
+                g_compiler.PushQuiet(&cs);
+        }
+    }
+    base.noKill = it->second.get();
+    return base.noKill;
+}
+
 D3D12_BLEND Blend(uint32_t f)
 {
     switch (f)
@@ -4078,10 +4147,17 @@ struct PipelinePool
 
 std::atomic<int> g_pipelinesQueued{ 0 };
 
-std::shared_ptr<PipelineEntry> EnsurePipeline(const CompiledShader& vs, const CompiledShader& ps, const PipelineKey& key)
+std::shared_ptr<PipelineEntry> EnsurePipeline(const CompiledShader& vs, const CompiledShader& psIn, const PipelineKey& key)
 {
     if (auto it = g_r.pipelines.find(key); it != g_r.pipelines.end())
         return it->second;
+    // Flag 8 (FM2_SPLIT_ALPHA_TEST): the manifest and re-warms pass the base pixel shader; use its variant when
+    // that is ready, else the base (the same picture, as pinfo.x is 7 for these draws, just no gain).
+    const CompiledShader* psUse = &psIn;
+    if ((key.flags & 8) && psIn.IsReady() && psIn.noKill != &psIn)
+        if (const CompiledShader* k = NoKillVariantOf(psIn); k && k != &psIn && k->IsReady())
+            psUse = k;
+    const CompiledShader& ps = *psUse;
     const uint32_t blend = key.blend, depth = key.depth;
     const uint32_t mask = (key.stencilMaskMode >> 24) & 0xF, mode = (key.stencilMaskMode >> 28) & 7, stencil = key.stencilMaskMode & 0xFFFFFF;
     const bool alphaToMask = key.flags & 1, cullable = (key.flags >> 1) & 1;
@@ -4287,11 +4363,13 @@ bool SkippableDraw(bool depthOnly, uint32_t blend)
     return !opaque || GameSettled();
 }
 
-ID3D12PipelineState* GetPipeline(const CompiledShader& vs, const CompiledShader& ps, bool depthOnly, bool cullable, bool motion = false)
+ID3D12PipelineState* GetPipeline(const CompiledShader& vs, const CompiledShader& ps, bool depthOnly, bool cullable, bool motion = false, bool noKill = false)
 {
     PipelineKey key = MakePipelineKey(C().vsHash, C().psHash, depthOnly, cullable);
     if (motion)
         key.flags |= 4;
+    if (noKill)
+        key.flags |= 8; // the pixel shader's variant without the alpha test (NoKillVariantOf)
     thread_local std::unordered_map<PipelineKey, ID3D12PipelineState*, PipelineKeyHash> ready; // (cleared when the pipelines are replaced)
     thread_local uint32_t readyGen = 0;
     if (const uint32_t gen = g_pipelineGen.load(std::memory_order_acquire); gen != readyGen)
@@ -9387,7 +9465,27 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
     if (!pso)
     {
         motion = false;
-        pso = GetPipeline(vs, ps, edramMode == 5, cullable);
+        // FM2_SPLIT_ALPHA_TEST: no alpha test for this draw (pinfo.x 7, as set below) and no alpha-to-mask:
+        // the pixel shader's variant without the alpha-test kill, once it is compiled.
+        const CompiledShader* psUsed = &ps;
+        if (static LiveSwitch noSplit("FM2_NO_SPLIT_ALPHA_TEST"); !noSplit && ps.IsReady() && !IsPsEditAlias(C().psHash))
+        {
+            const uint32_t cc = gpureg::Get(RB_COLORCONTROL);
+            static const bool depthAlphaTestOn = getenv("FM2_NO_DEPTH_ALPHATEST") == nullptr;
+            const bool testHere = edramMode != 5 || (depthAlphaTestOn && ps.info.usedTextureSlots != 0);
+            if (!(((cc >> 3) & 1) && testHere && (cc & 7) != 7) && !((cc >> 4) & 1))
+            {
+                const CompiledShader* k = ps.noKill;
+                if (!k)
+                {
+                    std::lock_guard shaderLock(g_shaderMutex);
+                    k = NoKillVariantOf(ps);
+                }
+                if (k->IsReady())
+                    psUsed = k;
+            }
+        }
+        pso = GetPipeline(vs, *psUsed, edramMode == 5, cullable, false, psUsed != &ps);
     }
     if (!pso)
     {
