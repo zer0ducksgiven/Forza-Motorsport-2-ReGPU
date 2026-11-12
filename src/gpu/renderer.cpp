@@ -533,6 +533,7 @@ struct PipelineKey
 {
     uint64_t vs, ps;
     uint32_t blend, depth, stencilMaskMode, flags;
+    uint32_t fetchMask = 0; // FM2_FETCH_VARIANTS: the pixel shader's plain-fetch variant for these slots (FetchVariantOf)
     bool operator==(const PipelineKey&) const = default;
 };
 struct PipelineKeyHash
@@ -542,6 +543,7 @@ struct PipelineKeyHash
         uint64_t h = k.vs * 0x9E3779B97F4A7C15ull ^ k.ps;
         h ^= (uint64_t(k.blend) << 32 | k.depth) * 0xC2B2AE3D27D4EB4Full;
         h ^= (uint64_t(k.stencilMaskMode) << 32 | k.flags) * 0x165667B19E3779F9ull;
+        h ^= uint64_t(k.fetchMask) * 0xD6E8FEB86659FD93ull;
         return size_t(h ^ (h >> 29));
     }
 };
@@ -3137,7 +3139,7 @@ struct Manifest
         {
             PipelineKey k{};
             unsigned long long vs, ps;
-            if (sscanf(line.c_str(), "P %llx %llx %x %x %x %x", &vs, &ps, &k.blend, &k.depth, &k.stencilMaskMode, &k.flags) == 6)
+            if (sscanf(line.c_str(), "P %llx %llx %x %x %x %x %x", &vs, &ps, &k.blend, &k.depth, &k.stencilMaskMode, &k.flags, &k.fetchMask) >= 6)
             {
                 k.vs = vs;
                 k.ps = ps;
@@ -3154,8 +3156,11 @@ struct Manifest
         if (!known.insert(k).second)
             return;
         g_diskWriter.Push([k] {
-            std::ofstream(Path(), std::ios::app) << "P " << std::hex << k.vs << ' ' << k.ps << ' ' << k.blend << ' ' << k.depth << ' '
-                                                  << k.stencilMaskMode << ' ' << k.flags << '\n';
+            std::ofstream out(Path(), std::ios::app);
+            out << "P " << std::hex << k.vs << ' ' << k.ps << ' ' << k.blend << ' ' << k.depth << ' ' << k.stencilMaskMode << ' ' << k.flags;
+            if (k.fetchMask) // (a 7th field only when set: older readers stop at the 6th)
+                out << ' ' << k.fetchMask;
+            out << '\n';
         });
     }
     void RecordShader(bool pixel, uint64_t hash, const std::vector<uint32_t>& codeBE)
@@ -3931,6 +3936,107 @@ const CompiledShader* NoKillVariantOf(const CompiledShader& base)
     return base.noKill;
 }
 
+// FM2_FETCH_VARIANTS (from FM3-ReGPU; FM2_NO_FETCH_VARIANTS=1 live = off): a pixel shader's variant in which the
+// fetches of the slots in `mask` call TFetchPlain instead of TFetch. Every TFetch carries the exponent adjust,
+// swizzle, cube, mirror, border, single-axis clamp and sub-image paths; the draw picks the slots whose fetch
+// constant uses none of them this draw (PlainFetchSlots), so the result is the same, with less code. The helper
+// goes into the variant only: the shared preamble stays as it is (changing it recompiles every cached shader).
+std::string FetchVariant(const std::string& hlsl, uint32_t mask)
+{
+    static const char* kPlain = R"(
+float4 TFetchPlain(uint slot, float3 coord, bool denorm, bool vertexStage, float bias, float2 texel, uint filt)
+{
+    Texture2D<float4> t = gtex[asuint(tbias[slot].y)];
+    float2 uv = coord.xy;
+    const float2 texelSize = float2(max(tinfo[slot].yz & 0xFFFFu, uint2(1, 1)));
+    if (denorm) uv = (uv + texel) / texelSize;
+    else uv += texel / texelSize;
+    uint mode = tinfo[slot].x & 3u;
+    if ((filt & 3u) <= 1u)
+    {
+        const bool clampMode = mode == 1u || mode == 2u;
+        mode = (filt & 3u) == 0u ? (clampMode ? 2u : 3u) : (clampMode ? 1u : 0u);
+    }
+    if (vertexStage)
+        return t.SampleLevel(sLinearClamp, uv, max(bias, 0));
+    if (pforceLod.x >= 0.0 || (filt & 4u))
+    {
+        const float lod = clamp((filt & 4u) ? bias : pforceLod.x, 0.0, 16.0);
+        return t.SampleLevel(gSamplers[mode], uv, lod);
+    }
+    return FM2_SAMPLE_BIAS_2D(t, gSamplers[mode], uv, bias);
+}
+
+)";
+    std::string out;
+    out.reserve(hlsl.size() + 1024);
+    size_t pos = 0, replaced = 0;
+    for (size_t at; (at = hlsl.find("TFetch(", pos)) != std::string::npos;)
+    {
+        const size_t num = at + 7;
+        size_t end = num;
+        while (end < hlsl.size() && isdigit(uint8_t(hlsl[end])))
+            end++;
+        const bool call = end > num && end < hlsl.size() && hlsl[end] == ',' && (at == 0 || !isalnum(uint8_t(hlsl[at - 1])));
+        const uint32_t slot = call ? uint32_t(atoi(hlsl.c_str() + num)) : 32;
+        out.append(hlsl, pos, at - pos);
+        out += call && slot < 32 && ((mask >> slot) & 1) ? (replaced++, "TFetchPlain(") : "TFetch(";
+        pos = num;
+    }
+    out.append(hlsl, pos, std::string::npos);
+    const size_t mainAt = out.find("float4 main(");
+    if (!replaced || mainAt == std::string::npos)
+        return {};
+    out.insert(mainAt, kPlain);
+    return out;
+}
+
+std::unordered_map<uint64_t, std::unique_ptr<CompiledShader>> g_fetchShaders; // (base cacheKey, mask) -> variant
+std::unordered_map<uint64_t, uint32_t> g_fetchVariantCount;                  // base cacheKey -> variants made
+
+// The variant (its compile queued on first use unless the shader cache has it); nullptr once the base has 16.
+// Failed when there's nothing to replace. `base` must be ready (its HLSL). Called with g_shaderMutex held.
+const CompiledShader* FetchVariantOf(const CompiledShader& base, uint32_t mask)
+{
+    const uint64_t id = base.cacheKey * 0x9E3779B97F4A7C15ull ^ mask;
+    if (auto it = g_fetchShaders.find(id); it != g_fetchShaders.end())
+        return it->second.get();
+    if (g_fetchVariantCount[base.cacheKey] >= 16)
+        return nullptr;
+    auto cs = std::make_unique<CompiledShader>();
+    cs->hash = base.hash;
+    cs->pixel = true;
+    cs->ucodeBE = base.ucodeBE;
+    cs->info = base.info;
+    cs->info.hlsl = FetchVariant(base.info.hlsl, mask);
+    if (cs->info.hlsl.empty())
+        cs->state = CompiledShader::Failed;
+    else
+    {
+        g_fetchVariantCount[base.cacheKey]++;
+        cs->cacheKey = Fnv(cs->info.hlsl.data(), cs->info.hlsl.size(), CacheSeed(true));
+        if (auto b = g_bytecode.find(cs->cacheKey); b != g_bytecode.end())
+        {
+            cs->code = b->second;
+            cs->state = CompiledShader::Ready;
+        }
+        else if (std::ifstream in{ ShaderCachePath(cs->cacheKey), std::ios::binary | std::ios::ate })
+        {
+            const auto size = size_t(in.tellg());
+            if (size && SUCCEEDED(D3DCreateBlob(size, &cs->code)))
+            {
+                in.seekg(0);
+                in.read(static_cast<char*>(cs->code->GetBufferPointer()), std::streamsize(size));
+                cs->state = CompiledShader::Ready;
+                g_bytecode.emplace(cs->cacheKey, cs->code);
+            }
+        }
+        if (!cs->IsReady())
+            g_compiler.PushQuiet(cs.get());
+    }
+    return g_fetchShaders.emplace(id, std::move(cs)).first->second.get();
+}
+
 D3D12_BLEND Blend(uint32_t f)
 {
     switch (f)
@@ -4227,6 +4333,11 @@ std::shared_ptr<PipelineEntry> EnsurePipeline(const CompiledShader& vs, const Co
     if ((key.flags & 8) && psIn.IsReady() && psIn.noKill != &psIn)
         if (const CompiledShader* k = NoKillVariantOf(psIn); k && k != &psIn && k->IsReady())
             psUse = k;
+    // fetchMask (FM2_FETCH_VARIANTS): the draw passes the variant itself; a manifest rebuild passes the base, made
+    // into its variant here when that is ready (else the base: the same picture).
+    if (key.fetchMask && psUse->IsReady() && psUse->info.hlsl.find("TFetchPlain(") == std::string::npos)
+        if (const CompiledShader* f = FetchVariantOf(*psUse, key.fetchMask); f && f->IsReady())
+            psUse = f;
     const CompiledShader& ps = *psUse;
     const uint32_t blend = key.blend, depth = key.depth;
     const uint32_t mask = (key.stencilMaskMode >> 24) & 0xF, mode = (key.stencilMaskMode >> 28) & 7, stencil = key.stencilMaskMode & 0xFFFFFF;
@@ -4433,13 +4544,15 @@ bool SkippableDraw(bool depthOnly, uint32_t blend)
     return !opaque || GameSettled();
 }
 
-ID3D12PipelineState* GetPipeline(const CompiledShader& vs, const CompiledShader& ps, bool depthOnly, bool cullable, bool motion = false, bool noKill = false)
+ID3D12PipelineState* GetPipeline(const CompiledShader& vs, const CompiledShader& ps, bool depthOnly, bool cullable, bool motion = false, bool noKill = false,
+    uint32_t fetchMask = 0)
 {
     PipelineKey key = MakePipelineKey(C().vsHash, C().psHash, depthOnly, cullable);
     if (motion)
         key.flags |= 4;
     if (noKill)
         key.flags |= 8; // the pixel shader's variant without the alpha test (NoKillVariantOf)
+    key.fetchMask = fetchMask; // its plain-fetch variant (FetchVariantOf)
     thread_local std::unordered_map<PipelineKey, ID3D12PipelineState*, PipelineKeyHash> ready; // (cleared when the pipelines are replaced)
     thread_local uint32_t readyGen = 0;
     if (const uint32_t gen = g_pipelineGen.load(std::memory_order_acquire); gen != readyGen)
@@ -4467,6 +4580,9 @@ ID3D12PipelineState* GetPipeline(const CompiledShader& vs, const CompiledShader&
     // A motion pipeline is never waited for: the draw uses its plain pipeline (no motion) until this one is built.
     static const bool motionWaits = getenv("FM2_MOTION_URGENT") != nullptr;
     if (motion && !motionWaits && entry->state.load(std::memory_order_acquire) != 1)
+        return nullptr;
+    // A plain-fetch variant's pipeline builds in the background: the draw keeps the base's until then.
+    if (fetchMask && entry->state.load(std::memory_order_acquire) != 1)
         return nullptr;
     if (SkippableDraw(depthOnly, key.blend) && entry->state.load(std::memory_order_acquire) == 0)
     {
@@ -9532,12 +9648,13 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
     ID3D12PipelineState* pso = motion ? GetPipeline(*mvs, *mps, false, cullable, true) : nullptr;
     if (wantMotion && motion && !pso)
         g_tstat.noPipeline++;
+    const CompiledShader* psUsed = nullptr; // the pixel shader drawn with, when not a motion pipeline
     if (!pso)
     {
         motion = false;
         // FM2_SPLIT_ALPHA_TEST: no alpha test for this draw (pinfo.x 7, as set below) and no alpha-to-mask:
         // the pixel shader's variant without the alpha-test kill, once it is compiled.
-        const CompiledShader* psUsed = &ps;
+        psUsed = &ps;
         if (static LiveSwitch noSplit("FM2_NO_SPLIT_ALPHA_TEST"); !noSplit && ps.IsReady() && !IsPsEditAlias(C().psHash))
         {
             const uint32_t cc = gpureg::Get(RB_COLORCONTROL);
@@ -10232,6 +10349,38 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
         ds.motionTargets = motion;
         const D3D12_CPU_DESCRIPTOR_HANDLE targets[3] = { C().rtv, g_upscale.motionRtv, g_upscale.reactiveRtv };
         C().list->OMSetRenderTargets(motion ? 3 : 1, targets, FALSE, &C().dsv);
+    }
+    // FM2_FETCH_VARIANTS (FetchVariant): the slots whose fetch constant is plain this draw (pc->tinfo/tbias as just
+    // filled in), and the pixel shader's variant for them once it is compiled and its pipeline built.
+    if (static LiveSwitch noFetchVariants("FM2_NO_FETCH_VARIANTS"); !noFetchVariants && psUsed && pso && psUsed->IsReady() && !IsPsEditAlias(C().psHash))
+    {
+        uint32_t plain = 0;
+        for (uint32_t m = psUsed->info.usedTextureSlots; m; m &= m - 1)
+        {
+            const uint32_t slot = uint32_t(std::countr_zero(m));
+            const uint32_t* ti = pc->tinfo[slot];
+            const float* tb = pc->tbias[slot];
+            // 2D; no exponent adjust (x bits 8-13), border/clamp/mirror (16-23); identity or no swizzle; whole image.
+            if ((ti[3] & 0xFFu) != 3 && !(ti[0] & 0x00FF3F00u) && (!(ti[3] >> 31) || ((ti[3] >> 8) & 0xFFFu) == 0x688u) && tb[2] == 1.0f && tb[3] == 1.0f)
+                plain |= 1u << slot;
+        }
+        if (plain)
+        {
+            // (A per-thread memo: the shared map needs g_shaderMutex, which every draw taking cost CPU-bound frames.)
+            thread_local std::unordered_map<uint64_t, const CompiledShader*> memo;
+            const uint64_t id = psUsed->cacheKey * 0x9E3779B97F4A7C15ull ^ plain;
+            const CompiledShader* f;
+            if (auto it = memo.find(id); it != memo.end())
+                f = it->second;
+            else
+            {
+                std::lock_guard shaderLock(g_shaderMutex);
+                f = memo[id] = FetchVariantOf(*psUsed, plain);
+            }
+            if (f && f->IsReady())
+                if (ID3D12PipelineState* fp = GetPipeline(vs, *f, edramMode == 5, cullable, false, psUsed != &ps, plain))
+                    pso = fp;
+        }
     }
     if (pso != ds.pso)
     {
