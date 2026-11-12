@@ -10,6 +10,8 @@
 #include <mutex>
 #include <set>
 
+#include <windows.h>
+
 #include "log.h"
 
 #include "kernel/imports.h"
@@ -20,9 +22,11 @@ float GameAspect();                          // renderer.cpp: the aspect to give
 // never in the menus, so a recent one means a race is on screen.
 std::atomic<int64_t> g_cameraAspectAt{ 0 };
 
+// GetTickCount64 (10-16 ms steps, fine for a 250 ms window): asked on every draw, where the steady clock's
+// QueryPerformanceCounter was ~0.6% of the command processor.
 static int64_t NowMs()
 {
-    return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    return int64_t(GetTickCount64());
 }
 
 bool CameraAspectWidened()

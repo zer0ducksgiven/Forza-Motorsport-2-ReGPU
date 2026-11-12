@@ -647,7 +647,8 @@ void StartThreadProfiler()
                     top.push_back({ k, n });
                 std::sort(top.rbegin(), top.rend());
                 Log("profile: thread %u, %llu samples", target, (unsigned long long)samples);
-                for (size_t i = 0; i < top.size() && i < 25; i++)
+                static const size_t topN = getenv("FM2_SAMPLE_TOP") ? size_t(atoi(getenv("FM2_SAMPLE_TOP"))) : 25; // rows logged
+                for (size_t i = 0; i < top.size() && i < topN; i++)
                     Log("profile: %5.1f%% %s", top[i].first * 100.0 / samples, top[i].second.c_str());
                 counts.clear();
                 samples = 0;
