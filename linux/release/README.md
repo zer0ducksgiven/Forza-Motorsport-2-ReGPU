@@ -1,8 +1,15 @@
 # Forza Motorsport 2 ReGPU on Linux (Proton)
 
-This is the same `fm2.exe` as the Windows release, run through Proton. Direct3D 12 goes through
-vkd3d-proton, and Microsoft's `d3dcompiler_47.dll` (included) replaces Wine's shader compiler,
-which can't compile the port's shaders (that was the cause of the black screen in earlier builds).
+This is the same `fm2.exe` as the Windows release, run through Proton.
+
+Direct3D 12 goes through vkd3d-proton, and Microsoft's `d3dcompiler_47.dll` (included) replaces
+Wine's shader compiler, which can't compile the port's shaders (that was the cause of the black
+screen in earlier builds).
+
+**Vulkan renderer (experimental):** turn on **Vulkan renderer** on the launcher's Play page (or put
+`renderer=vulkan` in `settings.ini`) to draw with Vulkan directly instead of through vkd3d-proton. It can
+be faster or slower depending on the GPU, and may have issues. MSAA, SMAA, the upscalers and frame
+generation are Direct3D 12 only for now.
 
 Nothing from the game is included. You need your own **European** Forza Motorsport 2 disc image
 (`.iso`) and its **title update** file (`TU_16L61VA_...`), the same ones the Windows installer asks for.
@@ -32,6 +39,7 @@ prefix (`~/.fm2-linux/compatdata`). Saves, settings and the shader cache live th
 `pfx/drive_c/users/steamuser/Documents/fm2`.
 
 The first start compiles every shader (a few minutes on a fast CPU). Later starts reuse the cache.
+Each renderer has its own cache, so switching renderer compiles once more.
 
 ## Launcher
 
