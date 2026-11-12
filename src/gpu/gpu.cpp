@@ -1169,12 +1169,49 @@ void CommandProcessorLoop(PPCContext& ctx)
             continue;
         }
         const uint32_t wptr = Reg(CP_RB_WPTR) % size;
+        // Idle wait (from FM3-ReGPU): once the ring has been empty for a while, wait ~100 us at a time on a
+        // high-resolution timer instead of spinning on Sleep(0). Under a frame cap or vsync the CP is idle most
+        // of each frame and the spin holds a whole core (power and heat on laptops and the Deck, where the CPU
+        // shares a budget with the GPU). Uncapped, the title queues work again within the threshold and never
+        // reaches the sleep. Default: sleep after 1000 us with vsync or a cap of 144 or less, else spin.
+        // FM2_CP_IDLE_SLEEP_US=<n> (read twice a second, so live) overrides; 0 spins.
+        static std::chrono::steady_clock::time_point emptySince, sleepCheck;
+        static bool empty = false;
+        static int sleepAfterUs = -1;
         if (g_gpu.rptr == wptr)
         {
             seg::Flush(); // nothing more queued: translate what there is
-            Sleep(0);
+            const auto now = std::chrono::steady_clock::now();
+            if (!empty)
+            {
+                empty = true;
+                emptySince = now;
+            }
+            if (now >= sleepCheck)
+            {
+                sleepCheck = now + std::chrono::milliseconds(500);
+                const Settings& s = GetSettings();
+                const char* v = getenv("FM2_CP_IDLE_SLEEP_US");
+                const int us = v ? atoi(v) : (s.vsync || s.maxFps <= 144) ? 1000 : 0;
+                if (us != sleepAfterUs)
+                    Log("gpu: command processor idle wait: %s %d us", us > 0 ? "sleeps after" : "spins", us > 0 ? us : 0);
+                sleepAfterUs = us;
+            }
+            if (sleepAfterUs > 0 && now - emptySince >= std::chrono::microseconds(sleepAfterUs))
+            {
+                thread_local HANDLE timer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+                LARGE_INTEGER due;
+                due.QuadPart = -1000; // 100 us, relative, in 100 ns units
+                if (timer && SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE))
+                    WaitForSingleObject(timer, INFINITE);
+                else
+                    Sleep(0);
+            }
+            else
+                Sleep(0);
             continue;
         }
+        empty = false;
         while (g_gpu.rptr != wptr)
         {
 
