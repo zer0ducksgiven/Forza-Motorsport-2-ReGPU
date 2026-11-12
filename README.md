@@ -319,8 +319,7 @@ code (`out/ppc`, ~131 MB) is generated from your own copy and never committed.
 SPIR-V with the DirectX Shader Compiler), the same constant blocks, index lists and texture decoding. It is built when
 `thirdparty/vulkan-headers` exists, or with `-DFM2_VULKAN=ON` (`FM2_VULKAN_HEADERS` can point at a Vulkan-Headers
 include directory), and chosen with the launcher's **Vulkan renderer** switch (shown when `dxcompiler.dll` is next to
-`fm2.exe`), `renderer=vulkan` in `settings.ini` or `FM2_RENDERER=vulkan`. Under Proton/Wine it is the default
-when `settings.ini` has no `renderer` line (the Linux launcher shows the same); on Windows Direct3D 12 is. The build copies `dxcompiler.dll` and
+`fm2.exe`), `renderer=vulkan` in `settings.ini` or `FM2_RENDERER=vulkan`. The build copies `dxcompiler.dll` and
 `dxil.dll` from `FM2_DXC_DIR` (default `thirdparty/dxc/bin/x64`) next to `fm2.exe`; the GPU vendor's Vulkan driver
 provides `vulkan-1.dll`.
 

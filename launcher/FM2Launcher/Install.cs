@@ -48,9 +48,7 @@ public static class Paths
 /// </summary>
 public sealed class GameSettings
 {
-    // Linux (Proton): Vulkan until the player picks, as fm2.exe does when settings.ini has no renderer line. D3D12
-    // there goes through vkd3d-proton to Vulkan anyway; the Vulkan renderer skips that layer.
-    public string Renderer { get; set; } = OperatingSystem.IsLinux() ? "vulkan" : "d3d12";
+    public string Renderer { get; set; } = "d3d12";
     public string Profile { get; set; } = "Player";
     public string Resolution { get; set; } = "1280x720";
     public string Aspect { get; set; } = "auto";
@@ -95,6 +93,9 @@ public sealed class GameSettings
         // settings_rev 1 (0.9.0): the shader compile pop-up became hidden by default, so files saved
         // before it get it hidden once; the player can turn it back on.
         var old = read.Count > 0 && !read.Any(kv => kv.Key == "settings_rev");
+        // settings_rev 2 (0.12.1): Linux is on Direct3D 12 by default; 0.12.0 could have written renderer=vulkan
+        // without the player choosing it. fm2.exe reads older files the same way (settings.cpp).
+        var rev = read.Where(kv => kv.Key == "settings_rev").Select(kv => int.TryParse(kv.Value, out var r) ? r : 0).FirstOrDefault();
         foreach (var (k, v) in read)
             switch (k)
             {
@@ -133,6 +134,8 @@ public sealed class GameSettings
             }
         if (old)
             s.HideShaderOverlay = true;
+        if (OperatingSystem.IsLinux() && rev < 2)
+            s.Renderer = "d3d12";
         // First run on an integrated GPU (an iGPU or APU, the Steam Deck): render at 77% and upscale with FSR 1,
         // lightly sharpened. Those GPUs are limited by the pixels drawn (Iris Xe 42 fps at 720p in 0.9.11). Only
         // when there is no settings file yet: a player's own choices stay.
@@ -152,7 +155,7 @@ public sealed class GameSettings
         sb.Append($"renderer={(Renderer == "vulkan" ? "vulkan" : "d3d12")}\n");
         sb.Append($"profile={(profile.Length > 0 ? profile : "Player")}\n");
         sb.Append($"resolution={Resolution}\naspect={Aspect}\nfullscreen={B(Fullscreen)}\nvsync={B(Vsync)}\n");
-        sb.Append($"max_fps={Math.Clamp(MaxFps, 30, 360)}\nmsaa={Msaa}\nsmaa={Math.Clamp(Smaa, 0, 4)}\nanisotropy={Anisotropy}\nenhance={B(Enhance)}\nskip_intro={B(SkipIntro)}\nxbox_prompts={B(XboxPrompts)}\nhide_shader_overlay={B(HideShaderOverlay)}\nlow_performance={B(LowPerformance)}\nvertex_arena={B(VertexArena)}\nlanguage={Language}\nsettings_rev=1\n");
+        sb.Append($"max_fps={Math.Clamp(MaxFps, 30, 360)}\nmsaa={Msaa}\nsmaa={Math.Clamp(Smaa, 0, 4)}\nanisotropy={Anisotropy}\nenhance={B(Enhance)}\nskip_intro={B(SkipIntro)}\nxbox_prompts={B(XboxPrompts)}\nhide_shader_overlay={B(HideShaderOverlay)}\nlow_performance={B(LowPerformance)}\nvertex_arena={B(VertexArena)}\nlanguage={Language}\nsettings_rev=2\n");
         sb.Append($"race_music={B(RaceMusic)}\nmusic_volume={Math.Clamp(MusicVolume, 0, 100)}\n");
         sb.Append($"car_sound_mix={B(CarSoundMix)}\nexhaust_volume={Math.Clamp(ExhaustVolume, 0, 400)}\nturbo_volume={Math.Clamp(TurboVolume, 0, 400)}\n");
         sb.Append($"wheel_strength={Math.Clamp(WheelStrength, 0, 100)}\nwheel_spring={Math.Clamp(WheelSpring, 0, 100)}\nwheel_reverse={B(WheelReverse)}\nwheel_rotation={Math.Clamp(WheelRotation, 0, 3600)}\n");

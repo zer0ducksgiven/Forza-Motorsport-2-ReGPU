@@ -436,7 +436,15 @@ function change(patch) {
     render()
   }), 250)
 }
-$("vulkan").onclick = () => change({ renderer: state.settings.renderer === "vulkan" ? "d3d12" : "vulkan" })
+$("vulkan").onclick = async () => {
+  if (state.settings.renderer === "vulkan") return change({ renderer: "d3d12" })
+  const ok = await confirmBox("Vulkan renderer (experimental)",
+    "The Vulkan renderer is experimental and turning it on may cause issues: graphics glitches, crashes, "
+    + "lower performance or the game not starting. MSAA, SMAA, the upscalers, frame generation and the in-game "
+    + "graphics options don't work with it yet. If something goes wrong, turn it off here to go back to Direct3D 12.",
+    "I understand")
+  if (ok) change({ renderer: "vulkan" })
+}
 $("resolution").onchange = (e) => change({ resolution: e.target.value })
 $("aspect").onchange = (e) => change({ aspect: e.target.value })
 $("maxFps").onchange = (e) => {

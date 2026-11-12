@@ -52,10 +52,6 @@
         <div><div class="toggle-title">Skip intro videos</div><div class="toggle-sub">Straight to "Press START"</div></div>
         <button class="switch" id="skipIntro" role="switch"></button>
       </div>
-      <div class="toggle-row" data-tip="With a PlayStation controller (DualSense or DualShock 4) or a modern Xbox controller (Xbox One or Series X|S) the game shows that controller's button icons. Turn this on to keep the original Xbox 360 ones.">
-        <div><div class="toggle-title">Enable original Xbox 360 button icons</div><div class="toggle-sub">Even with a PlayStation or modern Xbox controller</div></div>
-        <button class="switch" id="xboxPrompts" role="switch"></button>
-      </div>
       <div class="toggle-row" data-tip="Plays the MP3s you put in Documents\fm2\music (subfolders too), shuffled, while you drive: it fades out when you pause or finish and carries on in the next race.">
         <div><div class="toggle-title">In-race music</div><div class="toggle-sub">Your MP3s from the music folder</div></div>
         <select id="musicVolume" data-tip="The music's volume, apart from the game's."></select>
@@ -264,6 +260,14 @@
   <!-- SETTINGS -->
   <main class="page grid2 flow" id="page-settings" hidden>
     <div class="stack">
+      <section class="panel">
+      <div class="panel-head"><h2>Controllers</h2></div>
+      <div class="toggle-row" data-tip="With a PlayStation controller (DualSense or DualShock 4) or a modern Xbox controller (Xbox One or Series X|S) the game shows that controller's button icons. Turn this on to keep the original Xbox 360 ones.">
+        <div><div class="toggle-title">Enable original Xbox 360 button icons</div><div class="toggle-sub">Even with a PlayStation or modern Xbox controller</div></div>
+        <button class="switch" id="xboxPrompts" role="switch"></button>
+      </div>
+    </section>
+
       <section class="panel">
       <div class="panel-head">
         <h2>Mods</h2>

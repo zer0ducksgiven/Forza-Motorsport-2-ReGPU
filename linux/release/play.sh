@@ -1,6 +1,5 @@
 #!/bin/sh
-# Starts Forza Motorsport 2 ReGPU through Proton. Any FM2_* variable passes through (FM2_RENDERER=d3d12 or vulkan;
-# with no renderer in settings.ini the game uses Vulkan under Proton, Direct3D 12 goes through vkd3d-proton).
+# Starts Forza Motorsport 2 ReGPU through Proton (vkd3d-proton). Any FM2_* variable passes through.
 #
 #   ./play.sh
 #   PROTON="/path/to/proton" ./play.sh

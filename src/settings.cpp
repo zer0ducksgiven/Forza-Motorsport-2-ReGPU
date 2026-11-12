@@ -69,7 +69,7 @@ static bool UnderWine()
 void Load()
 {
     std::ifstream in(Path());
-    bool rendererChosen = false;
+    int rev = 0;
     std::string line;
     while (std::getline(in, line))
     {
@@ -78,10 +78,9 @@ void Load()
             continue;
         const std::string key = line.substr(0, eq), value = line.substr(eq + 1);
         if (key == "renderer")
-        {
             g_settings.renderer = ParseRenderer(value);
-            rendererChosen = true;
-        }
+        else if (key == "settings_rev")
+            rev = atoi(value.c_str());
         else if (key == "profile" && !value.empty())
             g_settings.profile = value.substr(0, 15);
         else if (key == "online_server")
@@ -148,10 +147,10 @@ void Load()
         else if (key == "sharpness")
             g_settings.sharpness = float(atof(value.c_str()));
     }
-    // Linux: Vulkan unless the player picked a renderer. D3D12 there goes through vkd3d-proton to Vulkan anyway, and
-    // the Vulkan renderer skips that layer (4x the frame rate on the author's RTX 5090). The launcher shows the same.
-    if (!rendererChosen && UnderWine())
-        g_settings.renderer = Settings::Renderer::Vulkan;
+    // settings_rev 2 (0.12.1): Linux is on Direct3D 12 by default; 0.12.0 could have written renderer=vulkan there
+    // without the player choosing it. The launcher reads older files the same way.
+    if (rev < 2 && UnderWine())
+        g_settings.renderer = Settings::Renderer::D3d12;
     // Online: the server's URL turns on Live (kernel/net.cpp, title_relay.cpp, leaderboards.cpp read these),
     // unless the environment already says
     if (!g_settings.onlineServer.empty() && !getenv("FM2_LIVE"))
@@ -329,7 +328,7 @@ void SaveSettings()
     out << "wheel_reverse=" << (s.wheelReverse ? 1 : 0) << "\n";
     out << "wheel_rotation=" << s.wheelRotation << "\n";
     out << "language=" << s.language << "\n";
-    out << "settings_rev=1\n"; // see the launcher's GameSettings.Load
+    out << "settings_rev=2\n"; // see the launcher's GameSettings.Load
     out << "msaa=" << s.msaa << "\n";
     out << "smaa=" << s.smaa << "\n";
     out << "frame_generation=" << (s.frameGen ? 1 : 0) << "\n";
