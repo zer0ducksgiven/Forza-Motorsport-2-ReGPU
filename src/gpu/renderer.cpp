@@ -11468,7 +11468,7 @@ void RendererOnSwapImpl(uint64_t frameNumber, uint32_t frontBuffer)
     ID3D12CommandList* lists[] = { C().list->Real() };
     SubmitLists(1, lists);
     if (presenting)
-        PresenterPresent();
+        PresenterPresentAsync(); // on the presenter's thread: Present was 4-5% of the command processor
     Frame().fence = g_r.nextFence++;
     g_r.queue->Signal(g_r.fence.Get(), Frame().fence);
     g_r.listOpen = false;

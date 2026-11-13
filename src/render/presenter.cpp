@@ -23,6 +23,7 @@
 #include "log.h"
 #include "render/presenter.h"
 #include "settings.h"
+#include "live_switch.h"
 
 void LogSystemInfo(ID3D12Device* device); // sysinfo.cpp
 
@@ -667,11 +668,14 @@ void PresenterUseRenderer()
     g_rendererActive = true;
 }
 
+static void WaitAsyncPresent(); // below, with PresenterPresentAsync
+
 bool PresenterRecordCopy(ID3D12GraphicsCommandList* list, ID3D12Resource* src, ID3D12Resource* overlay, uint32_t overlayW, uint32_t overlayH,
                          ID3D12Resource* toast, uint32_t toastW, uint32_t toastH, float toastRise)
 {
     if (!g_p.ready || !g_p.swapChain)
         return false;
+    WaitAsyncPresent();
     const UINT i = g_p.swapChain->GetCurrentBackBufferIndex();
     ID3D12Resource* backBuffer = g_p.backBuffers[i].Get();
     D3D12_RESOURCE_BARRIER b{};
@@ -746,6 +750,7 @@ void PresenterResize(uint32_t width, uint32_t height)
 {
     if (!g_p.swapChain)
         return;
+    WaitAsyncPresent();
     for (auto& b : g_p.backBuffers)
         b.Reset();
     if (FAILED(g_p.swapChain->ResizeBuffers(kBuffers, width, height, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING)))
@@ -797,7 +802,57 @@ void PresenterSetFullscreen(bool on)
     Log("presenter: %s (live)", on ? "fullscreen" : "windowed");
 }
 
+// The renderer's Present on a thread of its own (PresenterPresentAsync): the call is 0.15-0.2 ms a frame
+// (4-5% of the command processor). One at a time; everything that touches the swap chain or its back
+// buffers waits for it first (WaitAsyncPresent), so the next frame never records into a buffer that is
+// still waiting to be shown.
+static std::mutex g_asyncPresentMutex;
+static std::condition_variable g_asyncPresentCv;
+static bool g_asyncPresentPending = false;
+static void PresentNow();
+
+static void WaitAsyncPresent()
+{
+    std::unique_lock lock(g_asyncPresentMutex);
+    g_asyncPresentCv.wait(lock, [] { return !g_asyncPresentPending; });
+}
+
+void PresenterPresentAsync()
+{
+    // Frame generation presents through its own swap chain and callbacks: left as it was.
+    static LiveSwitch sync("FM2_SYNC_PRESENT");
+    if (sync || GetSettings().frameGen)
+        return PresenterPresent();
+    static std::thread worker([] {
+        SetThreadDescription(GetCurrentThread(), L"Present");
+        for (;;)
+        {
+            {
+                std::unique_lock lock(g_asyncPresentMutex);
+                g_asyncPresentCv.wait(lock, [] { return g_asyncPresentPending; });
+            }
+            PresentNow();
+            {
+                std::lock_guard lock(g_asyncPresentMutex);
+                g_asyncPresentPending = false;
+            }
+            g_asyncPresentCv.notify_all();
+        }
+    });
+    std::unique_lock lock(g_asyncPresentMutex);
+    g_asyncPresentCv.wait(lock, [] { return !g_asyncPresentPending; });
+    g_asyncPresentPending = true;
+    lock.unlock();
+    g_asyncPresentCv.notify_all();
+}
+
 void PresenterPresent()
+{
+    WaitAsyncPresent();
+    PresentNow();
+}
+
+static void PresentNow()
 {
     // Vsync: wait for the display's refresh; off: present at once (tearing allowed).
     if (g_p.ready && g_p.swapChain)
