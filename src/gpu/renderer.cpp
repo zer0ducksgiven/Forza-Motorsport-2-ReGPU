@@ -2007,6 +2007,8 @@ LiveSwitch g_sw_FM2_CONSTANTS_BY_COUNT("FM2_CONSTANTS_BY_COUNT");
 LiveSwitch g_sw_FM2_CONSTANTS_IN_RING("FM2_CONSTANTS_IN_RING");
 LiveSwitch g_sw_FM2_DUMP_TEXTURES("FM2_DUMP_TEXTURES");
 LiveSwitch g_sw_FM2_FULL_CONSTANT_BLOCKS("FM2_FULL_CONSTANT_BLOCKS");
+LiveSwitch g_sw_FM2_FULL_TEXTURE_CLEAR("FM2_FULL_TEXTURE_CLEAR");
+LiveSwitch g_sw_FM2_VF_TABLE_COPY("FM2_VF_TABLE_COPY");
 LiveSwitch g_sw_FM2_NO_DIRECT_FETCH("FM2_NO_DIRECT_FETCH");
 LiveSwitch g_sw_FM2_NO_DIRECT_INDEX("FM2_NO_DIRECT_INDEX");
 LiveSwitch g_sw_FM2_NO_GPU_SWIZZLE("FM2_NO_GPU_SWIZZLE");
@@ -10174,9 +10176,15 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
     Section(4);
     // Textures are bindless: each one has a permanent descriptor in the heap's
     // bindless region, and the draw passes its index in the constants.
-    memset(pc->tinfo, 0, sizeof(pc->tinfo));
-    memset(pc->tbias, 0, sizeof(pc->tbias));
     const uint32_t usedSlots = ps.info.usedTextureSlots | vs.info.usedTextureSlots;
+    {
+        // Only the slots the flush copies (up to the highest used one); every used slot is written below.
+        // FM2_FULL_TEXTURE_CLEAR=1: all 32, as before.
+        LiveSwitch& fullClear = g_sw_FM2_FULL_TEXTURE_CLEAR;
+        const size_t n = fullClear || g_sw_FM2_FULL_CONSTANT_BLOCKS ? 32 : usedSlots ? 32 - size_t(__builtin_clz(usedSlots)) : 0;
+        memset(pc->tinfo, 0, n * sizeof(pc->tinfo[0]));
+        memset(pc->tbias, 0, n * sizeof(pc->tbias[0]));
+    }
     if (g_bindingsFrame != g_r.frame || g_bindingsEpoch != g_resolveEpoch)
     {
         if (!g_bindings)
@@ -10471,7 +10479,16 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
             const uint32_t slotMask = ps.info.usedTextureSlots | vs.info.usedTextureSlots;
             const uint32_t slots = slotMask ? 32 - uint32_t(__builtin_clz(slotMask)) : 0;
             put(rv, vc, offsetof(VSConstants, b), offsetof(VSConstants, vf));
-            put(rv, vc, offsetof(VSConstants, vf), offsetof(VSConstants, vf) + fetches * sizeof(vc->vf[0]));
+            // The fetch entries the shader reads, each on its own: FM2 keeps its vertex stream in fetch constant 95,
+            // so "up to the highest" was the whole 1.5 KB table on almost every draw (about two thirds of the
+            // constant bytes written to the ring, which an FX-8350 pays dearly for). FM2_VF_TABLE_COPY=1: the old range.
+            LiveSwitch& tableCopy = g_sw_FM2_VF_TABLE_COPY;
+            if (tableCopy || g_sw_FM2_CLEAR_FETCH_TABLE)
+                put(rv, vc, offsetof(VSConstants, vf), offsetof(VSConstants, vf) + fetches * sizeof(vc->vf[0]));
+            else
+                for (uint32_t k : vs.info.vertexFetchConstants)
+                    if (k < 96)
+                        memcpy(rv + offsetof(VSConstants, vf) + k * sizeof(vc->vf[0]), vc->vf[k], sizeof(vc->vf[0]));
             put(rv, vc, offsetof(VSConstants, info), offsetof(VSConstants, vfl));
             put(rv, vc, offsetof(VSConstants, vfl), offsetof(VSConstants, vfl) + layouts * sizeof(vc->vfl[0]));
             put(rv, vc, offsetof(VSConstants, vsquash), sizeof(VSConstants));
