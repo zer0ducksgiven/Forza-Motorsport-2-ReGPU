@@ -58,9 +58,15 @@ LONG WINAPI OnCrash(EXCEPTION_POINTERS* info)
         Log("CRASH: guest lr %08llX r1 %08X r3 %08X", thread->ctx->lr, thread->ctx->r1.u32, thread->ctx->r3.u32); // (ctr is a local of the recompiled code)
         // What the object registers point at (a wiped object shows here as zeros or as whatever
         // overwrote it).
+#ifdef PPC_CONFIG_NON_VOLATILE_AS_LOCAL
+        // r14-r31 are locals of the recompiled code: the context copies are stale.
+        const PPCRegister* regs[] = { &thread->ctx->r3, &thread->ctx->r11 };
+        const char* names[] = { "r3", "r11" };
+#else
         const PPCRegister* regs[] = { &thread->ctx->r3, &thread->ctx->r11, &thread->ctx->r28, &thread->ctx->r29, &thread->ctx->r30, &thread->ctx->r31 };
         const char* names[] = { "r3", "r11", "r28", "r29", "r30", "r31" };
-        for (int i = 0; i < 6; i++)
+#endif
+        for (int i = 0; i < int(sizeof(regs) / sizeof(regs[0])); i++)
         {
             const uint32_t a = regs[i]->u32;
             if (a < 0x40000000 || a >= 0x7F000000 || !GuestAllocationSize(a & ~0xFu))
@@ -214,6 +220,10 @@ LONG WINAPI OnWatchHit(EXCEPTION_POINTERS* info)
             const PPCContext& g = *t->ctx;
             Log("watchpoint:   r3 %08X r4 %08X r5 %08X r6 %08X r7 %08X r8 %08X r9 %08X r10 %08X r11 %08X r12 %08X", g.r3.u32, g.r4.u32, g.r5.u32,
                 g.r6.u32, g.r7.u32, g.r8.u32, g.r9.u32, g.r10.u32, g.r11.u32, g.r12.u32);
+#ifdef PPC_CONFIG_NON_VOLATILE_AS_LOCAL
+            Log("watchpoint:   (r24-r31 not shown: locals of the recompiled code) lr %08llX", g.lr);
+            if (false)
+#endif
             Log("watchpoint:   r24 %08X r25 %08X r26 %08X r27 %08X r28 %08X r29 %08X r30 %08X r31 %08X lr %08llX", g.r24.u32, g.r25.u32, g.r26.u32,
                 g.r27.u32, g.r28.u32, g.r29.u32, g.r30.u32, g.r31.u32, g.lr);
         }
