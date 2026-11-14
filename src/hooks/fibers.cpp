@@ -183,3 +183,10 @@ PPC_FUNC(sub_82756580)
 {
     Fatal("XAPI fiber switch routine reached (lr %08llX)", ctx.lr);
 }
+
+// The swap itself (after the KeBugCheck above). ReXenon makes it a function of its own, because
+// SwitchToFiber branches into it; XenonRecomp keeps it inside sub_82756580, and this is unused.
+PPC_FUNC(sub_82756590)
+{
+    Fatal("XAPI fiber switch routine reached (lr %08llX)", ctx.lr);
+}

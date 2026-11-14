@@ -17,7 +17,9 @@ option(FM2_TITLE_UPDATE "Build for the title-updated executable" OFF)
 
 # Recompiled game code (out/ppc, produced by XenonRecomp from your own
 # default.xex; never committed).
-if(FM2_TITLE_UPDATE)
+# -DFM2_PPC_DIR=<folder> builds against other generated code (e.g. ReXenon's, for testing).
+if(FM2_PPC_DIR)
+elseif(FM2_TITLE_UPDATE)
     set(FM2_PPC_DIR "${CMAKE_SOURCE_DIR}/out/ppc_tu4")
 else()
     set(FM2_PPC_DIR "${CMAKE_SOURCE_DIR}/out/ppc")
