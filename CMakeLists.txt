@@ -34,6 +34,10 @@ target_compile_options(fm2_ppc PRIVATE -Wno-everything)
 target_compile_options(fm2_ppc PUBLIC -msse4.1 -fno-strict-aliasing)
 # Function names in crash reports and profiles.
 target_compile_options(fm2_ppc PRIVATE -gline-tables-only "/FI${CMAKE_SOURCE_DIR}/src/ppc_hooks.h")
+# -DFM2_PPC_FORCE_INCLUDE=<header> adds a header to the generated code only (A/B tests of codegen macros).
+if(FM2_PPC_FORCE_INCLUDE)
+    target_compile_options(fm2_ppc PRIVATE "/FI${FM2_PPC_FORCE_INCLUDE}")
+endif()
 
 # The Python that runs the build's tools: the Windows launcher where there is one, python3 when cross-building.
 find_program(FM2_PY_LAUNCHER py)
