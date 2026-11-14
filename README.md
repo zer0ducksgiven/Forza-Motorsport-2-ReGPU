@@ -10,6 +10,7 @@ A native Windows port of **Forza Motorsport 2** (Xbox 360). Nothing is emulated:
   EDRAM resolves to GPU copies, and its tiled textures are decoded natively. An experimental
   Vulkan renderer does the same through Vulkan (see [Vulkan renderer](#vulkan-renderer-experimental)).
 
+It runs on Windows, and on Linux and Steam Deck through Proton (see [Linux](#linux-and-steam-deck)).
 No game data is included: you need your own copy of the disc. See
 [FM2-native-scope.md](FM2-native-scope.md) for the plan and [TESTING.md](TESTING.md)
 for playing it.
@@ -21,7 +22,7 @@ https://discord.gg/pVEpmSk2G3
 
 The installer contains no game files. You need your own copy of the European disc image and the title update.
 
-1. Download `FM2-Setup-0.3.0.exe` from the [releases page](https://github.com/zer0ducksgiven/Forza-Motorsport-2-ReGPU/releases) and run it. No admin rights are needed.
+1. Download `FM2-Setup-<version>.exe` from the [latest release](https://github.com/zer0ducksgiven/Forza-Motorsport-2-ReGPU/releases/latest) and run it. No admin rights are needed.
 2. Choose an install folder (default `%LOCALAPPDATA%\FM2`).
 3. Choose your European disc image (`.iso`). It is checked against this build.
 4. Choose the title update file (named like `TU_16L61VA_...`). It is checked against this build.
@@ -30,15 +31,36 @@ The installer contains no game files. You need your own copy of the European dis
 
 The installer bundles its own Python. The launcher needs Microsoft's .NET 10 Desktop Runtime; the installer downloads and installs it when it is missing (Windows asks for administrator rights for that step). WebView2, which the launcher draws its window with, is part of Windows 11.
 
+Later versions don't need the installer again: the launcher's **Updates** tab installs each release's patch.
+
+### Linux and Steam Deck
+
+Each release also has `FM2-Linux-<version>.tar.gz`. It contains the same `fm2.exe`, run through Proton, and the
+launcher built natively for Linux. You need Steam with Proton Experimental (or Proton 10/11), `python3`, and a
+Vulkan driver; the launcher also needs WebKitGTK 4.1.
+
+```sh
+tar xzf FM2-Linux-<version>.tar.gz
+cd FM2-Linux
+./setup.sh "/path/to/Forza Motorsport 2.iso" "/path/to/TU_16L61VA_..." [dlc folder]
+./launcher/FM2Launcher
+```
+
+Saves, settings and caches live in the Proton prefix, `~/.fm2-linux/compatdata/pfx/drive_c/users/steamuser/Documents/fm2`.
+Direct3D 12 runs through vkd3d-proton; the experimental [Vulkan renderer](#vulkan-renderer-experimental) skips
+that layer. [linux/release/README.md](linux/release/README.md) has the details, and [linux/README.md](linux/README.md)
+covers building on Linux.
+
 ### Building the installer
 
 Needs Inno Setup 6 and a Python 3.12 embeddable package unpacked into `out\pyembed\py`. Then from the repository root:
 
 ```
-powershell -ExecutionPolicy Bypass -File installer\build-installer.ps1 -Version 0.1.0
+powershell -ExecutionPolicy Bypass -File installer\build-installer.ps1 -Version <version>
 ```
 
-It stages `installer\payload` from `build\tu` and the scripts, and writes `installer\dist\FM2-Setup-0.3.0.exe`.
+It stages `installer\payload` from `build\tu` and the scripts, and writes `installer\dist\FM2-Setup-<version>.exe`.
+`tools/make_patch.py <version>` builds the update zip and `tools/make_linux.py` the Linux package.
 
 ## Shaders compiled before you drive, smooth frame times while you do
 
@@ -92,7 +114,7 @@ mode** on) averages **71-74 fps** in the benchmark race, with 1% lows of **49-51
 the time, with dips in the busiest moments. Its first start compiles shaders for a few minutes longer than a
 modern PC. Anything slower than this is untested; older CPUs than an FX-8350 are likely below 60.
 
-**Low performance mode** (launcher, Play tab) is for CPUs of that age: on the FX-8350 it was worth about
+**Low performance mode** (launcher, Graphics tab) is for CPUs of that age: on the FX-8350 it was worth about
 20% (69.5 vs 57.3 fps). Leave it off on a modern CPU, where the optimisation it turns off is faster.
 
 **Windows 11 users: update to 23H2 or newer** (Settings, Windows Update), with a GPU driver from 2024 or
@@ -124,8 +146,25 @@ the clock, so the game runs at real speed at any frame rate. A race with a full 
 at about 140-165 fps at 2560x1440 on a fast desktop (Nurburgring free run 180-240 fps),
 where the GPU and the command processor are close to equal limits; menus reach the cap.
 
-Saves work: the signed-in gamer profile is the profile name from the launcher (`Player`
-by default), and its saves live in `Documents\fm2\profiles\<name>\content`.
+Saves work: the signed-in gamer profile is the one picked in the launcher's **Profiles** tab
+(`Player` by default), and its saves live in `Documents\fm2\profiles\<name>\content`. The same
+tab adds a profile from an Xbox 360 save (the `ForzaProfile` file copied off the console),
+keeps backups, and has optional cheats. Replays, Photo Mode and the game's own DLC work too.
+
+## FM2 Live (test)
+
+Online play on our own servers: races with other players, the auction house, car gifts,
+friends and leaderboards. Switch it on in the launcher's **Settings** tab. Your profile name is
+yours on FM2 Live once you sign in, first come first served. It is off for a profile with
+cheats on or with Rogue Mode on.
+
+## Rogue Mode (test)
+
+A roguelike career, switched on in the launcher's **Settings** tab. You start with a random
+Class D car and win races for parts and the odd car, and every podium raises the run's level
+and its difficulty. Two finishes of 4th or worse in a row in one car lose that car; lose your
+last and the run starts again. There's no prize money: selling cars is the only income. Start
+it on a new profile.
 
 ## Racing wheels (beta)
 
@@ -136,7 +175,7 @@ are read through [SDL3](https://github.com/libsdl-org/SDL) on Windows' DirectInp
 Thrustmaster, Logitech, Fanatec, Moza and similar wheels should be found. For direct drive
 wheels the steering force is smoothed between the game's frames.
 
-The launcher's Settings page has a **Racing wheel** panel: the wheel the game found last time,
+The launcher's **Controls** tab shows the wheel's live inputs and its bindings, and the wheel's settings:
 force feedback strength, the centring spring and damper, the rotation your wheel is set to
 (the game was made for the 360 wheel's 270 degrees and scales steering from it), and a switch
 for a steering force that pulls the wrong way. `play.log` names the wheel, its axes and its
@@ -170,30 +209,33 @@ one. `tools/reports/reports.py` does the same from the command line. Both go thr
 ## Launcher and settings
 
 The Start menu and desktop shortcuts open the launcher (`launcher\FM2Launcher.exe`, source in
-`launcher/FM2Launcher`: a .NET 10 WinForms window hosting WebView2, its page in `wwwroot`). Hover over any
-option for an explanation.
+`launcher/FM2Launcher`). It is a .NET 10 [Photino](https://github.com/tryphotino/photino.NET) window drawing its
+pages (`wwwroot`) with WebView2 on Windows and WebKitGTK on Linux, so both use the same launcher. Hover over any
+option for an explanation. Every change is saved to `Documents\fm2\settings.ini` straight away.
 
-- **Play**: the Vulkan renderer switch (experimental, off = Direct3D 12; applies when the game starts), profile name, resolution, aspect ratio, windowed or fullscreen, max FPS, VSync,
-  anti-aliasing (Off, 2x, 4x, 8x MSAA), enhanced lighting (experimental), skip intro videos, and the
-  game's language (English, German, French, Spanish, Italian, Japanese, Korean, Simplified and Traditional
-  Chinese, as on the disc; the disc's Polish, Czech and Hungarian text can't be picked yet). Every change is
-  saved to `Documents\fm2\settings.ini` straight away.
-- **Settings**: the shader cache (size, delete, rebuild now), the DLC packs (switch one off to keep it out of
-  the game, add packages, open the folder), the mods (see [Mods](#mods)), and the install and user folders.
+- **Play**: start the game; skip intro videos, in-race music (your own MP3s from `Documents\fm2\music`), the
+  car sound mix, and the game's language (English, German, French, Spanish, Italian, Japanese, Korean,
+  Simplified and Traditional Chinese, as on the disc). Also the credits.
+- **Profiles**: pick, add and rename profiles, import an Xbox 360 save, backups, photos, and optional cheats
+  (infinite credits, max driver level, every car unlocked).
+- **Controls**: controller and keyboard bindings, and racing wheel inputs and force feedback.
+- **Graphics**: resolution, display mode (aspect ratio), windowed or fullscreen, the
+  [Vulkan renderer](#vulkan-renderer-experimental) switch, MSAA, SMAA, anisotropic filtering,
+  [upscaling](#upscaling), render scale, sharpening, frame generation, max FPS, VSync,
+  [Low performance mode](#system-requirements), and a few switches that are best left as they are.
+- **Settings**: controller button icons, the mods (see [Mods](#mods)), DLC packs,
+  [FM2 Live](#fm2-live-test), [Rogue Mode](#rogue-mode-test), Project Forza Plus 2, the shader cache, and the
+  install, user and log folders.
+- **Report**: see [Reporting bugs](#reporting-bugs-and-sharing-logs).
 - **Updates**: checks GitHub for the latest release, shows its notes, and downloads and installs its
   `FM2-x.y.z-patch.zip` over the install. Files of the running launcher are renamed to `*.old` and replaced;
-  the next start removes them.
+  the next start removes them. On Linux, download the new package from the releases page instead.
 
 `FM2Launcher.exe --play` starts the game with the saved settings without opening the window, and
-`--apply <patch.zip>` installs a downloaded patch. `tools/make_patch.py <version>` builds the patch zip
-(`fm2.exe`, the launcher published by `installer/build-installer.ps1`, and the changelog).
+`--apply <patch.zip>` installs a downloaded patch.
 
-`fm2.exe` started on its own (`play.cmd`) still shows its built-in settings window first. That window has
-the profile name,
-resolution, aspect ratio (Auto, 16:9, 21:9, 32:9; the image gets black bars when it
-differs from the resolution), windowed or borderless fullscreen, VSync, and max FPS
-(30-360). Play saves them to `Documents\fm2\settings.ini`. With VSync on, the cap
-is also the display's refresh rate. `FM2_NO_LAUNCHER=1` skips the launcher and uses the
+`fm2.exe` started on its own (`play.cmd`) shows a small built-in settings window first (profile, resolution,
+aspect ratio, windowed or fullscreen, VSync, max FPS). `FM2_NO_LAUNCHER=1` skips it and uses the
 saved settings; these variables override the file for one run: `FM2_RENDERER`, `FM2_PROFILE`,
 `FM2_RESOLUTION`, `FM2_RENDER_SCALE`, `FM2_MAX_FPS`, `FM2_VSYNC`, `FM2_FULLSCREEN`.
 
