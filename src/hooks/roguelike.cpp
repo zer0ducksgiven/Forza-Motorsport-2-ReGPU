@@ -63,6 +63,7 @@ struct State
     uint32_t pending = 0; // the car drawn for the race being rewarded, until it's given
     uint32_t set = 0;     // the events' set: a new one once all four are raced
     std::map<uint32_t, uint32_t> strikes; // garage car -> its races in a row 4th or worse (the second takes the car)
+    uint32_t dry = 0;     // wins in a row without a car (after kPity of them the next win's car is certain)
     uint32_t level = 0;   // the run's level, 0 .. kTopLevel: one up a podium, the events harder with it
     std::string picks;    // the set's four garage cars ("a,b,c,d"), so its events stay put as cars are won
 };
@@ -82,6 +83,8 @@ State Load()
             s.pending = uint32_t(strtoul(line.c_str() + 8, nullptr, 10));
         else if (line.rfind("set=", 0) == 0)
             s.set = uint32_t(strtoul(line.c_str() + 4, nullptr, 10));
+        else if (line.rfind("dry=", 0) == 0)
+            s.dry = uint32_t(strtoul(line.c_str() + 4, nullptr, 10));
         else if (line.rfind("level=", 0) == 0)
             s.level = uint32_t(strtoul(line.c_str() + 6, nullptr, 10));
         else if (line.rfind("strikes=", 0) == 0) // "gid:n,gid:n"
@@ -108,7 +111,7 @@ void Save(const State& s)
         strikes += (strikes.empty() ? "" : ",") + std::to_string(gid) + ":" + std::to_string(n);
     std::ofstream(StateFile(), std::ios::trunc) << (s.run ? "run=1\n" : "") << "races=" << s.races << "\ngiven=" << s.given
                                                  << "\npending=" << s.pending << "\nset=" << s.set << "\nstrikes=" << strikes
-                                                 << "\nlevel=" << s.level
+                                                 << "\nlevel=" << s.level << "\ndry=" << s.dry
                                                  << "\npicks=" << s.picks << "\n";
 }
 
@@ -151,6 +154,8 @@ uint32_t DrawCar(uint32_t cls)
 
 // A win's chance of a car (one in this many; every win earns a part, CarReveal.xml)
 constexpr uint32_t kCarChance = 5;
+// Wins in a row without a car before the next win's car is certain
+constexpr uint32_t kPity = 4;
 // The run's top level (State::level): its events the hardest
 constexpr uint32_t kTopLevel = 30;
 
@@ -632,6 +637,7 @@ std::string RoguelikeLuaSource(const char* text, uint32_t size)
         const uint32_t car = DrawCar(0);
         Log("roguelike: run lost at level %u: a new run on car %u", s.level, car);
         s.level = 0;
+        s.dry = 0;
         s.strikes.clear();
         s.picks.clear();
         Save(s);
@@ -681,9 +687,10 @@ std::string RoguelikeLuaSource(const char* text, uint32_t size)
             return "return " + std::to_string(answer);
         }
         static LiveSwitch alwaysCar("FM2_ROGUELIKE_CAR"); // every win earns a car, for testing
-        if (!s.pending && !alwaysCar && Rng()() % kCarChance != 0) // a win without a car: its part only (-1)
+        if (!s.pending && !alwaysCar && s.dry < kPity && Rng()() % kCarChance != 0) // a win without a car: its part only (-1)
         {
             s.given = s.races;
+            s.dry++;
             Save(s);
             Log("roguelike: race %u (event %u, place %u): a win, no car (1 in %u), level %u", s.races, event, place, kCarChance,
                 s.level);
@@ -692,6 +699,9 @@ std::string RoguelikeLuaSource(const char* text, uint32_t size)
         if (!s.pending)
         {
             s.pending = DrawNextCar(event, place, cls);
+            if (s.dry >= kPity)
+                Log("roguelike: %u wins without a car: this one's car is certain", s.dry);
+            s.dry = 0;
             Save(s);
             Log("roguelike: race %u (event %u, place %u, class %u): next car %u", s.races, event, place, cls, s.pending);
         }

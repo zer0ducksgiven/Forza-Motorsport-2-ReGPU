@@ -241,7 +241,7 @@ NEXT_CAR = r'''
 					local carName = dc.Year .. " " .. loadstring("return '' --[[roguelike: name " .. dc.MakeID .. " " .. g.CarId .. "]]")()
 					local engine = DB:execute("SELECT EngineID FROM List_UpgradeEngine WHERE Id = " .. tostring(g.Engine) ..
 					                          " OR (Ordinal = " .. g.CarId .. " AND IsStock = 1) ORDER BY IsStock"):toTable()[1].EngineID
-					-- PartEnum, table (List_Upgrade...), the garage's column, the name, brand column or not
+					-- PartEnum, table (List_Upgrade...), the garage's column, the name (the fifth field is unused)
 					local PARTS = {
 						{ 1, "Brakes", "Brakes", "Brakes", true }, { 2, "SpringDamper", "SpringDamper", "Springs and Dampers", true },
 						{ 3, "AntiSway", "AntiSway", "Anti-roll Bars", true }, { 4, "Transmission", "Transmission", "Transmission", true },
@@ -261,7 +261,7 @@ NEXT_CAR = r'''
 					local types = {}
 					for _, t in ipairs(PARTS) do
 						local key = string.sub(t[2], 1, 6) == "Engine" and ("EngineID = " .. engine) or ("Ordinal = " .. g.CarId)
-						local parts = DB:execute("SELECT Id, Level, Price" .. (t[5] and ", ManufacturerID" or "") .. " FROM List_Upgrade" ..
+						local parts = DB:execute("SELECT Id, Level, Price, ManufacturerID FROM List_Upgrade" .. -- every part has a maker, body kits too: it picks the kit's model, and Buy Upgrades matches owned parts on it
 							t[2] .. " WHERE " .. key .. " AND IsStock = 0 AND Id NOT IN (SELECT PartId FROM " ..
 							Lobby.activePlayer.DB.PurchasedParts .. " WHERE GarageId = " .. gid .. " AND PartEnum = " .. t[1] ..
 							") AND Id NOT IN (" .. tostring(g[t[3]] or 0) .. ") ORDER BY Id"):toTable() or {} -- nil when none
@@ -274,7 +274,7 @@ NEXT_CAR = r'''
 					DB:execute("INSERT INTO " .. Lobby.activePlayer.DB.PurchasedParts ..
 					           " (GarageId, PartEnum, PartId, ManufacturerId, PricePaid) VALUES (" ..
 					           gid .. ", " .. t[1] .. ", " .. part.Id .. ", " .. man .. ", " .. part.Price .. ")")
-					local brand = "" -- body and aero parts have none
+					local brand = ""
 					local m = DB:execute("SELECT PartManufacturer FROM List_PartManufacturer WHERE Id = " .. man):toTable()
 					if m and m[1] and m[1].PartManufacturer ~= "Stock" then brand = m[1].PartManufacturer .. " " end
 					UI.Flow.RoguePartText = "You won a part for your " .. carName .. ": " .. brand .. t[4] ..
