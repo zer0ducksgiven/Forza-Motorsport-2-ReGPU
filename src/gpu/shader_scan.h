@@ -6,6 +6,7 @@ struct ScannedShader
 {
     bool pixel;
     std::vector<uint32_t> code; // microcode dwords exactly as in guest memory (big endian)
+    uint32_t address = 0;       // guest address of the microcode (0: not from guest memory)
 };
 
 // Scans guest physical memory for shader objects not reported before; results queue up

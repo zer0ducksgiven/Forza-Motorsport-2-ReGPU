@@ -15,6 +15,8 @@
 #include <unordered_set>
 #if defined(_WIN32)
 #include <windows.h>
+
+#include "memory.h"
 #endif
 
 #include "log.h"
@@ -177,16 +179,30 @@ void ShaderWarmStart(const ShaderSet& set)
         g_warm.staticListed = true;
         const bool scan = getenv("FM2_NO_SHADER_SCAN") == nullptr;
         uint32_t reported = 0;
+        // The scan also finds load packets in the command buffer while the title is still writing them, and those
+        // half-written shaders are different on every run: each start compiled some 50 of them and left their SPIR-V
+        // in the cache for good. A shader is taken once its bytes are the same on the scan after the one that found it.
+        std::vector<ScannedShader> unconfirmed;
+        uint32_t unstable = 0;
         for (;;)
         {
             std::this_thread::sleep_for(std::chrono::milliseconds(1500));
             if (scan)
             {
+                found.clear();
+                for (ScannedShader& s : unconfirmed)
+                    if (memcmp(GuestPtr<uint32_t>(s.address), s.code.data(), s.code.size() * 4) == 0)
+                        found.push_back(std::move(s));
+                    else
+                        unstable++;
+                unconfirmed.clear();
+                WarmEnqueue(found, true);
                 ShaderScanNow(1);
                 found.clear();
                 while (ShaderScanTake(found, 64))
                 {
-                    WarmEnqueue(found, true);
+                    for (ScannedShader& s : found)
+                        unconfirmed.push_back(std::move(s));
                     found.clear();
                 }
             }
@@ -199,7 +215,8 @@ void ShaderWarmStart(const ShaderSet& set)
             if (compiled != reported && (queued == 0 || compiled - reported >= 250))
             {
                 reported = compiled;
-                Log("shader_vk: warm-up: %u compiled, %u already cached, %zu queued", compiled, g_warm.cached.load(), queued);
+                Log("shader_vk: warm-up: %u compiled, %u already cached, %zu queued, %u scanned ones had changed", compiled,
+                    g_warm.cached.load(), queued, unstable);
             }
         }
     }).detach();

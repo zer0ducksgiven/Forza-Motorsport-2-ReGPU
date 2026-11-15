@@ -72,7 +72,7 @@ void ScanRange(uint32_t begin, uint32_t end, std::vector<ScannedShader>& out)
         const ucode::Shader parsed = ucode::Parse(code, used, type == 1);
         if (!parsed.valid)
             continue;
-        out.push_back({ type == 1, std::vector<uint32_t>(code, code + used) });
+        out.push_back({ type == 1, std::vector<uint32_t>(code, code + used), kBase + (i + 3) * 4 });
     }
 }
 }
