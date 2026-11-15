@@ -38,6 +38,11 @@ target_compile_options(fm2_ppc PRIVATE -gline-tables-only "/FI${CMAKE_SOURCE_DIR
 if(FM2_PPC_FORCE_INCLUDE)
     target_compile_options(fm2_ppc PRIVATE "/FI${FM2_PPC_FORCE_INCLUDE}")
 endif()
+# -DFM2_PPC_ALIGN_FUNCTIONS=64 starts every generated function on a 64-byte boundary, so a change
+# to one chunk can't shift the cache-line alignment of all the code linked after it (A/B tests).
+if(FM2_PPC_ALIGN_FUNCTIONS)
+    target_compile_options(fm2_ppc PRIVATE "/clang:-falign-functions=${FM2_PPC_ALIGN_FUNCTIONS}")
+endif()
 
 # The Python that runs the build's tools: the Windows launcher where there is one, python3 when cross-building.
 find_program(FM2_PY_LAUNCHER py)
@@ -176,6 +181,36 @@ add_custom_command(TARGET fm2 POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_dif
 set(FM2_D3DCOMPILER "C:/Program Files (x86)/Windows Kits/10/Redist/D3D/x64/d3dcompiler_47.dll" CACHE FILEPATH "Redistributable d3dcompiler_47.dll")
 add_custom_command(TARGET fm2 POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different "${FM2_D3DCOMPILER}" $<TARGET_FILE_DIR:fm2>)
 target_link_libraries(fm2 PRIVATE fm2_ppc XenonUtils synchronization winmm onecore d3d12 dxgi d3dcompiler)
+# -DFM2_PPC_LAYOUT_SEED=<n> links the generated functions in a random order fixed by n (only a
+# relink): A/B tests then compare builds over several code layouts instead of one.
+# -DFM2_PPC_LAYOUT_PROFILE=<file> (FM2_SAMPLE_OUT from a profiled run) puts the sampled functions first,
+# by sample count or, with -DFM2_PPC_LAYOUT_HOT=address, in guest address order.
+# The order file is written when CMake configures; a changed profile file reconfigures.
+if(NOT "${FM2_PPC_LAYOUT_SEED}" STREQUAL "") # seed 0 is a seed too
+    set(FM2_LAYOUT_FILE "${CMAKE_BINARY_DIR}/ppc_layout.txt")
+    set(FM2_LAYOUT_ARGS)
+    if(FM2_PPC_LAYOUT_PROFILE)
+        if(NOT FM2_PPC_LAYOUT_HOT)
+            set(FM2_PPC_LAYOUT_HOT count)
+        endif()
+        get_filename_component(FM2_LAYOUT_PROFILE_PATH "${FM2_PPC_LAYOUT_PROFILE}" ABSOLUTE BASE_DIR "${CMAKE_BINARY_DIR}")
+        set(FM2_LAYOUT_ARGS "${FM2_LAYOUT_PROFILE_PATH}" "${FM2_PPC_LAYOUT_HOT}")
+        set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${FM2_LAYOUT_PROFILE_PATH}")
+    endif()
+elseif(FM2_PPC_LAYOUT_PROFILE)
+    message(FATAL_ERROR "FM2_PPC_LAYOUT_PROFILE needs FM2_PPC_LAYOUT_SEED (the order of the functions it doesn't name)")
+endif()
+if(NOT "${FM2_PPC_LAYOUT_SEED}" STREQUAL "")
+    execute_process(COMMAND ${FM2_PYTHON} -I "${CMAKE_SOURCE_DIR}/tools/layout_order.py" "${FM2_PPC_DIR}"
+        "${FM2_PPC_LAYOUT_SEED}" "${FM2_LAYOUT_FILE}" ${FM2_LAYOUT_ARGS} COMMAND_ERROR_IS_FATAL ANY)
+    target_link_options(fm2 PRIVATE "/ORDER:@${FM2_LAYOUT_FILE}" /ignore:4037)
+    set_property(TARGET fm2 APPEND PROPERTY LINK_DEPENDS "${FM2_LAYOUT_FILE}")
+endif()
+# -DFM2_FIXED_BASE=<address> loads the exe at that address every time instead of where ASLR puts it
+# (picked once per boot per file): A/B tests then don't depend on which copy of an exe ran.
+if(FM2_FIXED_BASE)
+    target_link_options(fm2 PRIVATE /DYNAMICBASE:NO /BASE:${FM2_FIXED_BASE})
+endif()
 target_compile_definitions(fm2 PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS)
 target_compile_options(fm2 PRIVATE -gline-tables-only)
 target_link_options(fm2 PRIVATE /STACK:0x1000000 /DEBUG)

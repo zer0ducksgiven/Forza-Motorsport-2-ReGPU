@@ -544,25 +544,48 @@ void StartThreadProfiler()
     static const char* env = getenv("FM2_SAMPLE_THREAD");
     if (!env)
         return;
-    const uint32_t target = uint32_t(atoi(env)); // 0 with "w": the first draw piece worker
-    std::thread([target] {
+    const uint32_t target = uint32_t(atoi(env)); // 0 with "w": the first draw piece worker, 0 with "all": every thread
+    const bool all = strcmp(env, "all") == 0;
+    // FM2_SAMPLE_OUT=<file>: every sample since the start, by address, written as "<count> TAB <function>" lines
+    // every 5 seconds (a profile for tools/layout_order.py). FM2_SAMPLE_BENCH=1: only while the benchmark records.
+    static const char* outPath = getenv("FM2_SAMPLE_OUT");
+    static const bool benchOnly = getenv("FM2_SAMPLE_BENCH") != nullptr;
+    std::thread([target, all] {
         std::unordered_map<std::string, uint64_t> counts;
+        std::unordered_map<DWORD64, uint64_t> total;
         uint64_t samples = 0;
         auto lastLog = std::chrono::steady_clock::now();
+        // Made here, not while a thread is stopped: the first use takes locks that thread may hold.
+        static LiveSwitch callers("FM2_SAMPLE_CALLERS");
+        bool wasRecording = false;
         for (;;)
         {
             Sleep(1);
-            HANDLE handle = nullptr;
+            extern std::atomic<bool> g_benchRecording;
+            const bool recording = !benchOnly || g_benchRecording.load(std::memory_order_relaxed);
+            const bool stopped = wasRecording && !recording; // write the last samples of a recording out
+            wasRecording = recording;
+            if (!recording && !stopped)
+                continue;
+            std::vector<std::shared_ptr<ThreadObject>> keep; // the handles stay open while sampled
+            std::vector<HANDLE> handles;
             extern HANDLE g_profiledWorker;
-            if (env[0] == 'w')
-                handle = g_profiledWorker;
+            if (!recording)
+                ;
+            else if (env[0] == 'w')
+                handles.push_back(g_profiledWorker);
             else
             {
                 std::lock_guard lock(g_threadsMutex);
                 for (auto& [kthread, weak] : g_threadsByKthread)
-                    if (auto object = weak.lock(); object && !object->exited && object->thread->id == target)
-                        handle = object->thread->hostHandle;
+                    if (auto object = weak.lock(); object && !object->exited && (all || object->thread->id == target))
+                    {
+                        handles.push_back(object->thread->hostHandle);
+                        keep.push_back(object);
+                    }
             }
+            for (HANDLE handle : handles)
+            {
             if (!handle)
                 continue;
             if (SuspendThread(handle) == DWORD(-1))
@@ -571,7 +594,6 @@ void StartThreadProfiler()
             c.ContextFlags = CONTEXT_FULL;
             const bool ok = GetThreadContext(handle, &c);
             // FM2_SAMPLE_CALLERS=1: also the two callers (unwound while the thread is stopped)
-            static LiveSwitch callers("FM2_SAMPLE_CALLERS");
             DWORD64 up[2] = {};
             if (ok && callers)
             {
@@ -638,10 +660,38 @@ void StartThreadProfiler()
                 name += std::string(" < ") + (SymFromAddr(GetCurrentProcess(), addr, &displacement2, symbol2) ? symbol2->Name : "?");
             }
             counts[name]++;
+            if (outPath)
+                total[c.Rip]++;
             samples++;
-            if (std::chrono::steady_clock::now() - lastLog > std::chrono::seconds(5))
+            }
+            if (stopped || std::chrono::steady_clock::now() - lastLog > std::chrono::seconds(5))
             {
                 lastLog = std::chrono::steady_clock::now();
+                if (outPath && !total.empty())
+                {
+                    static std::unordered_map<DWORD64, std::string> names; // symbol per address, looked up once
+                    std::unordered_map<std::string, uint64_t> byName;
+                    for (auto& [addr, k] : total)
+                    {
+                        auto [it, added] = names.try_emplace(addr);
+                        if (added)
+                        {
+                            alignas(SYMBOL_INFO) char buffer[sizeof(SYMBOL_INFO) + 256];
+                            auto* symbol = reinterpret_cast<SYMBOL_INFO*>(buffer);
+                            symbol->SizeOfStruct = sizeof(SYMBOL_INFO);
+                            symbol->MaxNameLen = 255;
+                            DWORD64 displacement = 0;
+                            it->second = SymFromAddr(GetCurrentProcess(), addr, &displacement, symbol) ? symbol->Name : "?";
+                        }
+                        byName[it->second] += k;
+                    }
+                    if (FILE* f = fopen(outPath, "w"))
+                    {
+                        for (auto& [n, k] : byName)
+                            fprintf(f, "%llu\t%s\n", (unsigned long long)k, n.c_str());
+                        fclose(f);
+                    }
+                }
                 std::vector<std::pair<uint64_t, std::string>> top;
                 for (auto& [n, k] : counts)
                     top.push_back({ k, n });
