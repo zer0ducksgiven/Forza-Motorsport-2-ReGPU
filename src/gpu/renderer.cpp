@@ -3985,6 +3985,20 @@ bool ShaderInMap(uint64_t hash)
     return g_r.shaders.find(hash) != g_r.shaders.end();
 }
 
+// The shipped bytecode for a shader cache key (gpu/shader_seed.h), or nullptr. A map: the seed also holds
+// the pixel shader variants, hundreds of entries.
+const SeedShader* FindSeedShader(uint64_t key)
+{
+    static const std::unordered_map<uint64_t, const SeedShader*> byKey = [] {
+        std::unordered_map<uint64_t, const SeedShader*> m;
+        for (const SeedShader& s : kSeedShaders)
+            m.emplace(s.key, &s);
+        return m;
+    }();
+    const auto it = byKey.find(key);
+    return it == byKey.end() ? nullptr : it->second;
+}
+
 const CompiledShader& GetShaderLocked(uint64_t hash, const std::vector<uint32_t>& codeBE, bool pixel, bool background)
 {
     auto it = g_r.shaders.find(hash);
@@ -4211,10 +4225,10 @@ const CompiledShader& GetShaderLocked(uint64_t hash, const std::vector<uint32_t>
     }
     // Shaders the game makes at run time (so the first boot's scan can't find them) that nearly every player
     // compiles, up to 28 s each: they come with the game. A translator change just misses here and compiles.
-    for (const SeedShader& seed : kSeedShaders)
-        if (seed.key == cs.cacheKey && SUCCEEDED(D3DCreateBlob(seed.dwords * 4, &cs.code)))
+    if (const SeedShader* seed = FindSeedShader(cs.cacheKey))
+        if (SUCCEEDED(D3DCreateBlob(seed->dwords * 4, &cs.code)))
         {
-            memcpy(cs.code->GetBufferPointer(), seed.code, seed.dwords * 4);
+            memcpy(cs.code->GetBufferPointer(), seed->code, seed->dwords * 4);
             std::ofstream(ShaderCachePath(cs.cacheKey), std::ios::binary)
                 .write(static_cast<const char*>(cs.code->GetBufferPointer()), std::streamsize(cs.code->GetBufferSize()));
             cs.state = CompiledShader::Ready;
@@ -4388,15 +4402,83 @@ std::string NoKillVariant(const std::string& hlsl)
     return h;
 }
 
+std::atomic<uint32_t> g_variantSeedHits{ 0 }; // variants (alpha test, plain fetch) that came from the shader seed
+
+// FM2_VARIANT_SALT=<number>: other cache keys for those variants, so they miss the seed and the cache (testing a
+// fresh install).
+uint64_t VariantSalt()
+{
+    static const uint64_t salt = getenv("FM2_VARIANT_SALT") ? strtoull(getenv("FM2_VARIANT_SALT"), nullptr, 0) : 0;
+    return salt;
+}
+
+// A variant's bytecode without fxc: already loaded, shipped in the shader seed (fresh installs) or in the cache.
+// The seed goes first (no file read); a seed hit is still copied to the cache, once, because tools/shader_seed.py
+// takes a refreshed seed's bytecode from there. Called with g_shaderMutex held.
+bool LoadVariantCode(CompiledShader& cs)
+{
+    if (auto b = g_bytecode.find(cs.cacheKey); b != g_bytecode.end())
+        cs.code = b->second;
+    else if (const SeedShader* seed = FindSeedShader(cs.cacheKey); seed && SUCCEEDED(D3DCreateBlob(seed->dwords * 4, &cs.code)))
+    {
+        memcpy(cs.code->GetBufferPointer(), seed->code, seed->dwords * 4);
+        g_bytecode.emplace(cs.cacheKey, cs.code);
+        g_variantSeedHits++;
+        g_diskWriter.Push([path = ShaderCachePath(cs.cacheKey), seed] {
+            std::error_code ec;
+            if (!std::filesystem::exists(path, ec))
+                std::ofstream(path, std::ios::binary).write(reinterpret_cast<const char*>(seed->code), std::streamsize(seed->dwords * 4));
+        });
+    }
+    else
+    {
+        std::ifstream in{ ShaderCachePath(cs.cacheKey), std::ios::binary | std::ios::ate };
+        const auto size = in ? size_t(in.tellg()) : 0;
+        if (!size || FAILED(D3DCreateBlob(size, &cs.code)))
+            return false;
+        in.seekg(0);
+        in.read(static_cast<char*>(cs.code->GetBufferPointer()), std::streamsize(size));
+        g_bytecode.emplace(cs.cacheKey, cs.code);
+    }
+    cs.state = CompiledShader::Ready;
+    return true;
+}
+
+// Variants looked up with queue = false (the seed pipelines' boot look) that need fxc: left pending, not queued,
+// until a draw or a pipeline build asks for them. Under g_shaderMutex.
+std::unordered_set<CompiledShader*> g_variantsUnqueued;
+
+void QueueVariant(CompiledShader& cs, bool queue)
+{
+    if (queue)
+        g_compiler.PushQuiet(&cs);
+    else
+        g_variantsUnqueued.insert(&cs);
+}
+
+// A variant left unqueued: queued now that something needs it.
+void QueueIfLeft(CompiledShader& cs, bool queue)
+{
+    if (queue && !g_variantsUnqueued.empty() && g_variantsUnqueued.erase(&cs))
+        g_compiler.PushQuiet(&cs);
+}
+
+bool IsUnqueued(const CompiledShader& cs)
+{
+    return !g_variantsUnqueued.empty() && g_variantsUnqueued.count(const_cast<CompiledShader*>(&cs));
+}
+
 std::unordered_map<uint64_t, std::unique_ptr<CompiledShader>> g_noKillShaders;
 // The variant (its compile queued on first use unless the shader cache has it); may be pending or failed.
 // The base shader must be ready (its HLSL). Called with g_shaderMutex held.
-const CompiledShader* NoKillVariantOf(const CompiledShader& base)
+const CompiledShader* NoKillVariantOf(const CompiledShader& base, bool queue = true)
 {
     if (const CompiledShader* k = base.noKill)
         return k;
     const CompiledShader& source = base.hlslSource ? *base.hlslSource : base;
     auto [it, inserted] = g_noKillShaders.try_emplace(source.cacheKey);
+    if (!inserted)
+        QueueIfLeft(*it->second, queue);
     if (inserted)
     {
         it->second = std::make_unique<CompiledShader>();
@@ -4413,27 +4495,17 @@ const CompiledShader* NoKillVariantOf(const CompiledShader& base)
         }
         else
         {
-            cs.cacheKey = Fnv(cs.info.hlsl.data(), cs.info.hlsl.size(), CacheSeed(true));
-            if (auto b = g_bytecode.find(cs.cacheKey); b != g_bytecode.end())
-            {
-                cs.code = b->second;
-                cs.state = CompiledShader::Ready;
-            }
-            else if (std::ifstream in{ ShaderCachePath(cs.cacheKey), std::ios::binary | std::ios::ate })
-            {
-                const auto size = size_t(in.tellg());
-                if (size && SUCCEEDED(D3DCreateBlob(size, &cs.code)))
-                {
-                    in.seekg(0);
-                    in.read(static_cast<char*>(cs.code->GetBufferPointer()), std::streamsize(size));
-                    cs.state = CompiledShader::Ready;
-                    g_bytecode.emplace(cs.cacheKey, cs.code);
-                }
-            }
-            if (!cs.IsReady())
-                g_compiler.PushQuiet(&cs);
+            cs.cacheKey = Fnv(cs.info.hlsl.data(), cs.info.hlsl.size(), CacheSeed(true)) ^ VariantSalt();
+            static LiveSwitch shaderKeys("FM2_SHADER_KEYS"); // for tools/shader_seed.py --variants
+            if (shaderKeys)
+                Log("shader key: psk %016llx %016llx", (unsigned long long)cs.hash, (unsigned long long)cs.cacheKey);
+            if (!LoadVariantCode(cs))
+                QueueVariant(cs, queue);
         }
     }
+    // (Not kept on the base while unqueued: the draw's next look comes back here and queues it.)
+    if (IsUnqueued(*it->second))
+        return it->second.get();
     base.noKill = it->second.get();
     return base.noKill;
 }
@@ -4498,11 +4570,14 @@ std::unordered_map<uint64_t, uint32_t> g_fetchVariantCount;                  // 
 
 // The variant (its compile queued on first use unless the shader cache has it); nullptr once the base has 16.
 // Failed when there's nothing to replace. `base` must be ready (its HLSL). Called with g_shaderMutex held.
-const CompiledShader* FetchVariantOf(const CompiledShader& base, uint32_t mask)
+const CompiledShader* FetchVariantOf(const CompiledShader& base, uint32_t mask, bool queue = true)
 {
     const uint64_t id = base.cacheKey * 0x9E3779B97F4A7C15ull ^ mask;
     if (auto it = g_fetchShaders.find(id); it != g_fetchShaders.end())
+    {
+        QueueIfLeft(*it->second, queue);
         return it->second.get();
+    }
     if (g_fetchVariantCount[base.cacheKey] >= 16)
         return nullptr;
     auto cs = std::make_unique<CompiledShader>();
@@ -4516,25 +4591,12 @@ const CompiledShader* FetchVariantOf(const CompiledShader& base, uint32_t mask)
     else
     {
         g_fetchVariantCount[base.cacheKey]++;
-        cs->cacheKey = Fnv(cs->info.hlsl.data(), cs->info.hlsl.size(), CacheSeed(true));
-        if (auto b = g_bytecode.find(cs->cacheKey); b != g_bytecode.end())
-        {
-            cs->code = b->second;
-            cs->state = CompiledShader::Ready;
-        }
-        else if (std::ifstream in{ ShaderCachePath(cs->cacheKey), std::ios::binary | std::ios::ate })
-        {
-            const auto size = size_t(in.tellg());
-            if (size && SUCCEEDED(D3DCreateBlob(size, &cs->code)))
-            {
-                in.seekg(0);
-                in.read(static_cast<char*>(cs->code->GetBufferPointer()), std::streamsize(size));
-                cs->state = CompiledShader::Ready;
-                g_bytecode.emplace(cs->cacheKey, cs->code);
-            }
-        }
-        if (!cs->IsReady())
-            g_compiler.PushQuiet(cs.get());
+        cs->cacheKey = Fnv(cs->info.hlsl.data(), cs->info.hlsl.size(), CacheSeed(true)) ^ VariantSalt();
+        static LiveSwitch shaderKeys("FM2_SHADER_KEYS"); // for tools/shader_seed.py --variants
+        if (shaderKeys)
+            Log("shader key: psf %016llx %x %016llx", (unsigned long long)cs->hash, mask, (unsigned long long)cs->cacheKey);
+        if (!LoadVariantCode(*cs))
+            QueueVariant(*cs, queue);
     }
     return g_fetchShaders.emplace(id, std::move(cs)).first->second.get();
 }
@@ -11764,6 +11826,94 @@ void RendererOnSwap(uint64_t frameNumber, uint32_t frontBuffer)
 // been played, the more is covered. FM2_NO_PRECOMPILE=1 turns it off.
 bool g_precompileDone = false;
 
+// Boot (precompile, seed pipelines): the variant pixel shaders a pipeline key draws with (flag 8 without the alpha
+// test, fetchMask plain fetch), ready before its pipeline is built. Else EnsurePipeline builds it with the base
+// shader (no gain) and the draws then compile the variant during a race.
+struct VariantPrep
+{
+    std::unordered_set<const CompiledShader*> seen;
+    std::vector<const CompiledShader*> compiling;
+    size_t ready = 0;
+    const uint32_t seedHitsBefore = g_variantSeedHits.load();
+    const std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+
+    size_t leftForDraws = 0; // seed keys whose variants would need fxc (not built at boot)
+
+    static bool VariantKey(const PipelineKey& key) { return (key.flags & 8) || key.fetchMask; }
+    // False also for keys no draw asks for while the variants are switched off (no wait for them then).
+    static bool Needs(const PipelineKey& key)
+    {
+        static LiveSwitch noSplit("FM2_NO_SPLIT_ALPHA_TEST"), noFetch("FM2_NO_FETCH_VARIANTS");
+        return VariantKey(key) && !((key.flags & 8) && noSplit) && !(key.fetchMask && noFetch);
+    }
+
+    // Looks the variants up as EnsurePipeline will (their compiles start now, urgent: the boot waits for them).
+    // A variant still compiling, or nullptr when they're all done. `ps` is a ready base shader.
+    // queue = false (seed keys): a variant neither seeded nor cached isn't compiled; `unavailable` is set instead.
+    const CompiledShader* Blocking(const CompiledShader& ps, const PipelineKey& key, bool queue = true, bool* unavailable = nullptr)
+    {
+        std::lock_guard lock(g_shaderMutex);
+        const CompiledShader* blocking = nullptr;
+        const CompiledShader* use = &ps;
+        if ((key.flags & 8) && ps.noKill != &ps)
+            if (const CompiledShader* k = NoKillVariantOf(ps, queue); k && k != &ps)
+            {
+                if (unavailable && IsUnqueued(*k))
+                {
+                    *unavailable = true;
+                    return nullptr;
+                }
+                if (!Track(*k))
+                    blocking = k;
+                // Still compiling: its fetch variant compiles alongside (if it fails, the next look takes the base's).
+                if (k->state.load(std::memory_order_acquire) != CompiledShader::Failed)
+                    use = k;
+            }
+        // (A base shader from the map never holds TFetchPlain, unlike EnsurePipeline's draw-time input.)
+        if (key.fetchMask)
+            if (const CompiledShader* f = FetchVariantOf(*use, key.fetchMask, queue))
+            {
+                if (unavailable && IsUnqueued(*f))
+                {
+                    *unavailable = true;
+                    return nullptr;
+                }
+                if (!Track(*f))
+                    blocking = f;
+            }
+        return blocking;
+    }
+    // False while it compiles.
+    bool Track(const CompiledShader& v)
+    {
+        const int state = v.state.load(std::memory_order_acquire);
+        if (seen.insert(&v).second)
+        {
+            if (state == CompiledShader::Ready)
+                ready++;
+            else if (state == CompiledShader::Pending)
+            {
+                compiling.push_back(&v);
+                g_compiler.Promote(v);
+            }
+        }
+        return state != CompiledShader::Pending;
+    }
+    uint32_t Compiled() const
+    {
+        return uint32_t(std::count_if(compiling.begin(), compiling.end(), [](const CompiledShader* cs) { return cs->state.load() != CompiledShader::Pending; }));
+    }
+    void Report(const char* what) const
+    {
+        if (seen.empty() && !leftForDraws)
+            return;
+        const size_t built = size_t(std::count_if(compiling.begin(), compiling.end(), [](const CompiledShader* cs) { return cs->IsReady(); }));
+        Log("%s: %zu pixel shader variants, %zu ready (%u from the shader seed), %zu compiled, %zu failed, %.1f s; %zu keys left for draws (variant not seeded or cached)",
+            what, seen.size(), ready, g_variantSeedHits.load() - seedHitsBefore, built, seen.size() - ready - built,
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count(), leftForDraws);
+    }
+};
+
 // The shipped list of pipelines (gpu/pipeline_seed.h: ours and players' manifests merged): built once,
 // on the first boot, so a first race on a track doesn't stop for each new one (report #10). Only those
 // whose shaders are in the game data can be built here; built ones join pipelines.manifest, so later
@@ -11778,7 +11928,7 @@ void BuildSeedPipelines(std::vector<uint8_t>& bootFrame)
     std::unordered_set<uint64_t> missingShaders;
     for (const SeedPipeline& s : kSeedPipelines)
     {
-        const PipelineKey key{ s.vs, s.ps, s.blend, s.depth, s.stencilMaskMode, s.flags };
+        const PipelineKey key{ s.vs, s.ps, s.blend, s.depth, s.stencilMaskMode, s.flags, s.fetchMask };
         if (g_manifest.known.count(key) || g_r.pipelines.count(key))
         {
             known++;
@@ -11799,9 +11949,78 @@ void BuildSeedPipelines(std::vector<uint8_t>& bootFrame)
         std::size(kSeedPipelines), known, todo.size(), missing, missingShaders.size());
     if (todo.empty())
         return;
+    auto lastShown = std::chrono::steady_clock::time_point{};
+    {
+        // Their variant shaders first (VariantPrep), all queued at once, behind the boot screen.
+        // Only variants the shader seed or the cache has: the list comes from other installs, so one that would
+        // need fxc here is left for the draws that ask for it (as before the seed listed variants). Keys no draw
+        // asks for (variants switched off) aren't built.
+        VariantPrep prep;
+        std::vector<bool> drop(todo.size());
+        std::vector<std::pair<size_t, const CompiledShader*>> waiting; // (todo index, a variant still compiling)
+        for (size_t i = 0; i < todo.size(); i++)
+        {
+            const auto& [key, shaders] = todo[i];
+            if (!VariantPrep::VariantKey(key))
+                continue;
+            if (!VariantPrep::Needs(key))
+            {
+                drop[i] = true;
+                continue;
+            }
+            const auto [vs, ps] = shaders;
+            while (vs->state.load() == CompiledShader::Pending || ps->state.load() == CompiledShader::Pending)
+                Sleep(1);
+            if (!vs->IsReady() || !ps->IsReady())
+                continue; // (counted as skipped below)
+            bool unavailable = false;
+            const CompiledShader* b = prep.Blocking(*ps, key, false, &unavailable);
+            if (unavailable)
+            {
+                drop[i] = true;
+                prep.leftForDraws++;
+            }
+            else if (b)
+                waiting.push_back({ i, b });
+        }
+        while (!waiting.empty())
+        {
+            std::erase_if(waiting, [&](auto& w) {
+                if (w.second->state.load(std::memory_order_acquire) == CompiledShader::Pending)
+                    return false;
+                const auto& [key, shaders] = todo[w.first];
+                bool unavailable = false;
+                w.second = prep.Blocking(*shaders.second, key, false, &unavailable);
+                if (unavailable)
+                {
+                    drop[w.first] = true;
+                    prep.leftForDraws++;
+                }
+                return w.second == nullptr;
+            });
+            const auto now = std::chrono::steady_clock::now();
+            if (now - lastShown > std::chrono::milliseconds(100))
+            {
+                lastShown = now;
+                if (BootScreenCompose(L"COMPILING SHADERS", prep.Compiled(), uint32_t(prep.compiling.size()), bootFrame))
+                    BootPresent(bootFrame);
+                else
+                {
+                    g_hold.active = true;
+                    HoldPresent();
+                }
+            }
+            Sleep(5);
+        }
+        prep.Report("seed pipelines");
+        size_t kept = 0;
+        for (size_t i = 0; i < todo.size(); i++)
+            if (!drop[i])
+                todo[kept++] = todo[i];
+        todo.resize(kept);
+    }
     std::vector<std::shared_ptr<PipelineEntry>> building;
     size_t next = 0, failed = 0;
-    auto lastShown = std::chrono::steady_clock::time_point{};
     for (;;)
     {
         // A few at a time: the pool works through them while the screen updates.
@@ -11869,6 +12088,14 @@ void PrecompileAll()
     size_t nextShader = 0, nextKey = 0;
     size_t shadersInstalled = 0, pipelinesStarted = 0;
     auto lastPresent = std::chrono::steady_clock::time_point{};
+    // Keys that draw with a variant pixel shader wait here for it (VariantPrep) while the rest go on.
+    VariantPrep prep;
+    struct VariantWait
+    {
+        PipelineKey key;
+        const CompiledShader *vs, *ps, *blocking;
+    };
+    std::vector<VariantWait> variantWait;
     for (;;)
     {
         // Phase 1: load and translate shaders a batch at a time (compiles run on worker threads).
@@ -11910,20 +12137,35 @@ void PrecompileAll()
             {
                 if (!g_r.pipelines.count(key))
                 {
-                    EnsurePipeline(*vs, *ps, key);
-                    pipelinesStarted++;
+                    if (const CompiledShader* b = VariantPrep::Needs(key) ? prep.Blocking(*ps, key) : nullptr)
+                        variantWait.push_back({ key, vs, ps, b });
+                    else
+                    {
+                        EnsurePipeline(*vs, *ps, key);
+                        pipelinesStarted++;
+                    }
                 }
             }
             nextKey++;
             g_stats.warmDone++;
         }
+        std::erase_if(variantWait, [&](VariantWait& w) {
+            if (w.blocking->state.load(std::memory_order_acquire) == CompiledShader::Pending || (w.blocking = prep.Blocking(*w.ps, w.key)))
+                return false;
+            if (!g_r.pipelines.count(w.key))
+            {
+                EnsurePipeline(*w.vs, *w.ps, w.key);
+                pipelinesStarted++;
+            }
+            return true;
+        });
         // Done when every shader is loaded and every pipeline is built.
         size_t building = 0;
         for (auto& [k, e] : g_r.pipelines)
             if (e->state.load() == 0)
                 building++;
         const bool allSent = nextShader >= shaders.size() && nextKey >= keys.size();
-        if (allSent && g_compiler.jobs.load() == 0 && building == 0)
+        if (allSent && g_compiler.jobs.load() == 0 && building == 0 && variantWait.empty())
             break;
         const auto now = std::chrono::steady_clock::now();
         if (now - lastPresent > std::chrono::milliseconds(33))
@@ -11934,7 +12176,7 @@ void PrecompileAll()
             // held black frame (from ReGPU ff7b878).
             std::vector<uint8_t> bootFrame;
             if (now - start > std::chrono::seconds(2) &&
-                BootScreenCompose(L"COMPILING SHADERS", uint32_t(nextKey), uint32_t(keys.size()), bootFrame))
+                BootScreenCompose(L"COMPILING SHADERS", uint32_t(nextKey - variantWait.size()), uint32_t(keys.size()), bootFrame))
                 BootPresent(bootFrame);
             else
             {
@@ -11945,6 +12187,7 @@ void PrecompileAll()
         Sleep(1);
     }
     g_hold.active = false;
+    prep.Report("precompile");
     // A warm start never has a long loading hold, so without this settled skipping
     // never arms and each first-time effect in a race stalls for its compile.
     if (!keys.empty())
