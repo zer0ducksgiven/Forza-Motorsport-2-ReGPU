@@ -2494,11 +2494,17 @@ void RendererVkOnShaderLoad(uint32_t type, const uint32_t* microcodeBE, uint32_t
     (type == 0 ? g.vsHash : g.psHash) = hash;
 }
 
+LiveSwitch g_vkShaderCopyAlways("FM2_SHADER_COPY_ALWAYS");
+
 void RendererVkSetShader(uint32_t type, const uint32_t* microcodeBE, uint32_t usedDwords, uint64_t hash)
 {
     std::vector<uint32_t>& code = type == 0 ? g.vsCode : g.psCode;
+    // The same shader as loaded (see RendererSetShader): no copy. FM2_SHADER_COPY_ALWAYS=1 copies (A/B).
+    uint64_t& current = type == 0 ? g.vsHash : g.psHash;
+    if (current == hash && code.size() == usedDwords && !g_vkShaderCopyAlways)
+        return;
     code.assign(microcodeBE, microcodeBE + usedDwords);
-    (type == 0 ? g.vsHash : g.psHash) = hash;
+    current = hash;
 }
 
 // ---- Draws ------------------------------------------------------------------------------

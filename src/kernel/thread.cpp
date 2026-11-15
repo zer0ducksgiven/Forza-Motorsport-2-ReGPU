@@ -658,6 +658,13 @@ void StartThreadProfiler()
                 symbol2->MaxNameLen = 255;
                 DWORD64 displacement2 = 0;
                 name += std::string(" < ") + (SymFromAddr(GetCurrentProcess(), addr, &displacement2, symbol2) ? symbol2->Name : "?");
+                // FM2_SAMPLE_CALLER_LINES=1: the first caller's source line too (which memcpy call, say)
+                static LiveSwitch callerLines("FM2_SAMPLE_CALLER_LINES");
+                IMAGEHLP_LINE64 line2{};
+                line2.SizeOfStruct = sizeof(line2);
+                DWORD lineDisplacement2 = 0;
+                if (callerLines && addr == up[0] && SymGetLineFromAddr64(GetCurrentProcess(), addr - 1, &lineDisplacement2, &line2))
+                    name += ":" + std::to_string(line2.LineNumber);
             }
             counts[name]++;
             if (outPath)

@@ -319,6 +319,8 @@ void DealerSquash(float scale[3])
 
 // The game's music is silent from the moment the song starts until the game closes (xma.cpp).
 bool DealerMutesMusic() { return g_on.load(std::memory_order_relaxed); }
+// The egg is playing (renderer.cpp): until it is, car draws skip DealerCarDraw and the full copy of their constants.
+bool DealerActive() { return g_on.load(std::memory_order_relaxed); }
 
 // One car-mesh draw (renderer.cpp): the squash its vertex shader adds to its clip position. A car-body mesh's
 // clip position is p.x c1 + p.y c0 + p.z c2 + c3 (an ordinary matrix: c3 is the model origin on screen, c0-c2

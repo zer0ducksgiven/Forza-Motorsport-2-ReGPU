@@ -892,6 +892,7 @@ struct Emitter
             case CfOp::CondExecPredCleanEnd:
             {
                 char cond[96];
+                result.readsBools = true;
                 snprintf(cond, sizeof(cond), "if (BoolConstant(%s, %u) == %s)", pixel ? "pb" : "vb", (cf.hi >> 2) & 0xFF,
                     cf.condition() ? "true" : "false");
                 Line(std::string(cond) + " {");
@@ -918,8 +919,11 @@ struct Emitter
                 else if ((cf.lo >> 14) & 1)
                     cond = cf.condition() ? "p" : "!p";
                 else
+                {
+                    result.readsBools = true;
                     cond = std::string("BoolConstant(") + (pixel ? "pb" : "vb") + ", " + std::to_string((cf.hi >> 2) & 0xFF) + ") == " +
                         (cf.condition() ? "true" : "false");
+                }
                 Line("cfpc = (" + cond + ") ? " + std::to_string(target) + "u : " + next + "u;");
                 if (!forward)
                     Line("continue;");
@@ -933,6 +937,7 @@ struct Emitter
                 const uint32_t skipTo = cf.lo & 0x1FFF;
                 const bool repeat = (cf.lo >> 13) & 1;
                 const uint32_t loopId = (cf.lo >> 16) & 0x1F;
+                result.readsLoops = true;
                 const std::string params = std::string(pixel ? "pl" : "vl") + "[" + std::to_string(loopId >> 2) + "][" + std::to_string(loopId & 3) + "]";
                 Line("if (loopDepth < 4)");
                 Line("{");
@@ -992,8 +997,11 @@ struct Emitter
                 else if ((cf.lo >> 14) & 1)
                     cond = cf.condition() ? "p" : "!p";
                 else
+                {
+                    result.readsBools = true;
                     cond = std::string("BoolConstant(") + (pixel ? "pb" : "vb") + ", " + std::to_string((cf.hi >> 2) & 0xFF) + ") == " +
                         (cf.condition() ? "true" : "false");
+                }
                 Line("if (" + cond + " && callDepth < 4)");
                 Line("{");
                 indent++;

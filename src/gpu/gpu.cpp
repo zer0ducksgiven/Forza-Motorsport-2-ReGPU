@@ -636,6 +636,15 @@ void WriteRegisters(uint32_t index, uint32_t source, uint32_t count)
 // (At namespace scope: a function-local static checks its initialisation guard on every packet.)
 const int g_gpuSlow = getenv("FM2_GPUSLOW") ? atoi(getenv("FM2_GPUSLOW")) : 0;
 LiveSwitch g_tracePredication("FM2_TRACE_PRED");
+LiveSwitch g_lockedDrawCount("FM2_LOCKED_COUNTERS"); // A/B: the draw count as a locked add
+// Only this thread adds to the draw count (GpuLogState just reads it): a plain add, not a locked op per draw.
+inline void CountDraw()
+{
+    if (g_lockedDrawCount)
+        g_gpu.draws++;
+    else
+        g_gpu.draws.store(g_gpu.draws.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
+}
 
 // Executes one packet at ptr; returns its size in dwords.
 uint32_t ExecutePacket(uint32_t ptr)
@@ -941,11 +950,11 @@ uint32_t ExecutePacket(uint32_t ptr)
         break;
     }
     case 0x22: // DRAW_INDX: viz query, initiator, [index base, index size]
-        g_gpu.draws++;
+        CountDraw();
         SubmitDraw(arg(1), count > 2 ? arg(2) : 0, count > 3 ? arg(3) : 0);
         break;
     case 0x36: // DRAW_INDX_2: initiator, [inline indices]
-        g_gpu.draws++;
+        CountDraw();
         SubmitDraw(arg(0), 0, 0);
         break;
     case 0x46: // EVENT_WRITE

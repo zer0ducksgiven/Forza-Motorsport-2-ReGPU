@@ -107,6 +107,7 @@ bool CameraAspectWidened(); // hooks/camera_aspect.cpp: the game is setting its 
 bool g_depthThisFrame = false, g_depthLastFrame = false;
 bool RaceView() { return g_depthLastFrame && CameraAspectWidened(); }
 void DealerCarDraw(uint64_t vs, const float c[256][4], float squash[4][4], bool body, int originRow); // hooks/dealer.cpp: the easter egg, per car draw
+bool DealerActive(); // hooks/dealer.cpp: the egg is on (only then does DealerCarDraw read the constants)
 
 bool MusicToast(std::wstring& title, std::wstring& artist, float& age); // audio/music.cpp
 bool LiveNotice(std::wstring& title, std::wstring& line, float& age);   // kernel/net.cpp
@@ -234,6 +235,14 @@ struct Upscale
     uint32_t constantsFrame = 0;
 } g_upscale;
 
+// Locked ops on the draw path: each also drains the write-combined ring writes before it, so they are skipped
+// where they can't matter: counters and the dynamic-buffer lock off the draw pieces (the renderer thread is
+// alone there), the shader-edit lock until an edit is made, the MSAA exchange when nothing changes. =1: the old way (A/B).
+LiveSwitch g_sw_FM2_PS_EDIT_LOCK("FM2_PS_EDIT_LOCK");
+LiveSwitch g_sw_FM2_LOCKED_COUNTERS("FM2_LOCKED_COUNTERS");
+LiveSwitch g_sw_FM2_MSAA_EXCHANGE_ALWAYS("FM2_MSAA_EXCHANGE_ALWAYS");
+LiveSwitch g_sw_FM2_DYNAMIC_LOCK("FM2_DYNAMIC_LOCK");
+
 // A pass taller than the screen (the paint editor's 1024x1024 livery target) is scaled as a whole
 // by kHeight / its height so it fits the surface, and the vertex shader divides by its height.
 // It is found by its window scissor (WindowScissor) and recognised by its surface info.
@@ -257,13 +266,17 @@ std::atomic<uint32_t> g_nativeMsaaGeneration{ 0 }; // bumped when an entry chang
 bool LiveryLayoutKey(uint32_t key) { return key >> 12 == 2080 || key >> 12 == 1040; }
 void SetNativeMsaa(uint32_t key, uint32_t msaa)
 {
-    if (const uint32_t old = NativeSlot(key).load(std::memory_order_relaxed); old && old >> 2 != key && LiveryLayoutKey(old >> 2))
+    const uint32_t want = key << 2 | msaa, old = NativeSlot(key).load(std::memory_order_relaxed);
+    // Nearly every draw stores what is already there: no exchange (a locked op) then.
+    if (old == want && !g_sw_FM2_MSAA_EXCHANGE_ALWAYS)
+        return;
+    if (old && old >> 2 != key && LiveryLayoutKey(old >> 2))
     {
         static std::atomic<int> logged{ 0 };
         if (logged.fetch_add(1, std::memory_order_relaxed) < 20)
             Log("livery: layout %08X mode %u overwritten by %08X mode %u", old >> 2, old & 3, key, msaa);
     }
-    if (NativeSlot(key).exchange(key << 2 | msaa, std::memory_order_relaxed) != (key << 2 | msaa))
+    if (NativeSlot(key).exchange(want, std::memory_order_relaxed) != want)
         g_nativeMsaaGeneration.fetch_add(1, std::memory_order_relaxed);
 }
 // The surface's MSAA layout when the current view is another one of an MSAA surface, else -1.
@@ -660,6 +673,15 @@ struct DrawContext
 DrawContext g_mainContext;
 thread_local DrawContext* t_context = nullptr;
 inline DrawContext& C() { return t_context ? *t_context : g_mainContext; }
+// A per-frame counter: only piece workers add to one at once (pieces finish before the renderer thread
+// goes on), so elsewhere a plain add does.
+template <class T> inline void Bump(std::atomic<T>& v)
+{
+    if (C().worker || g_sw_FM2_LOCKED_COUNTERS)
+        v.fetch_add(1, std::memory_order_relaxed);
+    else
+        v.store(v.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
+}
 
 // Holds the texture lock and, on a draw worker, records into the segment's prep list.
 struct TextureScope
@@ -1999,8 +2021,10 @@ LiveSwitch g_floatsViaStage("FM2_FLOATS_VIA_STAGE");
 
 // The per-draw functions' switches, at namespace scope: as function-local statics each one checked
 // its initialisation guard on every draw (dozens a draw).
+LiveSwitch g_sw_FM2_ALL_BOOL_LOOP("FM2_ALL_BOOL_LOOP");
 LiveSwitch g_sw_FM2_ALL_CONSTANTS("FM2_ALL_CONSTANTS");
 LiveSwitch g_sw_FM2_ASYNC_SHADERS("FM2_ASYNC_SHADERS");
+LiveSwitch g_sw_FM2_CAR_FLOATS_VIA_STAGE("FM2_CAR_FLOATS_VIA_STAGE");
 LiveSwitch g_sw_FM2_CHECK_TEXTURES_ALWAYS("FM2_CHECK_TEXTURES_ALWAYS");
 LiveSwitch g_sw_FM2_CLEAR_FETCH_TABLE("FM2_CLEAR_FETCH_TABLE");
 LiveSwitch g_sw_FM2_CONSTANTS_BY_COUNT("FM2_CONSTANTS_BY_COUNT");
@@ -2025,6 +2049,7 @@ LiveSwitch g_sw_FM2_NO_SHADER_SCAN("FM2_NO_SHADER_SCAN");
 LiveSwitch g_sw_FM2_NO_STALE_RESOLVES("FM2_NO_STALE_RESOLVES");
 LiveSwitch g_sw_FM2_OLD_CLAMP("FM2_OLD_CLAMP");
 LiveSwitch g_sw_FM2_TEXTURE_CHECK_EVERY4("FM2_TEXTURE_CHECK_EVERY4");
+LiveSwitch g_sw_FM2_SHADER_COPY_ALWAYS("FM2_SHADER_COPY_ALWAYS");
 LiveSwitch g_sw_FM2_TRACE_CAR_DRAWS("FM2_TRACE_CAR_DRAWS");
 LiveSwitch g_sw_FM2_TRACE_DIRECT("FM2_TRACE_DIRECT");
 LiveSwitch g_sw_FM2_TRACE_MIDSIZE("FM2_TRACE_MIDSIZE");
@@ -3428,12 +3453,17 @@ std::unordered_map<uint64_t, uint64_t> g_psEditAlias; // shader -> alias
 std::unordered_map<uint64_t, std::string> g_psEditExpr; // alias -> the expression it returns
 std::atomic<bool> g_psEdits{ false };
 std::unordered_set<uint64_t> g_psEditEver; // every alias made (kept out of the pipeline manifest)
+std::atomic<bool> g_psEditMade{ false }; // set (under g_psEditMutex) with the first alias, never cleared
 // The debug server's drawstats: draws per (vs, ps) over one frame.
 std::atomic<int> g_drawStats{ 0 }; // 1 armed for the next frame, 2 counting, 0 off
 std::mutex g_drawStatsMutex;
 std::map<std::pair<uint64_t, uint64_t>, uint32_t> g_drawStatsCounts;
 bool IsPsEditAlias(uint64_t hash)
 {
+    // Asked several times a draw and edits are rare: no lock until one is made. A draw only holds an alias
+    // from PsEditAlias, which took the mutex the flag was set under, so it sees the flag.
+    if (!g_psEditMade.load(std::memory_order_relaxed) && !g_sw_FM2_PS_EDIT_LOCK)
+        return false;
     std::lock_guard lock(g_psEditMutex);
     return g_psEditEver.count(hash) != 0;
 }
@@ -3582,6 +3612,8 @@ const CompiledShader& GetShaderLocked(uint64_t hash, const std::vector<uint32_t>
                 cs.info.constantsUsed = base.info.constantsUsed; // same ALU code
                 cs.info.constantMask = base.info.constantMask;
                 cs.info.interpolatorsWritten = base.info.interpolatorsWritten;
+                cs.info.readsBools = base.info.readsBools; // same control flow
+                cs.info.readsLoops = base.info.readsLoops;
                 cs.info.vertexFetchLayout = std::move(layout.vertexFetchLayout);
                 cs.info.vertexFetchConstants = std::move(layout.vertexFetchConstants);
                 cs.cacheKey = base.cacheKey;
@@ -3724,6 +3756,9 @@ const CompiledShader& GetShaderLocked(uint64_t hash, const std::vector<uint32_t>
             Log("debug: ps alias %016llx returns %s", (unsigned long long)hash, expr.c_str());
         }
     }
+    // The debug edits above can read any constant: give those shaders the bool and loop constants.
+    if (getenv("FM2_DEBUG_VS") || getenv("FM2_DEBUG_PS") || getenv("FM2_DEBUG_PS_ALL") || g_psEdits.load(std::memory_order_relaxed))
+        cs.info.readsBools = cs.info.readsLoops = true;
     cs.cacheKey = Fnv(cs.info.hlsl.data(), cs.info.hlsl.size(), CacheSeed(pixel));
     static LiveSwitch shaderKeys("FM2_SHADER_KEYS"); // for tools/shader_seed.py
     if (shaderKeys)
@@ -8705,8 +8740,14 @@ void RendererSetShader(uint32_t type, const uint32_t* microcodeBE, uint32_t used
 {
     FM2_VK_IF_ENABLED(RendererVkSetShader(type, microcodeBE, usedDwords, hash))
     std::vector<uint32_t>& code = type == 0 ? C().vsCode : C().psCode;
+    // The title reloads the same shader for nearly every draw. The hash comes from words the caller just
+    // compared with this load, and everything downstream goes by the hash: the same hash and size means
+    // the code here is already these words. FM2_SHADER_COPY_ALWAYS=1 copies every time (A/B).
+    uint64_t& current = type == 0 ? C().vsHash : C().psHash;
+    if (current == hash && code.size() == usedDwords && !g_sw_FM2_SHADER_COPY_ALWAYS)
+        return;
     code.assign(microcodeBE, microcodeBE + usedDwords);
-    (type == 0 ? C().vsHash : C().psHash) = hash;
+    current = hash;
 }
 
 
@@ -8759,7 +8800,10 @@ bool DynamicBuffer(uint32_t address, uint32_t bytes)
     };
     static std::mutex mutex;
     static std::unordered_map<uint64_t, Seen> seen;
-    std::lock_guard lock(mutex);
+    // Only draw pieces get here at once: the renderer thread on its own takes no lock.
+    std::unique_lock lock(mutex, std::defer_lock);
+    if (C().worker || g_sw_FM2_DYNAMIC_LOCK)
+        lock.lock();
     Seen& s = seen[uint64_t(address) << 32 | bytes];
     // Hashing is the cost: a buffer that stopped changing (static geometry, most of them) is
     // checked every 16th frame, one that changes every frame.
@@ -9487,7 +9531,7 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
     if (!vizQueryDraws && (gpureg::Get(0x2293 /* PA_SC_VIZ_QUERY */) >> 7 & 1))
     {
         TraceSkip("viz query survey", initiator);
-        g_r.skippedThisFrame++;
+        Bump(g_r.skippedThisFrame);
         return;
     }
     if (!g_r.ok)
@@ -9502,7 +9546,7 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
     if ((edramMode != 4 && edramMode != 5) || C().vsCode.empty() || C().psCode.empty())
     {
         TraceSkip("edram mode", initiator);
-        g_r.skippedThisFrame++;
+        Bump(g_r.skippedThisFrame);
         return;
     }
     {
@@ -9564,7 +9608,7 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
     if (!vs.IsReady() || !ps.IsReady())
     {
         TraceSkip(vs.state == CompiledShader::Failed || ps.state == CompiledShader::Failed ? "shader" : "compiling", initiator);
-        g_r.skippedThisFrame++;
+        Bump(g_r.skippedThisFrame);
         return;
     }
     // A fetch from vertex fetch constant 96 or above (index field past the 96 slots) has no
@@ -9574,7 +9618,7 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
         if (k >= 96)
         {
             TraceSkip("invalid vertex fetch constant", initiator);
-            g_r.skippedThisFrame++;
+            Bump(g_r.skippedThisFrame);
             return;
         }
     // Triangle lists and restart-free strips read their indices on the GPU;
@@ -9614,7 +9658,7 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
     if (directIndex ? directVertices == 0 : (!indexEntry || list.empty()))
     {
         TraceSkip("primitive", initiator);
-        g_r.skippedThisFrame++;
+        Bump(g_r.skippedThisFrame);
         return;
     }
     Section(2);
@@ -9656,7 +9700,7 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
         }
         if (skipThis || sweepSkip || (skipTo && g_r.frame + 1 == dumpFrame && g_r.drawsThisFrame >= skipFrom && g_r.drawsThisFrame < skipTo))
         {
-            g_r.drawsThisFrame++;
+            Bump(g_r.drawsThisFrame);
             return;
         }
     }
@@ -9670,25 +9714,25 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
     const bool wantMotion = g_temporal && g_scenePhase && edramMode == 4 && WidePass() && !noMotion;
     if (g_temporal && g_scenePhase)
     {
-        g_tstat.draws++;
+        Bump(g_tstat.draws);
         if (edramMode == 4)
-            g_tstat.edram4++;
+            Bump(g_tstat.edram4);
         if (WidePass())
-            g_tstat.widePass++;
+            Bump(g_tstat.widePass);
         if (wantMotion)
-            g_tstat.wantMotion++;
+            Bump(g_tstat.wantMotion);
     }
     const CompiledShader* mvs = wantMotion ? MotionShader(vs) : nullptr;
     const CompiledShader* mps = wantMotion ? MotionShader(ps) : nullptr;
     bool motion = mvs && mps && mvs->IsReady() && mps->IsReady();
     if (wantMotion && !(mvs && mps))
-        g_tstat.shaderMissing++;
+        Bump(g_tstat.shaderMissing);
     else if (wantMotion && !motion)
-        g_tstat.shaderNotReady++;
+        Bump(g_tstat.shaderNotReady);
     D3D12_GPU_VIRTUAL_ADDRESS motionPrevious = 0; // last frame's vertex constants of this draw (b2)
     ID3D12PipelineState* pso = motion ? GetPipeline(*mvs, *mps, false, cullable, true) : nullptr;
     if (wantMotion && motion && !pso)
-        g_tstat.noPipeline++;
+        Bump(g_tstat.noPipeline);
     const CompiledShader* psUsed = nullptr; // the pixel shader drawn with, when not a motion pipeline
     if (!pso)
     {
@@ -9779,10 +9823,16 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
     auto* vc = staged ? vcStage.get() : reinterpret_cast<VSConstants*>(f.ringCpu + vsOffset);
     auto* pc = staged ? pcStage.get() : reinterpret_cast<PSConstants*>(f.ringCpu + psOffset);
     // The float constants go straight into the ring when nothing reads them back from the stage (from
-    // ReGPU 2fd47c3): staged, they were copied a second time at the flush, up to 4 KB a draw. Car draws
-    // (hooks/dealer.cpp reads and changes vc->c) and traced frames (logged from it) keep the stage.
-    // FM2_FLOATS_VIA_STAGE=1: always through the stage (A/B).
-    const bool floatsDirect = staged && !g_floatsViaStage && !vs.carBody && !vs.carPart && !RendererTracing();
+    // ReGPU 2fd47c3): staged, they were copied a second time at the flush, up to 4 KB a draw. Traced
+    // frames (logged from it) keep the stage, and so do car draws while the egg is on or car draws are
+    // traced (hooks/dealer.cpp reads all of vc->c). Checked once per draw: the egg can come on mid-frame.
+    // FM2_FLOATS_VIA_STAGE=1: always through the stage; FM2_CAR_FLOATS_VIA_STAGE=1: car draws always (A/B).
+    LiveSwitch &traceCar = g_sw_FM2_TRACE_CAR_DRAWS;
+    LiveSwitch &carViaStage = g_sw_FM2_CAR_FLOATS_VIA_STAGE;
+    const bool carDraw = vs.carBody || vs.carPart;
+    const bool carTrace = carDraw && traceCar;
+    const bool carStage = carDraw && (carTrace || carViaStage || DealerActive());
+    const bool floatsDirect = staged && !g_floatsViaStage && !carStage && !RendererTracing();
     {
         // Byte-swapped block copy of both constant banks (1024 dwords each).
         const __m128i swap = _mm_setr_epi8(3, 2, 1, 0, 7, 6, 5, 4, 11, 10, 9, 8, 15, 14, 13, 12);
@@ -9793,7 +9843,7 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
         LiveSwitch &allConstants = g_sw_FM2_ALL_CONSTANTS; // A/B
         const uint32_t nv = allConstants ? 256 : std::min(vs.info.constantsUsed, 256u), np = allConstants ? 256 : std::min(ps.info.constantsUsed, 256u);
         // Only the constants each shader reads, by its mask (from ReGPU 8a8bfa3). Car draws copy them
-        // all: hooks/dealer.cpp reads the car's constants itself. FM2_CONSTANTS_BY_COUNT copies all
+        // all while the egg is on: hooks/dealer.cpp reads the car's constants itself. FM2_CONSTANTS_BY_COUNT copies all
         // up to the highest one again (A/B).
         LiveSwitch &byCount = g_sw_FM2_CONSTANTS_BY_COUNT;
         auto copy = [&](__m128i* dst, const __m128i* from, const std::array<uint64_t, 4>& mask, uint32_t n, bool all) {
@@ -9810,8 +9860,7 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
                     _mm_storeu_si128(dst + i, _mm_shuffle_epi8(_mm_loadu_si128(from + i), swap));
                 }
         };
-        const bool carDraw = vs.carBody || vs.carPart;
-        copy(dv, src, vs.info.constantMask, carDraw ? 256 : nv, allConstants || carDraw);
+        copy(dv, src, vs.info.constantMask, carStage ? 256 : nv, allConstants || carStage);
         copy(dp, src + 256, ps.info.constantMask, np, allConstants);
         if (motion)
         {
@@ -9831,9 +9880,9 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
             const D3D12_GPU_VIRTUAL_ADDRESS now = f.ring->GetGPUVirtualAddress() + vsOffset;
             const bool known = entry.frame + 1 == g_upscale.constantsFrame && !g_upscale.reset;
             motionPrevious = known ? entry.address[parity ^ 1] : now;
-            g_tstat.motion++;
+            Bump(g_tstat.motion);
             if (known)
-                g_tstat.known++;
+                Bump(g_tstat.known);
             if (g_motionUnknownFrames)
             {
                 MotionUnknownStat& u = g_motionUnknown[C().vsHash];
@@ -9885,10 +9934,30 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
         }
     }
     Sub(1);
-    for (uint32_t i = 0; i < 8; i++)
-        vc->b[i] = pc->b[i] = gpureg::Get(gpureg::BoolConstants + i);
-    for (uint32_t i = 0; i < 32; i++)
-        vc->l[i] = pc->l[i] = gpureg::Get(gpureg::LoopConstants + i);
+    // Bool and loop constants only for the shaders that read them (TranslatedShader::readsBools/readsLoops):
+    // most read no bools and loops almost never, and each block was 160 bytes a draw into the
+    // write-combined ring. What is skipped stays stale and is never read. FM2_ALL_BOOL_LOOP=1 (live): all, as before (A/B).
+    const bool allBoolLoop = g_sw_FM2_ALL_BOOL_LOOP || g_sw_FM2_FULL_CONSTANT_BLOCKS;
+    const bool vsBools = allBoolLoop || vs.info.readsBools, psBools = allBoolLoop || ps.info.readsBools;
+    const bool vsLoops = allBoolLoop || vs.info.readsLoops, psLoops = allBoolLoop || ps.info.readsLoops;
+    if (vsBools || psBools)
+        for (uint32_t i = 0; i < 8; i++)
+        {
+            const uint32_t v = gpureg::Get(gpureg::BoolConstants + i);
+            if (vsBools)
+                vc->b[i] = v;
+            if (psBools)
+                pc->b[i] = v;
+        }
+    if (vsLoops || psLoops)
+        for (uint32_t i = 0; i < 32; i++)
+        {
+            const uint32_t v = gpureg::Get(gpureg::LoopConstants + i);
+            if (vsLoops)
+                vc->l[i] = v;
+            if (psLoops)
+                pc->l[i] = v;
+        }
     // Debug: FM2_FORCE_BOOL=<index>:<0|1> forces one boolean constant for every draw.
     if (static const char* force = getenv("FM2_FORCE_BOOL"); force)
     {
@@ -9896,8 +9965,12 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
         static const bool parsed = sscanf(force, "%u:%u", &index, &value) == 2 && index < 256;
         if (parsed)
         {
-            const uint32_t bit = 1u << (index & 31);
-            vc->b[index >> 5] = pc->b[index >> 5] = value ? (pc->b[index >> 5] | bit) : (pc->b[index >> 5] & ~bit);
+            // Each block from its own words (a block not filled this draw holds stale ones).
+            const uint32_t bit = 1u << (index & 31), w = index >> 5;
+            if (vsBools)
+                vc->b[w] = value ? (vc->b[w] | bit) : (vc->b[w] & ~bit);
+            if (psBools)
+                pc->b[w] = value ? (pc->b[w] | bit) : (pc->b[w] & ~bit);
         }
     }
     Sub(4);
@@ -10124,13 +10197,13 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
     vc->point[1] = float(pointSize & 0xFFFF) / 8.0f;
     vc->point[2] = float(pointMinMax & 0xFFFF) / 8.0f;
     vc->point[3] = float(pointMinMax >> 16) / 8.0f;
-    // Car meshes read vsquash as their squash (the "whysthisdealer" easter egg, dealer.cpp).
+    // Car meshes read vsquash as their squash (the "whysthisdealer" easter egg, dealer.cpp). With the egg
+    // off it stays zero (DealerCarDraw returns at once then), so only car draws with all constants (carStage) call it.
     memset(vc->vsquash, 0, sizeof(vc->vsquash));
-    if (vs.carBody || vs.carPart)
+    if (carStage)
     {
         DealerCarDraw(C().vsHash, vc->c, vc->vsquash, vs.carBody, vs.carOriginRow);
-        LiveSwitch &traceCar = g_sw_FM2_TRACE_CAR_DRAWS;
-        if (traceCar)
+        if (carTrace)
             Log("car draw: vs %016llx ps %016llx origin %.3f %.3f %.3f %.3f x %.3f %.3f %.3f squash %d", (unsigned long long)C().vsHash, (unsigned long long)C().psHash,
                 vc->c[3][0], vc->c[3][1], vc->c[3][2], vc->c[3][3], vc->c[0][0], vc->c[0][1], vc->c[0][2], int(vc->vsquash[3][3] > 0));
     }
@@ -10346,7 +10419,7 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
     if (scissor.right <= scissor.left || scissor.bottom <= scissor.top)
     {
         TraceSkip("empty scissor", initiator);
-        g_r.skippedThisFrame++;
+        Bump(g_r.skippedThisFrame);
         return;
     }
     D3D12_RECT hostScissor = ToHost(scissor);
@@ -10443,11 +10516,10 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
     }
     if (staged)
     {
-        // Float constants up to the highest one the shader reads (all for car draws, which the
+        // Float constants up to the highest one the shader reads (all for carStage car draws, which the
         // dealer hook reads), then everything after them, each in one go.
         LiveSwitch &allConstantsFlush = g_sw_FM2_ALL_CONSTANTS;
-        const bool carDraw = vs.carBody || vs.carPart;
-        const size_t nv = allConstantsFlush || carDraw ? 256 : std::min(vs.info.constantsUsed, 256u);
+        const size_t nv = allConstantsFlush || carStage ? 256 : std::min(vs.info.constantsUsed, 256u);
         const size_t np = allConstantsFlush ? 256 : std::min(ps.info.constantsUsed, 256u);
         uint8_t* rv = f.ringCpu + vsOffset;
         uint8_t* rp = f.ringCpu + psOffset;
@@ -10478,7 +10550,15 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
             const size_t layouts = std::min<size_t>(vs.info.vertexFetchLayout.size(), 32);
             const uint32_t slotMask = ps.info.usedTextureSlots | vs.info.usedTextureSlots;
             const uint32_t slots = slotMask ? 32 - uint32_t(__builtin_clz(slotMask)) : 0;
-            put(rv, vc, offsetof(VSConstants, b), offsetof(VSConstants, vf));
+            if (allBoolLoop)
+                put(rv, vc, offsetof(VSConstants, b), offsetof(VSConstants, vf));
+            else
+            {
+                if (vsBools)
+                    put(rv, vc, offsetof(VSConstants, b), offsetof(VSConstants, l));
+                if (vsLoops)
+                    put(rv, vc, offsetof(VSConstants, l), offsetof(VSConstants, vf));
+            }
             // The fetch entries the shader reads, each on its own: FM2 keeps its vertex stream in fetch constant 95,
             // so "up to the highest" was the whole 1.5 KB table on almost every draw (about two thirds of the
             // constant bytes written to the ring, which an FX-8350 pays dearly for). FM2_VF_TABLE_COPY=1: the old range.
@@ -10492,7 +10572,16 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
             put(rv, vc, offsetof(VSConstants, info), offsetof(VSConstants, vfl));
             put(rv, vc, offsetof(VSConstants, vfl), offsetof(VSConstants, vfl) + layouts * sizeof(vc->vfl[0]));
             put(rv, vc, offsetof(VSConstants, vsquash), sizeof(VSConstants));
-            put(rp, pc, offsetof(PSConstants, b), offsetof(PSConstants, tinfo));
+            if (allBoolLoop)
+                put(rp, pc, offsetof(PSConstants, b), offsetof(PSConstants, tinfo));
+            else
+            {
+                if (psBools)
+                    put(rp, pc, offsetof(PSConstants, b), offsetof(PSConstants, l));
+                if (psLoops)
+                    put(rp, pc, offsetof(PSConstants, l), offsetof(PSConstants, info));
+                put(rp, pc, offsetof(PSConstants, info), offsetof(PSConstants, tinfo)); // pinfo, pinfo2
+            }
             put(rp, pc, offsetof(PSConstants, tinfo), offsetof(PSConstants, tinfo) + slots * sizeof(pc->tinfo[0]));
             put(rp, pc, offsetof(PSConstants, tbias), offsetof(PSConstants, tbias) + slots * sizeof(pc->tbias[0]));
             put(rp, pc, offsetof(PSConstants, forceLod), sizeof(PSConstants));
@@ -10670,7 +10759,7 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
         }
     }
     Section(6);
-    g_r.drawsThisFrame++;
+    Bump(g_r.drawsThisFrame);
 }
 
 }
@@ -11760,6 +11849,7 @@ uint64_t RendererEditPixelShader(uint64_t hash, const std::string& expr)
         g_psEditAlias[hash] = alias;
         g_psEditExpr[alias] = expr;
         g_psEditEver.insert(alias);
+        g_psEditMade.store(true, std::memory_order_relaxed);
     }
     g_psEdits = !g_psEditAlias.empty();
     return alias;
