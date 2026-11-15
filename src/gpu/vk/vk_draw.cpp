@@ -182,7 +182,7 @@ void DrawBeginFrame(DrawContext& draw)
 
 bool DrawList(const Context& context, DrawContext& draw, VkCommandBuffer cmd, VkPipeline pipeline, VkDescriptorSet textures,
     gpu::VSConstants& vs, const gpu::PSConstants& ps, const uint32_t* list, uint32_t count, const VkRect2D& scissor,
-    const std::vector<uint32_t>* fetchConstants)
+    const std::vector<uint32_t>* fetchConstants, const ConstantUse* use)
 {
     static const bool profile = getenv("FM2_PERF") != nullptr;
     auto before = profile ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
@@ -285,10 +285,39 @@ bool DrawList(const Context& context, DrawContext& draw, VkCommandBuffer cmd, Vk
                 (unsigned long long)psOffset, count);
         return false;
     }
-    if (&vs != reinterpret_cast<const gpu::VSConstants*>(draw.constants.cpu + vsOffset))
-        memcpy(draw.constants.cpu + vsOffset, &vs, sizeof vs);
-    if (&ps != reinterpret_cast<const gpu::PSConstants*>(draw.constants.cpu + psOffset))
-        memcpy(draw.constants.cpu + psOffset, &ps, sizeof ps);
+    if (use && fetchConstants)
+    {
+        // Only what the shaders read (as the Direct3D 12 path does): the blocks are sized for 256 float constants,
+        // 96 fetch constants and 32 texture slots, a draw uses a fraction, and the rest was most of 12 KB copied
+        // per draw. The title keeps its vertex stream in fetch constant 95, so the fetch entries go one by one.
+        uint8_t* rv = draw.constants.cpu + vsOffset;
+        uint8_t* rp = draw.constants.cpu + psOffset;
+        auto put = [](uint8_t* ring, const void* block, size_t from, size_t to) {
+            if (to > from)
+                memcpy(ring + from, static_cast<const uint8_t*>(block) + from, to - from);
+        };
+        using gpu::PSConstants;
+        using gpu::VSConstants;
+        const size_t layouts = std::min<size_t>(use->layouts, 32), slots = std::min<size_t>(use->slots, 32);
+        put(rv, &vs, 0, std::min<size_t>(use->vsFloats, 256) * sizeof(vs.c[0]));
+        put(rv, &vs, offsetof(VSConstants, b), offsetof(VSConstants, vf));
+        for (uint32_t k : *fetchConstants)
+            if (k < 96)
+                memcpy(rv + offsetof(VSConstants, vf) + k * sizeof(vs.vf[0]), vs.vf[k], sizeof(vs.vf[0]));
+        put(rv, &vs, offsetof(VSConstants, info), offsetof(VSConstants, vfl) + layouts * sizeof(vs.vfl[0]));
+        put(rv, &vs, offsetof(VSConstants, vsquash), sizeof(VSConstants));
+        put(rp, &ps, 0, std::min<size_t>(use->psFloats, 256) * sizeof(ps.c[0]));
+        put(rp, &ps, offsetof(PSConstants, b), offsetof(PSConstants, tinfo) + slots * sizeof(ps.tinfo[0]));
+        put(rp, &ps, offsetof(PSConstants, tbias), offsetof(PSConstants, tbias) + slots * sizeof(ps.tbias[0]));
+        put(rp, &ps, offsetof(PSConstants, forceLod), sizeof(PSConstants));
+    }
+    else
+    {
+        if (&vs != reinterpret_cast<const gpu::VSConstants*>(draw.constants.cpu + vsOffset))
+            memcpy(draw.constants.cpu + vsOffset, &vs, sizeof vs);
+        if (&ps != reinterpret_cast<const gpu::PSConstants*>(draw.constants.cpu + psOffset))
+            memcpy(draw.constants.cpu + psOffset, &ps, sizeof ps);
+    }
     draw.constants.used = psOffset + sizeof(gpu::PSConstants);
 
     if (draw.pipeline != pipeline)

@@ -83,9 +83,18 @@ bool DrawIndexed(const Context& context, DrawContext& draw, VkCommandBuffer cmd,
 // case list may be null: count is the number of expanded vertices, and no indices are uploaded.
 // Guest vertex buffers the draw fetches are snapshotted into the ring (vs.vf is rewritten to
 // point at the copies). fetchConstants lists the vf slots the shader reads; null checks all 96.
+// What of the constant blocks the draw's shaders read: float constants below these counts, that many layout entries
+// and texture slots (and, of the fetch table, the entries in fetchConstants).
+struct ConstantUse
+{
+    uint32_t vsFloats = 256, psFloats = 256, layouts = 32, slots = 32;
+};
+
+// use (with fetchConstants) copies only those parts into the ring instead of both whole blocks; the bytes skipped
+// are never read. Without it everything is copied.
 bool DrawList(const Context& context, DrawContext& draw, VkCommandBuffer cmd, VkPipeline pipeline, VkDescriptorSet textures,
     gpu::VSConstants& vs, const gpu::PSConstants& ps, const uint32_t* list, uint32_t count, const VkRect2D& scissor,
-    const std::vector<uint32_t>* fetchConstants = nullptr);
+    const std::vector<uint32_t>* fetchConstants = nullptr, const ConstantUse* use = nullptr);
 
 void DrawSetViewport(const Context& context, DrawContext& draw, VkCommandBuffer cmd, const VkViewport& viewport);
 void DrawSetBlendConstants(const Context& context, DrawContext& draw, VkCommandBuffer cmd, const float rgba[4]);
