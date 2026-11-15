@@ -49,6 +49,18 @@ void BenchmarkRecord(bool on);
 void BenchmarkWriteReport(const char* path);
 // True while FM2_TRACE_DRAWS's frame is being recorded.
 bool RendererTracing();
+// False whenever RendererTracing is (no traced frame still ahead): inline, for the command
+// processor's per-packet check. (Defined in renderer.cpp; g_rendererFrame is its frame count.)
+#include <atomic>
+extern std::atomic<uint64_t> g_hotkeyFrame;
+extern const uint64_t g_traceDrawsEnv;
+extern const uint64_t& g_rendererFrame;
+inline bool RendererTraceArmed()
+{
+    // (RendererTracing wants the trace frame == frame + 1: a frame already past is not armed.)
+    const uint64_t frame = g_rendererFrame;
+    return g_hotkeyFrame.load(std::memory_order_relaxed) > frame || g_traceDrawsEnv > frame;
+}
 
 // The graphics options screen: `change` edits the settings at the next frame start, with the GPU idle; the resolution,
 // aspect ratio, display mode, MSAA and filtering then follow them, and they are saved.

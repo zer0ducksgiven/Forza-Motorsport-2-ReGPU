@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <bit>
 #include <immintrin.h>
+#include <intrin.h> // __rdtsc (clang-cl declares it here)
 #include <atomic>
 #include <condition_variable>
 #include <deque>
@@ -50,6 +51,9 @@
 #include "gpu/ps_glyphs.h"
 #include "gpu/pipeline_seed.h"
 #include "gpu/shader_seed.h"
+// XXH3 (xxHash, BSD 2-Clause, in XenonRecomp's thirdparty), inlined: the index buffers' full hash.
+#define XXH_INLINE_ALL
+#include "../../thirdparty/XenonRecomp/thirdparty/xxHash/xxhash.h"
 #include "settings.h"
 #include "gpu/regs.h"
 #include "gpu/texture.h"
@@ -392,6 +396,7 @@ UINT64 kRingSize = 128ull << 20;
 constexpr UINT64 kRingMax = 2048ull << 20;
 std::atomic<UINT64> g_ringWant{ 0 };
 UINT64 g_ringPeak = 0;
+UINT64 UploadStickyReserve(UINT64 ringSize); // the ring's extra space for repeated uploads (see UploadSticky)
 constexpr UINT kDescriptorsPerFrame = 8192; // per frame: ring + guest memory views, then resolve-blit views
 constexpr UINT kBindless = 1u << 16;      // permanent texture descriptors (0 null 2D, 1 null cube)
 constexpr UINT kBindlessBase = kDescriptorsPerFrame * 3;
@@ -514,11 +519,14 @@ struct FrameResources
     uint8_t* ringCpu = nullptr;
     std::atomic<UINT64> ringUsed{ 0 }; // draw workers allocate concurrently
     UINT64 ringSize = 0; // this slot's ring (grows, see RingAlloc)
+    UINT64 ringTail = 0; // `ring` is ringSize + ringTail: the tail above ringSize is UploadSticky's, RingAlloc stops at ringSize
+    uint32_t ringGen = 0; // bumped when `ring` is replaced (made, grown or swapped): the tail starts over
+    uint64_t ringEpoch = 0; // bumped when the ring is reset: ring offsets remembered from before it are stale
     // FM2_GPU_UPLOAD_RING (live, from FM3-ReGPU): the same ring in a GPU upload heap (VRAM the CPU writes through
     // resizable BAR), swapped with `ring` at the frame start; made only when the device reports GPU upload heaps.
     ComPtr<ID3D12Resource> ringAlt;
     uint8_t* ringAltCpu = nullptr;
-    UINT64 ringAltSize = 0;
+    UINT64 ringAltSize = 0, ringAltTail = 0;
     bool ringInVram = false;
     // Guest ranges already uploaded this frame: (address << 32 | bytes) -> (offset, sample hash).
     std::unordered_map<uint64_t, std::pair<UINT64, uint64_t>> uploads;
@@ -654,6 +662,18 @@ std::mutex g_surfaceMutex;           // EDRAM surfaces
 // before the segment's draws (another worker's earlier draws may use the same texture).
 RecordedList* g_prepList = nullptr;
 
+// The microcode of shaders a context loaded lately, per stage, by hash (direct-mapped). The title switches
+// between a few shaders from draw to draw: going back to one is a pointer change, not a copy.
+struct ShaderCodeCache
+{
+    struct Slot
+    {
+        uint64_t hash = 0;
+        std::vector<uint32_t> code;
+    } slots[2][128];
+};
+const std::vector<uint32_t> g_noShaderCode;
+
 // What a thread recording draws keeps for itself: its command list, the bound surfaces and
 // shaders. The command processor thread uses the main context (the frame's list); draw
 // workers each have their own (see the parallel draw segments in gpu.cpp).
@@ -665,8 +685,10 @@ struct DrawContext
     // The bound surfaces.
     ComPtr<ID3D12Resource> color, depth;
     D3D12_RESOURCE_STATES colorState = D3D12_RESOURCE_STATE_RENDER_TARGET;
-    // Active shaders: the last microcode loaded per stage.
-    std::vector<uint32_t> vsCode, psCode;
+    // Active shaders: the last microcode loaded per stage (a slot of codeCache once one is loaded).
+    const std::vector<uint32_t>* vsCode = &g_noShaderCode;
+    const std::vector<uint32_t>* psCode = &g_noShaderCode;
+    std::unique_ptr<ShaderCodeCache> codeCache;
     uint64_t vsHash = 0, psHash = 0;
     bool worker = false; // a draw worker: frame-level work (begin, resolves, swaps) is not its job
 };
@@ -1000,6 +1022,8 @@ struct SlotBinding
     uint32_t tinfo[4] = {};
     float tbias[4] = {};
     bool samplesResolve = false;
+    bool resolveFree = false; // a plain 2D texture, not a resolve: still good after a resolve elsewhere (see the slot loop)
+    float lodShift = 0.0f;    // the LOD bias added for the scene scale when it was made (LodShift)
 };
 // A cache valid for one frame: entries carry the frame they were made in instead of the map
 // being cleared each frame (re-inserting freed nodes cost a heap allocation per entry).
@@ -1074,11 +1098,16 @@ thread_local uint64_t g_bindingsFrame = ~0ull, g_bindingsEpoch = ~0ull;
 
 // The frame to trace (draws and resolves logged, the image and resolves written out):
 // FM2_TRACE_DRAWS=<frame>, or the one after F12 is pressed in the game window.
+// (These outside the anonymous namespace: RendererTraceArmed in renderer.h reads them inline.)
+}
 std::atomic<uint64_t> g_hotkeyFrame{ 0 };
-std::atomic<bool> g_captureComplete{ false };
+const uint64_t& g_rendererFrame = g_r.frame;
 // (Read once at startup: a function-local static checks its initialisation guard on every call, and
-// RendererTracing asks several times a draw.)
+// RendererTracing asks several times a draw.) External linkage from the declaration in renderer.h.
 const uint64_t g_traceDrawsEnv = getenv("FM2_TRACE_DRAWS") ? strtoull(getenv("FM2_TRACE_DRAWS"), nullptr, 10) : 0;
+namespace
+{
+std::atomic<bool> g_captureComplete{ false };
 uint64_t TraceFrame()
 {
     const uint64_t hot = g_hotkeyFrame.load(std::memory_order_relaxed);
@@ -1150,6 +1179,26 @@ uint64_t FullHash(const uint8_t* data, size_t bytes)
     uint64_t h = a ^ (b * 0x9E3779B97F4A7C15ull) ^ (c * 0xC2B2AE3D27D4EB4Full) ^ (d * 0x165667B19E3779F9ull);
     h = (h ^ (h >> 33)) * 0xFF51AFD7ED558CCDull;
     return h ^ (h >> 33);
+}
+
+// Index buffers' full hash, every byte of every buffer each frame: XXH3. Over 240 bytes its SSE2
+// loop has no 64-bit multiply; FullHash does one per 8 bytes, and the FX's Piledriver issues one
+// every 4 cycles. Buffers of 240 bytes or less use a scalar 128-bit multiply and gain nothing.
+// FM2_INDEX_FULLHASH=1: FullHash, the old way (A/B; a flip re-copies each buffer once).
+LiveSwitch g_sw_FM2_INDEX_FULLHASH("FM2_INDEX_FULLHASH");
+// FM2_INDEX_STATS=1 (diagnostic): every 5 s, index bytes hashed (and how many in small buffers)
+// and re-copied a frame, the hash's and the swap's cycles a byte (near memory speed: only fewer
+// bytes would help).
+LiveSwitch g_sw_FM2_INDEX_STATS("FM2_INDEX_STATS");
+// An index buffer is marked checked for the frame before its hash, so in a ring-full frame later draws
+// use the old (or never-written) arena copy. FM2_INDEX_CHECKED_LATE=1 (to try): marked only once known
+// good (unchanged, or its copy has ring space); a failed copy fails that buffer's later draws that frame.
+LiveSwitch g_sw_FM2_INDEX_CHECKED_LATE("FM2_INDEX_CHECKED_LATE");
+uint64_t IndexHash(const uint8_t* data, size_t bytes)
+{
+    if (g_sw_FM2_INDEX_FULLHASH)
+        return FullHash(data, bytes);
+    return XXH3_64bits(data, bytes);
 }
 
 // Sampled hash for large texture sources: every 64th dword plus the ends.
@@ -1886,12 +1935,16 @@ void Init()
     {
         FrameResources& f = g_r.frames[i];
         Check(d->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&f.allocator)), "CreateCommandAllocator");
-        f.ring = CreateBuffer(kRingSize, D3D12_HEAP_TYPE_UPLOAD, D3D12_RESOURCE_STATE_GENERIC_READ);
+        const UINT64 tail = UploadStickyReserve(kRingSize);
+        f.ring = CreateBuffer(kRingSize + tail, D3D12_HEAP_TYPE_UPLOAD, D3D12_RESOURCE_STATE_GENERIC_READ);
         f.ring->Map(0, nullptr, reinterpret_cast<void**>(&f.ringCpu));
         f.ringSize = kRingSize;
-        if (g_gpuUploadHeap && !(f.ringAlt = CreateGpuUploadRing(kRingSize, f.ringAltCpu)))
+        f.ringTail = tail;
+        f.ringGen++;
+        if (g_gpuUploadHeap && !(f.ringAlt = CreateGpuUploadRing(kRingSize + tail, f.ringAltCpu)))
             g_gpuUploadHeap = false;
         f.ringAltSize = f.ringAlt ? kRingSize : 0;
+        f.ringAltTail = f.ringAlt ? tail : 0;
         f.descriptorBase = i * kDescriptorsPerFrame;
     }
     Check(d->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, g_r.frames[0].allocator.Get(), nullptr, IID_PPV_ARGS(&g_r.realList)),
@@ -2047,12 +2100,209 @@ LiveSwitch g_sw_FM2_NO_POLY_OFFSET("FM2_NO_POLY_OFFSET");
 LiveSwitch g_sw_FM2_NO_RENDER("FM2_NO_RENDER");
 LiveSwitch g_sw_FM2_NO_SHADER_SCAN("FM2_NO_SHADER_SCAN");
 LiveSwitch g_sw_FM2_NO_STALE_RESOLVES("FM2_NO_STALE_RESOLVES");
+LiveSwitch g_sw_FM2_NO_UPLOAD_STICKY("FM2_NO_UPLOAD_STICKY");
 LiveSwitch g_sw_FM2_OLD_CLAMP("FM2_OLD_CLAMP");
 LiveSwitch g_sw_FM2_TEXTURE_CHECK_EVERY4("FM2_TEXTURE_CHECK_EVERY4");
 LiveSwitch g_sw_FM2_SHADER_COPY_ALWAYS("FM2_SHADER_COPY_ALWAYS");
+// =1: one code buffer per stage, copied at every shader change, as before ShaderCodeCache (A/B).
+LiveSwitch g_sw_FM2_SHADER_CODE_ONE_SLOT("FM2_SHADER_CODE_ONE_SLOT");
+LiveSwitch g_shaderSetPerf("FM2_PERF");
+// =1: DrawImpl asks for the pass size, scales and window scissor each time it needs them, and reads the
+// camera clock on every draw, as before PassGeometry (A/B).
+LiveSwitch g_sw_FM2_PASS_MATH_EACH("FM2_PASS_MATH_EACH");
 LiveSwitch g_sw_FM2_TRACE_CAR_DRAWS("FM2_TRACE_CAR_DRAWS");
 LiveSwitch g_sw_FM2_TRACE_DIRECT("FM2_TRACE_DIRECT");
 LiveSwitch g_sw_FM2_TRACE_MIDSIZE("FM2_TRACE_MIDSIZE");
+// FM2_PS_REUSE=1 (live): a draw whose pixel block matches this thread's last one binds it again (see DrawImpl).
+// Off: on the FX it hit ~23% of draws but cost more than it saved (Timeline segment 1: 81 off, 79 on).
+LiveSwitch g_sw_FM2_PS_REUSE("FM2_PS_REUSE");
+// FM2_CONSTANT_REUSE_STATS (live): how often a draw's constants match the last draw's, logged every 5 s.
+// (Counted with fetch_add, not Bump: Bump's plain add on the renderer thread would lose the workers' counts.)
+LiveSwitch g_sw_FM2_CONSTANT_REUSE_STATS("FM2_CONSTANT_REUSE_STATS");
+struct ConstantReuseStats
+{
+    std::atomic<uint32_t> draws{ 0 }, vsFloats{ 0 }, psTried{ 0 }, psKey{ 0 }, psFloats{ 0 }, psHits{ 0 };
+    std::atomic<uint64_t> psBytesSaved{ 0 }; // ring bytes a reused block did not write
+} g_constantReuse;
+// Per-draw memo caches (A/B, =1 the old way): bindings rebuilt after every resolve, shader, pipeline and
+// fetch-variant lookups through their maps alone, the texture slots' constants cleared up to the highest used one.
+LiveSwitch g_sw_FM2_BINDING_EPOCH_STRICT("FM2_BINDING_EPOCH_STRICT");
+LiveSwitch g_sw_FM2_SHADER_MAP_ONLY("FM2_SHADER_MAP_ONLY");
+LiveSwitch g_sw_FM2_PIPELINE_MAP_ONLY("FM2_PIPELINE_MAP_ONLY");
+LiveSwitch g_sw_FM2_VARIANT_MAP_ONLY("FM2_VARIANT_MAP_ONLY");
+LiveSwitch g_sw_FM2_SLOT_CLEAR_ALL("FM2_SLOT_CLEAR_ALL");
+LiveSwitch g_sw_FM2_NO_LOD_BIAS("FM2_NO_LOD_BIAS");
+// FM2_CP_MEMO_STATS=1: the memo caches' hits, all threads summed, logged by the renderer thread every 600 frames.
+// Each thread reads the switch once a draw into a plain bool, so with it off a lookup pays no atomic load.
+LiveSwitch g_sw_FM2_CP_MEMO_STATS("FM2_CP_MEMO_STATS");
+struct CpMemoStats
+{
+    uint64_t shaderHit, shaderMiss, pipeHit, pipeMiss, variantHit, variantMiss, slotHit, slotRevived, slotEpochMiss, slotMiss;
+};
+constexpr size_t kMemoStatCount = sizeof(CpMemoStats) / sizeof(uint64_t);
+thread_local CpMemoStats t_memoStats{};
+thread_local bool t_memoOn = false;
+thread_local uint64_t t_memoFlushFrame = 0;
+std::atomic<uint64_t> g_memoTotals[kMemoStatCount];
+inline void MemoStat(uint64_t& v)
+{
+    if (t_memoOn)
+        v++;
+}
+// A temporal upscaler's scene: mips biased sharper by log2 of the scale (see the slot loop).
+inline float LodShift()
+{
+    return g_temporal && g_sceneScale < 1.0f && !g_sw_FM2_NO_LOD_BIAS ? std::log2(g_sceneScale) : 0.0f;
+}
+
+LiveSwitch g_sw_FM2_UPLOAD_STATS("FM2_UPLOAD_STATS");
+LiveSwitch g_sw_FM2_UPLOAD_STATS_EXACT("FM2_UPLOAD_STATS_EXACT");
+
+// Repeated small vertex buffers (HUD, menus: same address, size and bytes every frame) are kept in a tail above
+// each slot's ring (the resource is ringSize + ringTail; RingAlloc never reaches it) instead of being copied into
+// the ring again each frame. A later frame of the same slot whose bytes are unchanged (memcmp against a CPU copy,
+// so exact: the ring is write-combined) points the fetch at the old copy, through the same t0 view. Only the
+// renderer thread uses the tail and it is only appended to, so no offset a draw of this frame holds is ever
+// overwritten; it starts over at its slot's frame start, when that slot's last frame is done on the GPU
+// (BeginFrameIfNeeded waits for it), and whenever the ring is made again. Vulkan copies in vk_draw.cpp, untouched.
+// FM2_NO_UPLOAD_STICKY=1 (live, from the next frame): copy every frame, the ring made again at HEAD's size.
+// FM2_UPLOAD_STICKY_MB: tail size. FM2_UPLOAD_STICKY_MIN_BYTES: only buffers this big or bigger use it.
+// FM2_RING_SCRIBBLE zeroes only [0, ringUsed); with it on the tail is zeroed and started over each frame too.
+constexpr uint32_t kStickyMaxBytes = 16 * 1024;
+constexpr uint32_t kStickyTableBits = 14;
+UINT64 UploadStickyReserve(UINT64 ringSize)
+{
+    static const UINT64 reserve = (getenv("FM2_UPLOAD_STICKY_MB") ? UINT64(std::clamp(atoi(getenv("FM2_UPLOAD_STICKY_MB")), 0, 512)) : 8ull) << 20;
+    // Not on a small ring (FM2_RING_MB): the tail would cost more than a quarter on top. Not past kRingMax either.
+    return g_sw_FM2_NO_UPLOAD_STICKY || reserve * 4 > ringSize || ringSize + reserve > kRingMax ? 0 : reserve;
+}
+struct UploadSticky
+{
+    struct Slot
+    {
+        uint32_t gen = 1;                    // copies made under another gen are gone
+        uint32_t ringGen = ~0u;              // the ring the tail is in
+        UINT64 base = 0, size = 0, used = 0; // the tail: [base, base + size) of the ring
+        std::unique_ptr<uint8_t[]> shadow;   // what the tail holds, for the compare
+    } slots[kFrames];
+    struct Seen
+    {
+        uint64_t sample = 0, frame = ~0ull; // the last upload's sampled hash and frame
+        uint32_t gen[kFrames]{};            // per slot: its tail copy's gen (valid when equal to the slot's)
+        uint32_t at[kFrames]{};             // and where it is in the tail
+    };
+    // Direct-mapped by key, renderer thread only: no allocation or clearing on the CP thread. Another key taking
+    // the entry resets it, so a copy is only ever found through its own key.
+    struct Entry
+    {
+        uint64_t key = ~0ull; // (address << 32 | bytes); ~0 is never one (bytes <= kStickyMaxBytes)
+        Seen seen;
+    } table[1u << kStickyTableBits];
+    Seen& Find(uint64_t key, bool& evicted)
+    {
+        Entry& e = table[(key * 0x9E3779B97F4A7C15ull) >> (64 - kStickyTableBits)];
+        evicted = false;
+        if (e.key != key)
+        {
+            evicted = e.key != ~0ull;
+            e.key = key;
+            e.seen = Seen{};
+        }
+        return e.seen;
+    }
+} g_sticky;
+
+// At the frame start (the slot's last frame is done): start over when the ring or the tail moved, or the tail
+// is mostly used (dropped copies are not reused).
+void UploadStickyBeginFrame(FrameResources& f, UINT slot, bool scribble)
+{
+    UploadSticky::Slot& s = g_sticky.slots[slot];
+    const UINT64 size = f.ringTail;
+    const bool sameRing = s.ringGen == f.ringGen;
+    if (scribble && sameRing && f.ringCpu && s.base + s.used <= f.ringSize + f.ringTail)
+        memset(f.ringCpu + s.base, 0, size_t(s.used));
+    if (scribble || !sameRing || s.base != f.ringSize || s.size != size || s.used > size / 4 * 3)
+    {
+        if (++s.gen == 0)
+            s.gen = 1;
+        s.ringGen = f.ringGen;
+        s.base = f.ringSize;
+        s.used = 0;
+        if (s.size != size)
+        {
+            s.size = size;
+            s.shadow.reset(size ? new uint8_t[size_t(size)] : nullptr);
+        }
+    }
+}
+
+// FM2_UPLOAD_STATS (live): every 2 s, the renderer thread's vertex uploads per frame: calls, same-frame hits,
+// copies and their KB, KB that repeat a recent frame's (same address, size and sampled hash: what the tail can
+// keep), tail hits, KB put in the tail, cycles per KB copied vs compared, and keys that took another key's table entry.
+// FM2_UPLOAD_STATS_EXACT keeps a CPU copy of each upload to count exact repeats, and same-frame hits whose bytes
+// changed under the sampled hash (slow: not for fps runs).
+struct UploadStats
+{
+    uint64_t frames = 0, lastFrame = ~0ull;
+    uint64_t calls = 0, frameHits = 0, copies = 0, copyBytes = 0, repeats = 0, repeatBytes = 0;
+    uint64_t tailHits = 0, tailBytes = 0, promotedBytes = 0, evicted = 0;
+    uint64_t copyCycles = 0, compareCycles = 0, compareBytes = 0;
+    uint64_t exactRepeatBytes = 0, staleHits = 0;
+    std::unordered_map<uint64_t, std::pair<uint64_t, uint64_t>> last; // key -> frame, sample of its last upload
+    std::unordered_map<uint64_t, std::vector<uint8_t>> bytes;           // _EXACT: key -> its last upload
+    std::chrono::steady_clock::time_point logged = std::chrono::steady_clock::now();
+} g_uploadStats;
+
+UploadStats& UploadStatsTick()
+{
+    UploadStats& s = g_uploadStats;
+    if (s.lastFrame == g_r.frame)
+        return s;
+    s.lastFrame = g_r.frame;
+    if (const auto now = std::chrono::steady_clock::now(); s.frames && now - s.logged >= std::chrono::seconds(2))
+    {
+        const double n = double(s.frames);
+        Log("upload stats: per frame (%llu): %.0f calls, %.0f same-frame hits, %.0f copies %.1f KB (%.0f %.1f KB repeat a recent frame, "
+            "%.1f KB exactly), %.0f tail hits %.1f KB, %.1f KB into the tail, %.0f table evictions; copy %.0f, compare %.0f cycles/KB; %.1f stale hits",
+            (unsigned long long)s.frames, s.calls / n, s.frameHits / n, s.copies / n, s.copyBytes / n / 1024, s.repeats / n,
+            s.repeatBytes / n / 1024, s.exactRepeatBytes / n / 1024, s.tailHits / n, s.tailBytes / n / 1024, s.promotedBytes / n / 1024,
+            s.evicted / n, double(s.copyCycles) * 1024 / double(std::max<uint64_t>(s.copyBytes, 1)),
+            double(s.compareCycles) * 1024 / double(std::max<uint64_t>(s.compareBytes, 1)), s.staleHits / n);
+        s.frames = s.calls = s.frameHits = s.copies = s.copyBytes = s.repeats = s.repeatBytes = 0;
+        s.tailHits = s.tailBytes = s.promotedBytes = s.evicted = s.copyCycles = s.compareCycles = s.compareBytes = 0;
+        s.exactRepeatBytes = s.staleHits = 0;
+        s.logged = now;
+        if (s.last.size() > (1u << 16))
+            s.last.clear(), s.bytes.clear();
+    }
+    s.frames++;
+    return s;
+}
+
+// An upload that took bytes from the guest (a ring copy or a tail hit).
+void UploadStatsUpload(UploadStats& s, uint64_t key, const uint8_t* src, uint32_t bytes, uint64_t sample)
+{
+    auto& last = s.last[key];
+    if (last.first != 0 && last.first != g_r.frame && last.first + kFrames >= g_r.frame && last.second == sample)
+        s.repeats++, s.repeatBytes += bytes;
+    last = { g_r.frame, sample };
+    if (g_sw_FM2_UPLOAD_STATS_EXACT)
+    {
+        auto& b = s.bytes[key];
+        if (b.size() == bytes && memcmp(b.data(), src, bytes) == 0)
+            s.exactRepeatBytes += bytes;
+        b.assign(src, src + bytes);
+    }
+}
+
+// A same-frame hit: with _EXACT, did the bytes change since the copy it reuses (missed by the sampled hash)?
+void UploadStatsHit(UploadStats& s, uint64_t key, const uint8_t* src, uint32_t bytes)
+{
+    s.frameHits++;
+    if (g_sw_FM2_UPLOAD_STATS_EXACT)
+        if (auto it = s.bytes.find(key); it != s.bytes.end() && it->second.size() == bytes && memcmp(it->second.data(), src, bytes) != 0)
+            s.staleHits++;
+}
 
 // Each thread remembers this frame's descriptors (eviction only takes ones unused for frames).
 UINT BindlessIndex(ID3D12Resource* resource, DXGI_FORMAT format, bool cube)
@@ -2588,15 +2838,20 @@ void BeginFrameIfNeeded()
         std::swap(f.ring, f.ringAlt);
         std::swap(f.ringCpu, f.ringAltCpu);
         std::swap(f.ringSize, f.ringAltSize);
+        std::swap(f.ringTail, f.ringAltTail);
         f.ringInVram = !f.ringInVram;
+        f.ringGen++;
         if (frameIndex == 0)
             Log("renderer: upload ring in %s", f.ringInVram ? "VRAM (GPU upload heap)" : "system memory");
     }
-    if (const UINT64 want = g_ringWant.load(); want > f.ringSize)
+    // Grown, or made again for a new repeated-upload tail size (FM2_NO_UPLOAD_STICKY toggled): the tail is
+    // only resource space above ringSize, so RingAlloc's room is the same either way.
+    const UINT64 want = std::max(g_ringWant.load(), f.ringSize);
+    if (const UINT64 tail = UploadStickyReserve(want); want > f.ringSize || tail != f.ringTail)
     {
         f.garbage.push_back(f.ring); // the old ring may still be referenced by views until this frame's end
         uint8_t* cpu = nullptr;
-        ComPtr<ID3D12Resource> vram = f.ringInVram ? CreateGpuUploadRing(want, cpu) : nullptr;
+        ComPtr<ID3D12Resource> vram = f.ringInVram ? CreateGpuUploadRing(want + tail, cpu) : nullptr;
         if (vram)
         {
             f.ring = vram;
@@ -2604,11 +2859,15 @@ void BeginFrameIfNeeded()
         }
         else
         {
-            f.ring = CreateBuffer(want, D3D12_HEAP_TYPE_UPLOAD, D3D12_RESOURCE_STATE_GENERIC_READ);
+            f.ring = CreateBuffer(want + tail, D3D12_HEAP_TYPE_UPLOAD, D3D12_RESOURCE_STATE_GENERIC_READ);
             f.ring->Map(0, nullptr, reinterpret_cast<void**>(&f.ringCpu));
         }
+        const bool grown = want > f.ringSize;
         f.ringSize = want;
-        Log("renderer: upload ring grown to %llu MB", (unsigned long long)(want >> 20));
+        f.ringTail = tail;
+        f.ringGen++;
+        if (grown)
+            Log("renderer: upload ring grown to %llu MB", (unsigned long long)(want >> 20));
     }
     // FM2_RING_SCRIBBLE (live, a test): what the slot's last frame left in the ring is zeroed before this frame
     // writes to it, so anything on the GPU that still reads it (see the wait above) shows at once.
@@ -2628,7 +2887,23 @@ void BeginFrameIfNeeded()
             early = 0;
         }
     }
+    UploadStickyBeginFrame(f, frameIndex, ringScribble);
     f.ringUsed = 0;
+    f.ringEpoch++; // (draws remember their last pixel constant block by offset: not across this)
+    if (g_sw_FM2_CONSTANT_REUSE_STATS)
+    {
+        static auto last = std::chrono::steady_clock::now();
+        if (const auto now = std::chrono::steady_clock::now(); now - last >= std::chrono::seconds(5))
+        {
+            last = now;
+            auto take = [](std::atomic<uint32_t>& v) { return v.exchange(0); };
+            const uint32_t draws = take(g_constantReuse.draws), vs = take(g_constantReuse.vsFloats), tried = take(g_constantReuse.psTried),
+                key = take(g_constantReuse.psKey), floats = take(g_constantReuse.psFloats), hits = take(g_constantReuse.psHits);
+            const uint64_t saved = g_constantReuse.psBytesSaved.exchange(0);
+            Log("constants: %u draws in 5 s: vertex floats as the last draw's with the same mask %u; pixel block tried %u, same key %u, same floats %u, reused %u (%llu KB not written)",
+                draws, vs, tried, key, floats, hits, (unsigned long long)(saved / 1024));
+        }
+    }
     f.uploads.clear();
     // Per-frame table: t0 this frame's ring, t1 guest physical memory.
     {
@@ -2636,7 +2911,7 @@ void BeginFrameIfNeeded()
         raw.Format = DXGI_FORMAT_R32_TYPELESS;
         raw.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
         raw.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        raw.Buffer.NumElements = UINT(f.ringSize / 4);
+        raw.Buffer.NumElements = UINT((f.ringSize + f.ringTail) / 4); // (the tail's copies are fetched through it too)
         raw.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
         g_r.device->CreateShaderResourceView(f.ring.Get(), &raw, Cpu(g_r.srvHeap.Get(), f.descriptorBase, g_r.srvStride));
         if (ID3D12Resource* arena = VertexCacheBeginFrame())
@@ -2713,16 +2988,79 @@ UINT64 UploadGuest(uint32_t guest, uint32_t bytes)
             sample = (sample ^ v) * 0x100000001B3ull;
         }
     const uint64_t key = uint64_t(guest) << 32 | bytes;
+    UploadStats* stats = g_sw_FM2_UPLOAD_STATS && !C().worker ? &UploadStatsTick() : nullptr;
+    if (stats)
+        stats->calls++;
     // Each recording thread keeps its own cache (cleared when the frame changes).
     thread_local FrameMap<std::pair<UINT64, uint64_t>> uploads;
     if (const auto* known = uploads.Find(key, g_r.frame); known && known->second == sample)
+    {
+        if (stats)
+            UploadStatsHit(*stats, key, src, bytes);
         return known->first;
+    }
     if (RendererTracing() && bytes > (16u << 10))
         Log("upload: %08X %u bytes (ring %llu)", guest, bytes, (unsigned long long)f.ringUsed.load());
+    // An earlier frame's copy in this slot's tail with the same bytes, or one to keep there (see UploadSticky).
+    static const uint32_t stickyMinBytes = getenv("FM2_UPLOAD_STICKY_MIN_BYTES") ? uint32_t(atoi(getenv("FM2_UPLOAD_STICKY_MIN_BYTES"))) : 0u;
+    if (bytes <= kStickyMaxBytes && bytes >= stickyMinBytes && f.ringTail && !C().worker)
+    {
+        const UINT slot = UINT(&f - g_r.frames);
+        UploadSticky::Slot& s = g_sticky.slots[slot];
+        bool evicted;
+        UploadSticky::Seen& seen = g_sticky.Find(key, evicted);
+        if (evicted && stats)
+            stats->evicted++;
+        if (seen.gen[slot] == s.gen)
+        {
+            const uint64_t t0 = stats ? __rdtsc() : 0;
+            const bool same = memcmp(s.shadow.get() + seen.at[slot], src, bytes) == 0;
+            if (stats)
+                stats->compareCycles += __rdtsc() - t0, stats->compareBytes += bytes;
+            if (same)
+            {
+                const UINT64 offset = s.base + seen.at[slot];
+                seen.sample = sample, seen.frame = g_r.frame;
+                uploads.Put(key, g_r.frame, { offset, sample });
+                if (stats)
+                    stats->tailHits++, stats->tailBytes += bytes, UploadStatsUpload(*stats, key, src, bytes, sample);
+                return offset;
+            }
+            seen.gen[slot] = 0; // changed: dropped (draws of this frame may still use it, so it is not written over)
+        }
+        // Same address, size and sampled hash in one of the last few frames: likely the same every frame.
+        const bool repeat = seen.frame != ~0ull && seen.frame != g_r.frame && seen.frame + kFrames >= g_r.frame && seen.sample == sample;
+        seen.sample = sample, seen.frame = g_r.frame;
+        const UINT64 at = (s.used + 15) & ~15ull, need = std::max<uint32_t>(bytes, 16) + 16;
+        if (repeat && at + need <= s.size)
+        {
+            const uint64_t t0 = stats ? __rdtsc() : 0;
+            // The guest bytes read once, into the shadow, and the ring copy made from that: the title may be
+            // rewriting them on another core, and later frames trust the ring because the shadow matches.
+            memcpy(s.shadow.get() + at, src, bytes);
+            memcpy(f.ringCpu + s.base + at, s.shadow.get() + at, bytes);
+            s.used = at + need;
+            seen.gen[slot] = s.gen;
+            seen.at[slot] = uint32_t(at);
+            uploads.Put(key, g_r.frame, { s.base + at, sample });
+            if (stats)
+            {
+                stats->copies++, stats->copyBytes += bytes, stats->copyCycles += __rdtsc() - t0, stats->promotedBytes += bytes;
+                UploadStatsUpload(*stats, key, src, bytes, sample);
+            }
+            return s.base + at;
+        }
+    }
     const UINT64 offset = RingAlloc(std::max<uint32_t>(bytes, 16) + 16, 16);
     if (offset == ~0ull)
         return offset;
+    const uint64_t t0 = stats ? __rdtsc() : 0;
     memcpy(f.ringCpu + offset, src, bytes);
+    if (stats)
+    {
+        stats->copies++, stats->copyBytes += bytes, stats->copyCycles += __rdtsc() - t0;
+        UploadStatsUpload(*stats, key, src, bytes, sample);
+    }
     uploads.Put(key, g_r.frame, { offset, sample });
     return offset;
 }
@@ -2743,6 +3081,7 @@ struct IndexArena
         uint32_t sizeClass = 0;
         D3D12_GPU_VIRTUAL_ADDRESS staged = 0; // this frame's copy in the upload ring (frame stagedFrame)
         uint64_t stagedFrame = ~0ull;
+        uint64_t failFrame = ~0ull; // FM2_INDEX_CHECKED_LATE: its copy found the ring full this frame
     };
     std::unordered_map<uint64_t, Entry> entries;
     bool full = false;
@@ -2754,6 +3093,9 @@ struct IndexArena
         uint64_t from, to, bytes;
     };
     std::vector<Copy> pending;
+    // FM2_INDEX_STATS
+    uint64_t hashedBytes = 0, hashedBuffers = 0, smallBytes = 0, smallBuffers = 0, changedBytes = 0, changedBuffers = 0;
+    uint64_t hashTicks = 0, swapTicks = 0, swapBytes = 0;
 } g_indexArena;
 
 // This frame's index uploads, copied into the arena once its draws are recorded.
@@ -2850,18 +3192,66 @@ bool GetIndexBufferLocked(uint32_t base, uint32_t count, bool is32, uint32_t end
             view.BufferLocation = e.staged;
         return true;
     }
-    e.checkedFrame = g_r.frame;
+    const bool checkedLate = g_sw_FM2_INDEX_CHECKED_LATE;
+    if (checkedLate && e.failFrame == g_r.frame)
+        return false; // (no ring space for it this frame: not hashed again)
+    if (!checkedLate)
+        e.checkedFrame = g_r.frame;
     const uint8_t* src = GuestPtr<uint8_t>(GpuPhysToGuest(base));
     // Every index, not every 256 bytes: a track section streamed in at the same address and size
     // can differ only between the sampled words, and its chunk of road then drew the old indices
     // (black wedges on Sebring Club after a lap or two, report #4).
-    const uint64_t hash = FullHash(src, bytes);
-    if (!inserted && hash == e.hash)
+    const bool stats = g_sw_FM2_INDEX_STATS;
+    const uint64_t hashStart = stats ? __rdtsc() : 0;
+    const uint64_t hash = IndexHash(src, bytes);
+    if (stats)
+    {
+        arena.hashTicks += __rdtsc() - hashStart;
+        arena.hashedBytes += bytes;
+        arena.hashedBuffers++;
+        if (bytes <= 240) // XXH3's scalar path
+        {
+            arena.smallBytes += bytes;
+            arena.smallBuffers++;
+        }
+        if (inserted || hash != e.hash)
+        {
+            arena.changedBytes += bytes;
+            arena.changedBuffers++;
+        }
+        static uint64_t lastTick = GetTickCount64(), lastFrame = g_r.frame;
+        if (GetTickCount64() - lastTick >= 5000)
+        {
+            const double frames = double(std::max<uint64_t>(g_r.frame - lastFrame, 1));
+            Log("index stats: %.0f buffers %.2f MB hashed a frame (%.0f buffers %.3f MB of 240 bytes or less; %s, %.2f cycles a byte), "
+                "%.1f buffers %.3f MB new or changed (swap %.2f cycles a byte)",
+                double(arena.hashedBuffers) / frames, double(arena.hashedBytes) / frames / 1048576.0,
+                double(arena.smallBuffers) / frames, double(arena.smallBytes) / frames / 1048576.0,
+                g_sw_FM2_INDEX_FULLHASH ? "FullHash" : "XXH3", arena.hashedBytes ? double(arena.hashTicks) / double(arena.hashedBytes) : 0.0,
+                double(arena.changedBuffers) / frames, double(arena.changedBytes) / frames / 1048576.0,
+                arena.swapBytes ? double(arena.swapTicks) / double(arena.swapBytes) : 0.0);
+            arena.hashedBytes = arena.hashedBuffers = arena.smallBytes = arena.smallBuffers = 0;
+            arena.changedBytes = arena.changedBuffers = arena.hashTicks = arena.swapTicks = arena.swapBytes = 0;
+            lastTick = GetTickCount64();
+            lastFrame = g_r.frame;
+        }
+    }
+    // (Late: an entry whose first copy failed was never written, stagedFrame ~0, so it must be copied.)
+    if (!inserted && hash == e.hash && (!checkedLate || e.stagedFrame != ~0ull))
+    {
+        e.checkedFrame = g_r.frame;
         return true;
+    }
     // Swap into the upload ring (as the vertex shader would read them), then copy.
     const UINT64 offset = RingAlloc((bytes + 15) & ~15u, 16);
     if (offset == ~0ull)
+    {
+        if (checkedLate)
+            e.failFrame = g_r.frame;
         return false;
+    }
+    e.checkedFrame = g_r.frame;
+    const uint64_t swapStart = stats ? __rdtsc() : 0;
     uint8_t* dst = Frame().ringCpu + offset;
     if (is32)
         for (uint32_t i = 0; i < count; i++)
@@ -2883,6 +3273,11 @@ bool GetIndexBufferLocked(uint32_t base, uint32_t count, bool is32, uint32_t end
                 v = __builtin_bswap16(v);
             memcpy(dst + i * 2, &v, 2);
         }
+    if (stats)
+    {
+        arena.swapTicks += __rdtsc() - swapStart;
+        arena.swapBytes += bytes;
+    }
     // This frame draws from the upload ring; the arena gets the copy at the end of the frame.
     e.staged = Frame().ring->GetGPUVirtualAddress() + offset;
     e.stagedFrame = g_r.frame;
@@ -3547,16 +3942,47 @@ bool ApplyDirtSeamFix(std::string& hlsl, bool pixel)
 }
 
 const CompiledShader& GetShaderLocked(uint64_t hash, const std::vector<uint32_t>& codeBE, bool pixel, bool background);
+// In front of each thread's map, a direct-mapped copy: the map's hash and node hop were ~1.5% of the command
+// processor (two lookups a draw, mostly the same few shaders). Shaders are never removed, so an entry never goes stale.
+struct RecentShader
+{
+    uint64_t hash = 0;
+    const CompiledShader* cs = nullptr;
+};
+thread_local RecentShader t_recentShaders[256];
+inline RecentShader& RecentShaderSlot(uint64_t hash) { return t_recentShaders[size_t(hash * 0x9E3779B97F4A7C15ull >> 56)]; }
 // Shaders are never removed: each thread remembers the ones it looked up (no lock per draw).
 const CompiledShader& GetShader(uint64_t hash, const std::vector<uint32_t>& codeBE, bool pixel, bool background = false)
 {
+    RecentShader& hot = RecentShaderSlot(hash);
+    const bool useRecent = !g_sw_FM2_SHADER_MAP_ONLY;
+    if (useRecent && hot.cs && hot.hash == hash)
+    {
+        MemoStat(t_memoStats.shaderHit);
+        return *hot.cs;
+    }
+    MemoStat(t_memoStats.shaderMiss);
     thread_local std::unordered_map<uint64_t, const CompiledShader*> known;
     if (auto it = known.find(hash); it != known.end())
+    {
+        if (useRecent)
+            hot = { hash, it->second };
         return *it->second;
+    }
     std::lock_guard shaderLock(g_shaderMutex);
     const CompiledShader& cs = GetShaderLocked(hash, codeBE, pixel, background);
     known.emplace(hash, &cs);
+    if (useRecent)
+        hot = { hash, &cs };
     return cs;
+}
+// In g_r.shaders? One this thread has looked up is there for good (GetShaderLocked only adds).
+bool ShaderInMap(uint64_t hash)
+{
+    const RecentShader& hot = RecentShaderSlot(hash);
+    if (hot.cs && hot.hash == hash && !g_sw_FM2_SHADER_MAP_ONLY)
+        return true;
+    return g_r.shaders.find(hash) != g_r.shaders.end();
 }
 
 const CompiledShader& GetShaderLocked(uint64_t hash, const std::vector<uint32_t>& codeBE, bool pixel, bool background)
@@ -4631,13 +5057,35 @@ ID3D12PipelineState* GetPipeline(const CompiledShader& vs, const CompiledShader&
     key.fetchMask = fetchMask; // its plain-fetch variant (FetchVariantOf)
     thread_local std::unordered_map<PipelineKey, ID3D12PipelineState*, PipelineKeyHash> ready; // (cleared when the pipelines are replaced)
     thread_local uint32_t readyGen = 0;
+    // In front of it, a direct-mapped copy of what it holds: draws mostly repeat a recent pipeline, and the
+    // map's node hop was most of GetPipeline's ~2% of the command processor.
+    struct Recent
+    {
+        PipelineKey key{};
+        ID3D12PipelineState* pso = nullptr;
+    };
+    thread_local Recent recent[128];
     if (const uint32_t gen = g_pipelineGen.load(std::memory_order_acquire); gen != readyGen)
     {
         readyGen = gen;
         ready.clear();
+        for (Recent& r : recent)
+            r.pso = nullptr;
     }
+    const bool useRecent = !g_sw_FM2_PIPELINE_MAP_ONLY;
+    Recent& hot = recent[size_t(uint64_t(PipelineKeyHash{}(key)) * 0x9E3779B97F4A7C15ull >> 57)];
+    if (useRecent && hot.pso && hot.key == key)
+    {
+        MemoStat(t_memoStats.pipeHit);
+        return hot.pso;
+    }
+    MemoStat(t_memoStats.pipeMiss);
     if (auto r = ready.find(key); r != ready.end())
+    {
+        if (useRecent)
+            hot = { key, r->second };
         return r->second;
+    }
     std::shared_ptr<PipelineEntry> entry;
     {
         const auto lockStart = g_perfTiming ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
@@ -4649,6 +5097,8 @@ ID3D12PipelineState* GetPipeline(const CompiledShader& vs, const CompiledShader&
         if (it != g_r.pipelines.end() && it->second->state.load(std::memory_order_acquire) == 1)
         {
             ready.emplace(key, it->second->pso.Get());
+            if (useRecent)
+                hot = { key, it->second->pso.Get() };
             return it->second->pso.Get();
         }
         entry = EnsurePipeline(vs, ps, key);
@@ -5673,6 +6123,85 @@ D3D12_RECT WindowScissor()
     const LONG maxX = LONG(PassWidth());
     return { std::clamp<LONG>(x0, 0, maxX), std::clamp<LONG>(y0, 0, maxY), std::clamp<LONG>(x1, 0, maxX), std::clamp<LONG>(y1, 0, maxY) };
 }
+
+// One draw's pass size, scales and window scissor, taken once: DrawImpl asked for them ~30 times a draw, each
+// through the register file and the thread_local memos. The registers can't change during a draw; the rest
+// they depend on is kept here, and the scissor is taken afresh if any of it moved before its second use.
+struct PassGeometry
+{
+    bool each = false; // FM2_PASS_MATH_EACH: everything asked again, as before
+    D3D12_RECT window{};
+    uint32_t width = 0, height = 0;
+    bool wide = false;
+    float scaleX = 1, scaleY = 1, scaleWide = 1;
+    float sceneScale = 1;
+    uint32_t tallInfo = 0, tallHeight = 0, tallKey = 0, generation = 0, outputWidth = 0, outputHeight = 0;
+
+    // Taken where DrawImpl first checks the window scissor, before point size and DealerCarDraw: nothing
+    // between there and the viewport may change g_sceneScale, the tall pass or the MSAA layouts.
+    static PassGeometry Measure()
+    {
+        PassGeometry p;
+        p.window = WindowScissor(); // first: it may mark a tall pass, which the sizes read
+        p.width = PassWidth();
+        p.height = PassHeight();
+        p.wide = WidePass();
+        p.scaleY = ScaleY();
+        p.scaleWide = ScaleWide();
+        p.scaleX = p.wide ? p.scaleWide : p.scaleY; // ScaleX()
+        p.sceneScale = g_sceneScale;
+        p.tallInfo = g_tallInfo;
+        p.tallHeight = g_tallHeight;
+        p.tallKey = g_tallKey;
+        p.generation = g_nativeMsaaGeneration.load(std::memory_order_relaxed);
+        p.outputWidth = g_outputWidth.load(std::memory_order_relaxed);
+        p.outputHeight = g_outputHeight.load(std::memory_order_relaxed);
+        return p;
+    }
+    static PassGeometry Each()
+    {
+        PassGeometry p;
+        p.each = true;
+        (void)WindowScissor();
+        return p;
+    }
+    bool Current() const
+    {
+        return sceneScale == g_sceneScale && tallInfo == g_tallInfo && tallHeight == g_tallHeight && tallKey == g_tallKey &&
+            generation == g_nativeMsaaGeneration.load(std::memory_order_relaxed) && outputWidth == g_outputWidth.load(std::memory_order_relaxed) &&
+            outputHeight == g_outputHeight.load(std::memory_order_relaxed);
+    }
+    // The window scissor again, for the viewport.
+    D3D12_RECT Window()
+    {
+        if (each)
+            return WindowScissor();
+        if (!Current())
+        {
+            // Not expected: something in the draw moved the pass state after it was measured.
+            static std::atomic<int> logged{ 0 };
+            if (logged.fetch_add(1, std::memory_order_relaxed) < 5)
+                Log("pass geometry: re-measured before the viewport");
+            *this = Measure();
+        }
+        return window;
+    }
+    uint32_t Width() const { return each ? PassWidth() : width; }
+    uint32_t Height() const { return each ? PassHeight() : height; }
+    bool IsWide() const { return each ? WidePass() : wide; }
+    float XScale() const { return each ? ScaleX() : scaleX; }
+    float YScale() const { return each ? ScaleY() : scaleY; }
+    float WideScale() const { return each ? ScaleWide() : scaleWide; }
+    // A scale of exactly 1 (the game's own resolution) leaves a coordinate as it is: lround(v * 1.0) is v.
+    LONG ScaledX(LONG v) const { return scaleX == 1.0f ? v : LONG(std::lround(double(v) * scaleX)); }
+    LONG ScaledY(LONG v) const { return scaleY == 1.0f ? v : LONG(std::lround(double(v) * scaleY)); }
+    D3D12_RECT Host(const D3D12_RECT& r) const
+    {
+        if (each)
+            return ToHost(r);
+        return { ScaledX(r.left), ScaledY(r.top), ScaledX(r.right), ScaledY(r.bottom) };
+    }
+};
 
 void TransitionColor(D3D12_RESOURCE_STATES to)
 {
@@ -8015,12 +8544,12 @@ void PredictBeginImpl()
 {
     g_predVs = C().vsHash;
     g_predPs = C().psHash;
-    g_predVsCode = C().vsCode.data();
-    g_predPsCode = C().psCode.data();
+    g_predVsCode = C().vsCode->data();
+    g_predPsCode = C().psCode->data();
     g_predVsOwn.reset(); // the command list's own copy stays valid
     g_predPsOwn.reset();
-    g_predVsDwords = uint32_t(C().vsCode.size());
-    g_predPsDwords = uint32_t(C().psCode.size());
+    g_predVsDwords = uint32_t(C().vsCode->size());
+    g_predPsDwords = uint32_t(C().psCode->size());
 }
 
 std::vector<PipelineKey> g_seedLater; // seed pipelines waiting for a shader the game makes at run time
@@ -8739,24 +9268,52 @@ void RendererSaveCaches()
 void RendererSetShader(uint32_t type, const uint32_t* microcodeBE, uint32_t usedDwords, uint64_t hash)
 {
     FM2_VK_IF_ENABLED(RendererVkSetShader(type, microcodeBE, usedDwords, hash))
-    std::vector<uint32_t>& code = type == 0 ? C().vsCode : C().psCode;
+    DrawContext& c = C();
+    const std::vector<uint32_t>*& code = type == 0 ? c.vsCode : c.psCode;
     // The title reloads the same shader for nearly every draw. The hash comes from words the caller just
     // compared with this load, and everything downstream goes by the hash: the same hash and size means
     // the code here is already these words. FM2_SHADER_COPY_ALWAYS=1 copies every time (A/B).
-    uint64_t& current = type == 0 ? C().vsHash : C().psHash;
-    if (current == hash && code.size() == usedDwords && !g_sw_FM2_SHADER_COPY_ALWAYS)
+    uint64_t& current = type == 0 ? c.vsHash : c.psHash;
+    if (current == hash && code->size() == usedDwords && !g_sw_FM2_SHADER_COPY_ALWAYS)
         return;
-    code.assign(microcodeBE, microcodeBE + usedDwords);
+    // A shader loaded lately is still in its slot (same hash and size, same words: as above). Slots live
+    // until a shader with the same index replaces them.
+    if (!c.codeCache)
+        c.codeCache = std::make_unique<ShaderCodeCache>();
+    const bool oneSlot = g_sw_FM2_SHADER_CODE_ONE_SLOT;
+    ShaderCodeCache::Slot& slot = c.codeCache->slots[type != 0][oneSlot ? 0 : (hash ^ hash >> 32) & 127];
+    const bool copy = slot.hash != hash || slot.code.size() != usedDwords || oneSlot || g_sw_FM2_SHADER_COPY_ALWAYS;
+    if (copy)
+    {
+        slot.code.assign(microcodeBE, microcodeBE + usedDwords);
+        slot.hash = hash;
+    }
+    code = &slot.code;
     current = hash;
+    if (g_shaderSetPerf)
+    {
+        // FM2_PERF: shader changes and the words they copied, every ~2 s (per thread: draw workers too).
+        thread_local uint64_t changes = 0, copies = 0, words = 0;
+        thread_local auto last = std::chrono::steady_clock::now();
+        changes++;
+        if (copy)
+            copies++, words += usedDwords;
+        if ((changes & 1023) == 0 && std::chrono::steady_clock::now() - last > std::chrono::seconds(2))
+        {
+            Log("perf: shader changes %llu, copied %llu (%llu dwords)", (unsigned long long)changes, (unsigned long long)copies,
+                (unsigned long long)words);
+            last = std::chrono::steady_clock::now();
+            changes = copies = words = 0;
+        }
+    }
 }
 
 
 void RendererOnShaderLoad(uint32_t type, const uint32_t* microcodeBE, uint32_t dwords)
 {
     FM2_VK_IF_ENABLED(RendererVkOnShaderLoad(type, microcodeBE, dwords))
-    std::vector<uint32_t>& code = type == 0 ? C().vsCode : C().psCode;
-    code.assign(microcodeBE, microcodeBE + ucode::UsedDwords(microcodeBE, dwords));
-    (type == 0 ? C().vsHash : C().psHash) = Fnv(code.data(), code.size() * 4) ^ type;
+    const uint32_t used = ucode::UsedDwords(microcodeBE, dwords);
+    RendererSetShader(type, microcodeBE, used, Fnv(microcodeBE, size_t(used) * 4) ^ type);
 }
 
 namespace
@@ -9238,7 +9795,10 @@ void TranslatePiece(DrawContext& ctx, uint32_t i)
     ID3D12GraphicsCommandList* real = AcquireList();
     RecordedList recorder;
     recorder.Init(real, true);
+    // The shader code cache survives the reset: shaders recur across pieces, and slots go by hash and size.
+    std::unique_ptr<ShaderCodeCache> codeCache = std::move(ctx.codeCache);
     ctx = DrawContext{};
+    ctx.codeCache = std::move(codeCache);
     ctx.list = &recorder;
     ctx.worker = true;
     DrawContext* saved = t_context;
@@ -9519,6 +10079,7 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
 {
     Section(0);
     g_drawSamplesResolve = false;
+    t_memoOn = g_sw_FM2_CP_MEMO_STATS;
     LiveSwitch &noRender = g_sw_FM2_NO_RENDER;
     if (noRender)
         return;
@@ -9543,7 +10104,7 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
         return;
     }
     // Colour+depth (4) and depth-only (5) passes draw.
-    if ((edramMode != 4 && edramMode != 5) || C().vsCode.empty() || C().psCode.empty())
+    if ((edramMode != 4 && edramMode != 5) || C().vsCode->empty() || C().psCode->empty())
     {
         TraceSkip("edram mode", initiator);
         Bump(g_r.skippedThisFrame);
@@ -9555,7 +10116,7 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
         // right away; now that set covers the game, and the 512 MB scan (~18 ms on this
         // thread) only showed as a frame spike, so once the game runs the low-priority
         // background scan is enough.
-        const bool unseen = g_r.shaders.find(C().vsHash) == g_r.shaders.end() || g_r.shaders.find(C().psHash) == g_r.shaders.end();
+        const bool unseen = !ShaderInMap(C().vsHash) || !ShaderInMap(C().psHash);
         static auto lastScan = std::chrono::steady_clock::time_point{};
         LiveSwitch &noScan = g_sw_FM2_NO_SHADER_SCAN;
         if (unseen && !noScan)
@@ -9583,13 +10144,13 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
         PsAlias() : real(C().psHash), realVs(C().vsHash) { C().psHash = PsEditAlias(real); C().vsHash = PsEditAlias(realVs); }
         ~PsAlias() { C().psHash = real; C().vsHash = realVs; }
     } psAlias;
-    const CompiledShader& vs = GetShader(C().vsHash, C().vsCode, false);
+    const CompiledShader& vs = GetShader(C().vsHash, *C().vsCode, false);
     if (g_drawStats.load(std::memory_order_relaxed) == 2) // the debug server's drawstats: every draw of a frame
     {
         std::lock_guard lock(g_drawStatsMutex);
         g_drawStatsCounts[{ psAlias.realVs, psAlias.real }]++;
     }
-    const CompiledShader& ps = GetShader(C().psHash, C().psCode, true);
+    const CompiledShader& ps = GetShader(C().psHash, *C().psCode, true);
     Section(1);
     LiveSwitch &asyncShaders = g_sw_FM2_ASYNC_SHADERS;
     const bool shadersPending = vs.state.load(std::memory_order_acquire) == CompiledShader::Pending || ps.state.load(std::memory_order_acquire) == CompiledShader::Pending;
@@ -9833,6 +10394,30 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
     const bool carTrace = carDraw && traceCar;
     const bool carStage = carDraw && (carTrace || carViaStage || DealerActive());
     const bool floatsDirect = staged && !g_floatsViaStage && !carStage && !RendererTracing();
+    // Consecutive draws often have the same pixel constants: a draw whose pixel block would hold the same
+    // bytes as this thread's last one binds that block again instead of writing ~0.5 KB of write-combined ring.
+    // The compare is in ordinary memory: the floats as the register file holds them, and each range the flush
+    // puts. Not with the A/B paths that write more of the block. Only with FM2_PS_REUSE=1 (slower on the FX).
+    struct PsReuse
+    {
+        __m128i c[256];          // the floats last seen (big-endian, register file order), for `mask`
+        PSConstants rest;        // the stage's put ranges (b, l, info, info2, tinfo, tbias, forceLod) last written
+        std::array<uint64_t, 4> mask{};
+        uint32_t key = ~0u;      // slots | readsBools << 6 | readsLoops << 7
+        const FrameResources* frame = nullptr;
+        uint64_t epoch = 0;
+        UINT64 offset = 0;       // the ring block holding exactly those bytes
+        bool valid = false;
+    };
+    thread_local PsReuse* const psReuseState = new PsReuse(); // per thread for good (no unique_ptr check per draw)
+    PsReuse& pr = *psReuseState;
+    const uint32_t psSlotMask = ps.info.usedTextureSlots | vs.info.usedTextureSlots;
+    const uint32_t psSlots = psSlotMask ? 32 - uint32_t(__builtin_clz(psSlotMask)) : 0;
+    const uint32_t psReuseKey = psSlots | (ps.info.readsBools ? 64u : 0u) | (ps.info.readsLoops ? 128u : 0u);
+    const bool psReuse = floatsDirect && g_sw_FM2_PS_REUSE && !g_sw_FM2_ALL_CONSTANTS && !g_sw_FM2_CONSTANTS_BY_COUNT &&
+        !g_sw_FM2_ALL_BOOL_LOOP && !g_sw_FM2_FULL_CONSTANT_BLOCKS;
+    const bool reuseStats = g_sw_FM2_CONSTANT_REUSE_STATS;
+    bool psFloatsSame = false, psHit = false;
     {
         // Byte-swapped block copy of both constant banks (1024 dwords each).
         const __m128i swap = _mm_setr_epi8(3, 2, 1, 0, 7, 6, 5, 4, 11, 10, 9, 8, 15, 14, 13, 12);
@@ -9861,7 +10446,54 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
                 }
         };
         copy(dv, src, vs.info.constantMask, carStage ? 256 : nv, allConstants || carStage);
-        copy(dp, src + 256, ps.info.constantMask, np, allConstants);
+        if (reuseStats)
+        {
+            // (Stats only: how often the vertex floats match the last draw with the same mask, what a separate float block could reuse.)
+            thread_local __m128i* const vsLast = new __m128i[256]();
+            thread_local std::array<uint64_t, 4> vsLastMask{};
+            __m128i d = _mm_setzero_si128();
+            for (uint32_t w = 0; w < 4; w++)
+                for (uint64_t bits = vs.info.constantMask[w]; bits; bits &= bits - 1)
+                {
+                    const uint32_t i = w * 64 + uint32_t(_tzcnt_u64(bits));
+                    const __m128i v = _mm_loadu_si128(src + i);
+                    d = _mm_or_si128(d, _mm_xor_si128(v, _mm_loadu_si128(vsLast + i)));
+                    _mm_storeu_si128(vsLast + i, v);
+                }
+            g_constantReuse.draws.fetch_add(1, std::memory_order_relaxed);
+            if (vsLastMask == vs.info.constantMask && _mm_movemask_epi8(_mm_cmpeq_epi8(d, _mm_setzero_si128())) == 0xFFFF)
+                g_constantReuse.vsFloats.fetch_add(1, std::memory_order_relaxed);
+            vsLastMask = vs.info.constantMask;
+        }
+        if (psReuse)
+        {
+            // The pixel floats against the last block's, updating the copy (it is not whole again until the flush).
+            const bool sameKey = pr.valid && pr.frame == &f && pr.epoch == f.ringEpoch && pr.key == psReuseKey && pr.mask == ps.info.constantMask;
+            pr.valid = false;
+            __m128i d = _mm_setzero_si128();
+            for (uint32_t w = 0; w < 4; w++)
+                for (uint64_t bits = ps.info.constantMask[w]; bits; bits &= bits - 1)
+                {
+                    const uint32_t i = w * 64 + uint32_t(_tzcnt_u64(bits));
+                    const __m128i v = _mm_loadu_si128(src + 256 + i);
+                    d = _mm_or_si128(d, _mm_xor_si128(v, _mm_loadu_si128(pr.c + i)));
+                    _mm_storeu_si128(pr.c + i, v);
+                }
+            psFloatsSame = sameKey && _mm_movemask_epi8(_mm_cmpeq_epi8(d, _mm_setzero_si128())) == 0xFFFF;
+            pr.key = psReuseKey;
+            pr.mask = ps.info.constantMask;
+            if (reuseStats)
+            {
+                g_constantReuse.psTried.fetch_add(1, std::memory_order_relaxed);
+                if (sameKey)
+                    g_constantReuse.psKey.fetch_add(1, std::memory_order_relaxed);
+                if (psFloatsSame)
+                    g_constantReuse.psFloats.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+        // (Floats the same as the last block's are written at the flush only if that block can't be reused.)
+        if (!psFloatsSame)
+            copy(dp, src + 256, ps.info.constantMask, np, allConstants);
         if (motion)
         {
             // This draw's constants for the next frame, and last frame's for its motion. The
@@ -10060,12 +10692,18 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
     {
         // Menus on an ultrawide output are drawn as at 16:9, stretched across the width, and squeezed back
         // to 16:9 when shown (PillarFrontBuffer): every layer alike, transitions and loading screens too.
-        if (WidePass() && (gpureg::Get(0x2200 /* RB_DEPTHCONTROL */) & 2)) // Z_ENABLE
+        const bool widePass = WidePass();
+        if (widePass && (gpureg::Get(0x2200 /* RB_DEPTHCONTROL */) & 2)) // Z_ENABLE
             g_depthThisFrame = true;
-        const bool wideView = WidePass() && RaceView();
-        const float wide = wideView ? OutputWide() : 1.0f;
+        // On an output of exactly 16:9 every vwide below is 1 whatever the race state, so the camera
+        // clock (GetTickCount64, 0.4% of the command processor) isn't read then.
+        const bool each = g_sw_FM2_PASS_MATH_EACH;
+        const float outWide = each ? 0.0f : OutputWide();
+        const bool flat = !each && outWide == 1.0f && ViewExtent() == 1.0f;
+        const bool wideView = !flat && widePass && RaceView();
+        const float wide = wideView ? (each ? OutputWide() : outWide) : 1.0f;
         const float extent = wideView ? ViewExtent() : 1.0f;
-        const bool gameWidened = CameraAspectWidened();
+        const bool gameWidened = !flat && CameraAspectWidened();
         vc->vwide[0] = gameWidened ? 1.0f : 1.0f / extent;
         // A 3D model on the HUD (the car diagram, report #52): the game scissors it to a part of the screen, unlike the
         // scene. It belongs in the centred 16:9 area with the 2D HUD; left wide it sat off to the side, cut by that scissor.
@@ -10188,9 +10826,9 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
     // The window scissor marks a tall pass (PassHeight); this draw may be its first, so check before the
     // target size is taken (else the vertices are placed for 720 rows in a taller viewport: the career
     // menu's one-off livery downsample came out stretched 1.42x).
-    (void)WindowScissor();
-    vc->info[2] = PassWidth();
-    vc->info[3] = PassHeight();
+    PassGeometry pass = g_sw_FM2_PASS_MATH_EACH ? PassGeometry::Each() : PassGeometry::Measure();
+    vc->info[2] = pass.Width();
+    vc->info[3] = pass.Height();
     // Point sizes are 12.4 fixed-point radii.
     const uint32_t pointSize = gpureg::Get(PA_SU_POINT_SIZE), pointMinMax = gpureg::Get(PA_SU_POINT_MINMAX);
     vc->point[0] = float(pointSize >> 16) / 8.0f;
@@ -10232,8 +10870,8 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
         pc->info[2] = !noColorExpBias && (format == 4 || format == 5) ? 8u : 0u;
     }
     pc->info2[0] = RegFloat(RB_ALPHA_REF);
-    pc->info2[1] = 1.0f / ScaleX();
-    pc->info2[2] = 1.0f / ScaleY();
+    pc->info2[1] = 1.0f / pass.XScale();
+    pc->info2[2] = 1.0f / pass.YScale();
     // Our colour target is half float: a 7e3 surface (formats 3 and 12, the title's HDR scene)
     // saturates at 31.875, so its output is clamped to that, as the hardware does (the bloom
     // reads those values).
@@ -10255,8 +10893,20 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
         // FM2_FULL_TEXTURE_CLEAR=1: all 32, as before.
         LiveSwitch& fullClear = g_sw_FM2_FULL_TEXTURE_CLEAR;
         const size_t n = fullClear || g_sw_FM2_FULL_CONSTANT_BLOCKS ? 32 : usedSlots ? 32 - size_t(__builtin_clz(usedSlots)) : 0;
-        memset(pc->tinfo, 0, n * sizeof(pc->tinfo[0]));
-        memset(pc->tbias, 0, n * sizeof(pc->tbias[0]));
+        // A wide, sparse set only clears its gaps: the loop below writes every used slot. A few low slots
+        // keep the two memsets, which are cheaper than a loop. FM2_SLOT_CLEAR_ALL=1: always the memsets.
+        if (n <= 8 || fullClear || g_sw_FM2_FULL_CONSTANT_BLOCKS || g_sw_FM2_SLOT_CLEAR_ALL)
+        {
+            memset(pc->tinfo, 0, n * sizeof(pc->tinfo[0]));
+            memset(pc->tbias, 0, n * sizeof(pc->tbias[0]));
+        }
+        else
+            for (uint32_t m = ~usedSlots & uint32_t((1ull << n) - 1); m; m &= m - 1)
+            {
+                const uint32_t s = uint32_t(std::countr_zero(m));
+                memset(pc->tinfo[s], 0, sizeof(pc->tinfo[0]));
+                memset(pc->tbias[s], 0, sizeof(pc->tbias[0]));
+            }
     }
     if (g_bindingsFrame != g_r.frame || g_bindingsEpoch != g_resolveEpoch)
     {
@@ -10274,7 +10924,20 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
             bindingKey = (bindingKey ^ d) * 0x100000001B3ull;
         SlotBinding& memo = g_bindings[(bindingKey ^ bindingKey >> 29) & (kBindingSlots - 1)];
         static const bool noSlotMemo = getenv("FM2_NO_SLOT_MEMO") != nullptr || getenv("FM2_DUMP_PS_TEXTURES") != nullptr;
-        if (!noSlotMemo && memo.frame == g_r.frame && memo.epoch == g_resolveEpoch && memcmp(memo.fetch, fetch.dwords, sizeof(memo.fetch)) == 0)
+        bool reuse = !noSlotMemo && memo.frame == g_r.frame && memcmp(memo.fetch, fetch.dwords, sizeof(memo.fetch)) == 0;
+        if (reuse && memo.epoch != g_resolveEpoch)
+        {
+            // A resolve since. A plain 2D texture's binding came from this frame's GetTexture and BindlessIndex
+            // maps, so it still holds unless a resolve now covers its address or the scene's upscale changed the
+            // LOD bias; every resolve used to rebuild all of them. ResolvedFor last: it only runs for candidates.
+            reuse = memo.resolveFree && !g_sw_FM2_BINDING_EPOCH_STRICT && !RendererTracing() && memo.lodShift == LodShift() && !ResolvedFor(fetch);
+            if (reuse)
+                memo.epoch = g_resolveEpoch;
+            MemoStat(reuse ? t_memoStats.slotRevived : t_memoStats.slotEpochMiss);
+        }
+        else
+            MemoStat(reuse ? t_memoStats.slotHit : t_memoStats.slotMiss);
+        if (reuse)
         {
             memcpy(pc->tinfo[slot], memo.tinfo, sizeof(memo.tinfo));
             memcpy(pc->tbias[slot], memo.tbias, sizeof(memo.tbias));
@@ -10353,8 +11016,8 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
         // A temporal upscaler's scene (below output resolution): mips biased sharper by log2 of the scale
         // (-0.58 at 67%), as upscalers ask, so the upscaled image keeps the output's texture detail (from
         // ReGPU 5924641 / the FM4 port). FSR 1 is left as shipped. FM2_NO_LOD_BIAS=1 (live): the fetch's bias alone.
-        static LiveSwitch noLodBias("FM2_NO_LOD_BIAS");
-        tb[0] = fetch.LodBias() + (g_temporal && g_sceneScale < 1.0f && !noLodBias ? std::log2(g_sceneScale) : 0.0f);
+        const float lodShift = LodShift();
+        tb[0] = fetch.LodBias() + lodShift;
         memcpy(&tb[1], &index, 4);
         // A resolved texture is as wide as the pitch it was resolved with; the fetch
         // constant may declare a narrower image inside it (e.g. 163 of 192 columns):
@@ -10375,7 +11038,33 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
         memcpy(pc->tinfo[slot], ti, sizeof(ti));
         memcpy(pc->tbias[slot], tb, sizeof(tb));
         memo.samplesResolve = g_drawSamplesResolve;
+        // Revivable after a resolve (above) on two assumptions: only Resolve() bumps g_resolveEpoch, and
+        // GetTexture's non-resolve path depends only on per-frame state (its FrameMap, the texture checks).
+        memo.resolveFree = !cube && texture && !resolvedPtr && !memo.samplesResolve && !RendererTracing();
+        memo.lodShift = lodShift;
         g_drawSamplesResolve |= samplesBefore;
+    }
+    if (t_memoOn && t_memoFlushFrame != g_r.frame)
+    {
+        // Once a frame each thread adds its counts in; the renderer thread logs the sums.
+        t_memoFlushFrame = g_r.frame;
+        uint64_t v[kMemoStatCount];
+        memcpy(v, &t_memoStats, sizeof(v));
+        for (size_t i = 0; i < kMemoStatCount; i++)
+            g_memoTotals[i].fetch_add(v[i], std::memory_order_relaxed);
+        t_memoStats = {};
+        static uint64_t statsFrame = 0; // (renderer thread only)
+        if (!C().worker && g_r.frame >= statsFrame + 600)
+        {
+            statsFrame = g_r.frame;
+            uint64_t s[kMemoStatCount];
+            for (size_t i = 0; i < kMemoStatCount; i++)
+                s[i] = g_memoTotals[i].exchange(0, std::memory_order_relaxed);
+            Log("memo: shaders %llu hit %llu missed, pipelines %llu/%llu, fetch variants %llu/%llu, slots %llu hit %llu revived %llu rebuilt "
+                "after a resolve %llu new",
+                (unsigned long long)s[0], (unsigned long long)s[1], (unsigned long long)s[2], (unsigned long long)s[3], (unsigned long long)s[4],
+                (unsigned long long)s[5], (unsigned long long)s[6], (unsigned long long)s[7], (unsigned long long)s[8], (unsigned long long)s[9]);
+        }
     }
     // HUD and menus sample ordinary textures; full-screen layers sample resolved targets
     // and must keep spanning the width (squeezing them warped the image outside 16:9).
@@ -10388,12 +11077,12 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
     // space, so tiled draws stay unshifted. The title's rectangle draws (depth resets)
     // reset the window offset to zero and use tile-relative coordinates instead:
     // those land in the current tile, so shift them by the tile's origin.
-    D3D12_RECT scissor = WindowScissor();
+    D3D12_RECT scissor = pass.Window();
     float shiftY = 0;
     {
         const uint32_t offsetReg = gpureg::Get(PA_SC_WINDOW_OFFSET);
         const int32_t wy = ((gpureg::Get(PA_SU_SC_MODE_CNTL) >> 16) & 1) ? int32_t((offsetReg >> 16) << 17) >> 17 : 0;
-        const bool full = scissor.left <= 0 && scissor.top <= 0 && scissor.right >= LONG(PassWidth()) && scissor.bottom >= LONG(PassHeight());
+        const bool full = scissor.left <= 0 && scissor.top <= 0 && scissor.right >= LONG(pass.Width()) && scissor.bottom >= LONG(pass.Height());
         if (!full)
         {
             g_tile.originY = -wy;
@@ -10415,20 +11104,20 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
             scissor.bottom = std::min(scissor.bottom, g_tile.rect.bottom);
         }
     }
-    const D3D12_VIEWPORT vp{ 0, shiftY * ScaleY(), float(PassWidth()) * ScaleX(), float(PassHeight()) * ScaleY(), 0, 1 };
+    const D3D12_VIEWPORT vp{ 0, shiftY * pass.YScale(), float(pass.Width()) * pass.XScale(), float(pass.Height()) * pass.YScale(), 0, 1 };
     if (scissor.right <= scissor.left || scissor.bottom <= scissor.top)
     {
         TraceSkip("empty scissor", initiator);
         Bump(g_r.skippedThisFrame);
         return;
     }
-    D3D12_RECT hostScissor = ToHost(scissor);
+    D3D12_RECT hostScissor = pass.Host(scissor);
     // A scissor narrower than the screen in a wide pass clips 2D content (the track map),
     // which the vertex shader keeps in the centred 16:9 area: map it the same way. Not for
     // screen layers (post-processing done in halves would leave a seam), nor menus (drawn stretched, see vwide).
-    if (WidePass() && ScaleWide() != ScaleY() && !g_drawSamplesResolve && RaceView() && (scissor.left > 0 || scissor.right < LONG(kWidth)))
+    if (pass.IsWide() && pass.WideScale() != pass.YScale() && !g_drawSamplesResolve && RaceView() && (scissor.left > 0 || scissor.right < LONG(kWidth)))
     {
-        const double centre = kWidth * ScaleWide() / 2.0, s = ScaleY();
+        const double centre = kWidth * pass.WideScale() / 2.0, s = pass.YScale();
         hostScissor.left = LONG(std::lround(centre + (scissor.left - double(kWidth) / 2) * s));
         hostScissor.right = LONG(std::lround(centre + (scissor.right - double(kWidth) / 2) * s));
     }
@@ -10488,14 +11177,33 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
         {
             // (A per-thread memo: the shared map needs g_shaderMutex, which every draw taking cost CPU-bound frames.)
             thread_local std::unordered_map<uint64_t, const CompiledShader*> memo;
+            // In front, a direct-mapped copy (memo entries are written once, never changed).
+            struct RecentVariant
+            {
+                uint64_t id = 0;
+                const CompiledShader* f = nullptr;
+                bool used = false;
+            };
+            thread_local RecentVariant recentVariants[64];
             const uint64_t id = psUsed->cacheKey * 0x9E3779B97F4A7C15ull ^ plain;
+            RecentVariant& hot = recentVariants[size_t(id * 0x9E3779B97F4A7C15ull >> 58)];
             const CompiledShader* f;
-            if (auto it = memo.find(id); it != memo.end())
-                f = it->second;
+            if (hot.used && hot.id == id && !g_sw_FM2_VARIANT_MAP_ONLY)
+            {
+                MemoStat(t_memoStats.variantHit);
+                f = hot.f;
+            }
             else
             {
-                std::lock_guard shaderLock(g_shaderMutex);
-                f = memo[id] = FetchVariantOf(*psUsed, plain);
+                MemoStat(t_memoStats.variantMiss);
+                if (auto it = memo.find(id); it != memo.end())
+                    f = it->second;
+                else
+                {
+                    std::lock_guard shaderLock(g_shaderMutex);
+                    f = memo[id] = FetchVariantOf(*psUsed, plain);
+                }
+                hot = { id, f, true };
             }
             if (f && f->IsReady())
                 if (ID3D12PipelineState* fp = GetPipeline(vs, *f, edramMode == 5, cullable, false, psUsed != &ps, plain))
@@ -10528,11 +11236,62 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
             memcpy(rv, vc->c, nv * 16);
             memcpy(rp, pc->c, np * 16);
         }
+        // Read once: the reuse below and the puts must agree.
+        const bool fullBlocks = g_sw_FM2_FULL_CONSTANT_BLOCKS;
+        const bool psBlockReuse = psReuse && !fullBlocks && !allBoolLoop;
+        if (psBlockReuse)
+        {
+            // Each range the puts below write, against the last block's (the key fixes which ranges). With
+            // different floats no hit is possible, so the ranges are only kept, not compared.
+            const auto* stage = reinterpret_cast<const uint8_t*>(pc);
+            auto* kept = reinterpret_cast<uint8_t*>(&pr.rest);
+            const size_t ranges[6][2] = {
+                { offsetof(PSConstants, b), psBools ? offsetof(PSConstants, l) : offsetof(PSConstants, b) },
+                { offsetof(PSConstants, l), psLoops ? offsetof(PSConstants, info) : offsetof(PSConstants, l) },
+                { offsetof(PSConstants, info), offsetof(PSConstants, tinfo) },
+                { offsetof(PSConstants, tinfo), offsetof(PSConstants, tinfo) + psSlots * sizeof(pc->tinfo[0]) },
+                { offsetof(PSConstants, tbias), offsetof(PSConstants, tbias) + psSlots * sizeof(pc->tbias[0]) },
+                { offsetof(PSConstants, forceLod), sizeof(PSConstants) },
+            };
+            bool same = psFloatsSame;
+            if (same)
+                for (const auto& r : ranges)
+                    if (memcmp(stage + r[0], kept + r[0], r[1] - r[0]) != 0)
+                    {
+                        same = false;
+                        break;
+                    }
+            if (!same)
+                for (const auto& r : ranges)
+                    memcpy(kept + r[0], stage + r[0], r[1] - r[0]);
+            psHit = same;
+            if (psHit && reuseStats)
+            {
+                g_constantReuse.psHits.fetch_add(1, std::memory_order_relaxed);
+                size_t bytes = 0;
+                for (uint32_t w = 0; w < 4; w++)
+                    bytes += size_t(__builtin_popcountll(ps.info.constantMask[w])) * 16;
+                for (const auto& r : ranges)
+                    bytes += r[1] - r[0];
+                g_constantReuse.psBytesSaved.fetch_add(bytes, std::memory_order_relaxed);
+            }
+        }
+        if (psFloatsSame && !psHit)
+        {
+            // Skipped above for a reuse that did not happen: pr.c holds this draw's floats (just compared).
+            const __m128i swap = _mm_setr_epi8(3, 2, 1, 0, 7, 6, 5, 4, 11, 10, 9, 8, 15, 14, 13, 12);
+            auto* dp = reinterpret_cast<__m128i*>(reinterpret_cast<PSConstants*>(rp)->c);
+            for (uint32_t w = 0; w < 4; w++)
+                for (uint64_t bits = ps.info.constantMask[w]; bits; bits &= bits - 1)
+                {
+                    const uint32_t i = w * 64 + uint32_t(_tzcnt_u64(bits));
+                    _mm_storeu_si128(dp + i, _mm_shuffle_epi8(_mm_loadu_si128(pr.c + i), swap));
+                }
+        }
         // Then only the vertex fetch and texture entries this draw's shaders read: the tables are sized for
         // 96 fetch constants and 32 slots, a draw uses a few, and the rest was ~3 KB of padding copied per
         // draw (the largest single cost on the command processor in a race; from ReGPU 4884e92). The ring
         // bytes skipped are never read. FM2_FULL_CONSTANT_BLOCKS=1 copies the whole blocks (A/B).
-        LiveSwitch &fullBlocks = g_sw_FM2_FULL_CONSTANT_BLOCKS;
         auto put = [](uint8_t* ring, const void* stage, size_t from, size_t to) {
             if (to > from)
                 memcpy(ring + from, static_cast<const uint8_t*>(stage) + from, to - from);
@@ -10572,23 +11331,36 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
             put(rv, vc, offsetof(VSConstants, info), offsetof(VSConstants, vfl));
             put(rv, vc, offsetof(VSConstants, vfl), offsetof(VSConstants, vfl) + layouts * sizeof(vc->vfl[0]));
             put(rv, vc, offsetof(VSConstants, vsquash), sizeof(VSConstants));
-            if (allBoolLoop)
-                put(rp, pc, offsetof(PSConstants, b), offsetof(PSConstants, tinfo));
-            else
+            if (!psHit) // (a reused block already holds these bytes)
             {
-                if (psBools)
-                    put(rp, pc, offsetof(PSConstants, b), offsetof(PSConstants, l));
-                if (psLoops)
-                    put(rp, pc, offsetof(PSConstants, l), offsetof(PSConstants, info));
-                put(rp, pc, offsetof(PSConstants, info), offsetof(PSConstants, tinfo)); // pinfo, pinfo2
+                if (allBoolLoop)
+                    put(rp, pc, offsetof(PSConstants, b), offsetof(PSConstants, tinfo));
+                else
+                {
+                    if (psBools)
+                        put(rp, pc, offsetof(PSConstants, b), offsetof(PSConstants, l));
+                    if (psLoops)
+                        put(rp, pc, offsetof(PSConstants, l), offsetof(PSConstants, info));
+                    put(rp, pc, offsetof(PSConstants, info), offsetof(PSConstants, tinfo)); // pinfo, pinfo2
+                }
+                put(rp, pc, offsetof(PSConstants, tinfo), offsetof(PSConstants, tinfo) + slots * sizeof(pc->tinfo[0]));
+                put(rp, pc, offsetof(PSConstants, tbias), offsetof(PSConstants, tbias) + slots * sizeof(pc->tbias[0]));
+                put(rp, pc, offsetof(PSConstants, forceLod), sizeof(PSConstants));
             }
-            put(rp, pc, offsetof(PSConstants, tinfo), offsetof(PSConstants, tinfo) + slots * sizeof(pc->tinfo[0]));
-            put(rp, pc, offsetof(PSConstants, tbias), offsetof(PSConstants, tbias) + slots * sizeof(pc->tbias[0]));
-            put(rp, pc, offsetof(PSConstants, forceLod), sizeof(PSConstants));
+        }
+        if (psReuse)
+        {
+            // This thread's last block from here on: whole only when its ranges were compared and kept
+            // (psBlockReuse). valid goes last, after the offset it vouches for.
+            if (!psHit)
+                pr.offset = psOffset;
+            pr.frame = &f;
+            pr.epoch = f.ringEpoch;
+            pr.valid = psBlockReuse;
         }
     }
     C().list->SetGraphicsRootConstantBufferView(0, f.ring->GetGPUVirtualAddress() + vsOffset);
-    C().list->SetGraphicsRootConstantBufferView(1, f.ring->GetGPUVirtualAddress() + psOffset);
+    C().list->SetGraphicsRootConstantBufferView(1, f.ring->GetGPUVirtualAddress() + (psHit ? pr.offset : psOffset));
     if (motion)
         C().list->SetGraphicsRootConstantBufferView(5, motionPrevious);
     if (const D3D12_GPU_DESCRIPTOR_HANDLE t2 = Gpu(g_r.srvHeap.Get(), f.descriptorBase, g_r.srvStride); t2.ptr != ds.table2.ptr)

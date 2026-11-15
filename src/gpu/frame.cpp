@@ -3,6 +3,7 @@
 // the frame's textures and lays them out for the window: the first view of
 // real game content, until translated shaders draw the frame itself.
 #include <algorithm>
+#include <chrono>
 #include <condition_variable>
 #include <cstring>
 #include <filesystem>
@@ -46,6 +47,7 @@ struct ShaderUpload
     std::vector<uint32_t> words; // as uploaded (big-endian)
     uint32_t used = 0;           // ucode::UsedDwords
     uint64_t hash = 0;           // Fnv1a of the used dwords ^ type
+    uint32_t compare = 0;        // dwords a repeat must match (see FrameOnShaderLoad)
 };
 // Two generations: when the current one fills, the older one is dropped and the current
 // one becomes old (lookups promote what is still used). Clearing everything at once made
@@ -103,6 +105,42 @@ uint64_t FastKey(const uint32_t* p, uint32_t dwords, uint32_t type)
     if (i < dwords)
         h = (h ^ p[i]) * 0xFF51AFD7ED558CCDull;
     return h ^ (h >> 29);
+}
+
+// FM2_PERF: shader loads every ~2 s, by path, how many repeat the shader already bound, and the words
+// compared against the words uploaded. Per thread: draw workers replay loads too.
+struct LoadStats
+{
+    uint64_t loads = 0, slotHits = 0, keyHits = 0, misses = 0, bound = 0, uploaded = 0, compared = 0;
+    uint64_t rotations = 0;
+    std::chrono::steady_clock::time_point last = std::chrono::steady_clock::now();
+    const ShaderUpload* lastHit[2] = {}; // record last bound per stage (only compared, never read)
+};
+thread_local LoadStats t_loadStats;
+
+void CountLoad(uint32_t dwords)
+{
+    LoadStats& s = t_loadStats;
+    if ((++s.loads & 1023) == 0 && std::chrono::steady_clock::now() - s.last > std::chrono::seconds(2))
+    {
+        Log("perf: shader loads %llu (slot %llu, by key %llu, new %llu), same as bound %llu, dwords uploaded %llu compared %llu, rotations %llu",
+            (unsigned long long)s.loads, (unsigned long long)s.slotHits, (unsigned long long)s.keyHits, (unsigned long long)s.misses,
+            (unsigned long long)s.bound, (unsigned long long)s.uploaded, (unsigned long long)s.compared,
+            (unsigned long long)(g_rotations - s.rotations));
+        s.loads = s.slotHits = s.keyHits = s.misses = s.bound = s.uploaded = s.compared = 0;
+        s.rotations = g_rotations;
+        s.last = std::chrono::steady_clock::now();
+    }
+    s.uploaded += dwords;
+}
+
+void CountHit(ShaderType type, const ShaderUpload* u, bool bySlot)
+{
+    LoadStats& s = t_loadStats;
+    (bySlot ? s.slotHits : s.keyHits)++;
+    const ShaderUpload*& last = s.lastHit[type != ShaderType::Vertex];
+    s.bound += last == u; // (a freed record's address reused can count: a diagnostic)
+    last = u;
 }
 const bool g_dumpShaders = getenv("FM2_DUMP_SHADERS") != nullptr;
 
@@ -190,12 +228,28 @@ const bool g_textureView = getenv("FM2_TEXVIEW") != nullptr;
 extern std::atomic<uint64_t> g_patchConfig;
 
 LiveSwitch g_recordConfigs("FM2_RECORD_CONFIGS"); // (at namespace scope: no initialisation guard per load)
+// A repeat compares only the words its result depends on (ShaderUpload::compare). =1: every uploaded word (A/B).
+LiveSwitch g_shaderCompareAll("FM2_SHADER_COMPARE_ALL");
+LiveSwitch g_shaderLoadPerf("FM2_PERF");
 
 void FrameOnShaderLoad(ShaderType type, const uint32_t* microcodeBE, uint32_t dwords, uint32_t guestAddress)
 {
     if (!dwords || dwords > 0x10000)
         return;
     LiveSwitch& record = g_recordConfigs;
+    const bool compareAll = g_shaderCompareAll, perf = g_shaderLoadPerf;
+    if (perf)
+        CountLoad(dwords);
+    // A record whose first `compare` words match gives the same used dwords, hash and code as a full match:
+    // UsedDwords reads only those, Fnv1a and RendererSetShader only the used ones.
+    const auto same = [&](const ShaderUpload* u) {
+        if (!u || u->words.size() != dwords)
+            return false;
+        const uint32_t n = compareAll ? dwords : u->compare;
+        if (perf)
+            t_loadStats.compared += n;
+        return memcmp(u->words.data(), microcodeBE, size_t(n) * 4) == 0;
+    };
     const uint64_t at = uint64_t(guestAddress) << 32 ^ uint64_t(dwords) << 2 ^ uint32_t(type);
     if (g_uploads.bucket_count() < kUploadGeneration * 2)
         g_uploads.reserve(kUploadGeneration * 2);
@@ -205,27 +259,39 @@ void FrameOnShaderLoad(ShaderType type, const uint32_t* microcodeBE, uint32_t dw
         ShaderUpload* u = slot.upload && g_rotations <= slot.rotation + 1 ? slot.upload : FindUpload(slot.key);
         if (u && u != slot.upload)
             slot.upload = u, slot.rotation = g_rotations;
-        if (u && u->words.size() == dwords && memcmp(u->words.data(), microcodeBE, dwords * 4) == 0)
+        if (same(u))
         {
+            if (perf)
+                CountHit(type, u, true);
             RendererSetShader(uint32_t(type), microcodeBE, u->used, u->hash);
             return;
         }
     }
     const uint64_t key = FastKey(microcodeBE, dwords, uint32_t(type));
     if (!record)
-        if (const ShaderUpload* u = FindUpload(key); u && u->words.size() == dwords && memcmp(u->words.data(), microcodeBE, dwords * 4) == 0)
+        if (const ShaderUpload* u = FindUpload(key); same(u))
         {
+            if (perf)
+                CountHit(type, u, false);
             RendererSetShader(uint32_t(type), microcodeBE, u->used, u->hash);
             slot = { at, key, const_cast<ShaderUpload*>(u), g_rotations };
             return; // seen before: already logged and dumped
         }
     const uint32_t raw = dwords;
-    dwords = ucode::UsedDwords(microcodeBE, dwords);
+    uint32_t cfDwords = raw;
+    dwords = ucode::UsedDwords(microcodeBE, dwords, &cfDwords);
+    // All of them when UsedDwords fell back to the size; else the used ones and the control flow it read.
+    const uint32_t compare = dwords >= raw ? raw : std::min(raw, std::max(dwords, cfDwords));
     const uint64_t hash = Fnv1a(microcodeBE, dwords) ^ uint64_t(type);
     RendererSetShader(uint32_t(type), microcodeBE, dwords, hash);
     RotateUploads();
-    ShaderUpload& upload = g_uploads[key] = ShaderUpload{ std::vector<uint32_t>(microcodeBE, microcodeBE + raw), dwords, hash };
+    ShaderUpload& upload = g_uploads[key] = ShaderUpload{ std::vector<uint32_t>(microcodeBE, microcodeBE + raw), dwords, hash, compare };
     slot = { at, key, &upload, g_rotations };
+    if (perf)
+    {
+        t_loadStats.misses++;
+        t_loadStats.lastHit[type != ShaderType::Vertex] = &upload;
+    }
     if (record)
     {
         static std::mutex recordMutex;

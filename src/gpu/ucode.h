@@ -100,6 +100,9 @@ Shader Parse(const uint32_t* microcodeBE, uint32_t dwords, bool pixel);
 // per-load stamp after that, so hashes cover only this much. Returns dwords when the
 // control flow has calls or jumps or doesn't parse.
 uint32_t UsedDwords(const uint32_t* microcodeBE, uint32_t dwords);
+// The same, and the control-flow dwords the parse read to find them (all of them when it
+// doesn't parse). The result depends on those words and the used ones only.
+uint32_t UsedDwords(const uint32_t* microcodeBE, uint32_t dwords, uint32_t* cfDwords);
 // Whether the microcode can plausibly be a shader at all: valid control flow, and every ALU
 // instruction using an opcode the ISA defines. The GPU lookahead predicts shader loads from
 // the ring buffer before the guest (or the command processor) has finished writing that

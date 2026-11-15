@@ -15,6 +15,7 @@
 
 #include "render/presenter.h"
 #include "live_switch.h"
+#include "copy128.h"
 #include "settings.h"
 #include "kernel/imports.h"
 #include "kernel/thread.h"
@@ -615,14 +616,53 @@ void WriteRegister(uint32_t index, uint32_t value)
     }
 }
 
+// Diagnostic (FM2_PERF): the packet mix and register-copy sizes, logged every 2 s.
+namespace
+{
+const bool g_cpDiag = getenv("FM2_PERF") != nullptr;
+struct CpDiag
+{
+    uint64_t type[4], predicatedOff, copies, bigCopies, copyBytes, draws;
+    std::chrono::steady_clock::time_point last;
+} g_cpd{};
+void CpDiagDraw()
+{
+    if ((++g_cpd.draws & 1023) != 0)
+        return;
+    const auto now = std::chrono::steady_clock::now();
+    if (now - g_cpd.last < std::chrono::seconds(2))
+        return;
+    g_cpd.last = now;
+    Log("perf: CP packets t0 %llu t1 %llu t2 %llu t3 %llu (predicated off %llu); register copies %llu (%llu over 32 bytes, %llu KB); %llu draws",
+        (unsigned long long)g_cpd.type[0], (unsigned long long)g_cpd.type[1], (unsigned long long)g_cpd.type[2], (unsigned long long)g_cpd.type[3],
+        (unsigned long long)g_cpd.predicatedOff, (unsigned long long)g_cpd.copies, (unsigned long long)g_cpd.bigCopies,
+        (unsigned long long)(g_cpd.copyBytes >> 10), (unsigned long long)g_cpd.draws);
+    const auto keep = g_cpd.last;
+    g_cpd = {};
+    g_cpd.last = keep;
+}
+}
+
 // Bulk register writes from big-endian guest data (constant loads, register runs): the
 // register file is big-endian too, so a run clear of the scratch registers is a copy.
+// On AMD family 15h with 128-bit stores (Copy128): the CRT memcpy's AVX stores are slow there.
+const bool g_avxStoresSlow = AvxStoresSlow();
+LiveSwitch g_crtRegCopy("FM2_CRT_REG_COPY"); // A/B: copy runs with the CRT memcpy on the FX too
 void WriteRegisters(uint32_t index, uint32_t source, uint32_t count)
 {
     const bool lut = index <= DC_LUT_30_COLOR && index + count > DC_LUT_RW_INDEX;
     if (!lut && (index + count <= SCRATCH_REG0 || index >= SCRATCH_REG0 + 8))
     {
-        memcpy(GuestPtr<uint8_t>(kRegisterBase + index * 4), GuestPtr<uint8_t>(source), size_t(count) * 4);
+        if (g_avxStoresSlow && !g_crtRegCopy)
+            Copy128(GuestPtr<uint8_t>(kRegisterBase + index * 4), GuestPtr<uint8_t>(source), size_t(count) * 4);
+        else
+            memcpy(GuestPtr<uint8_t>(kRegisterBase + index * 4), GuestPtr<uint8_t>(source), size_t(count) * 4);
+        if (g_cpDiag)
+        {
+            g_cpd.copies++;
+            g_cpd.bigCopies += count * 4 > 32;
+            g_cpd.copyBytes += count * 4;
+        }
         if (seg::g_open)
             seg::Append(seg::kRegs, &index, 1, GuestPtr<uint32_t>(source), count);
         if (work::Active())
@@ -636,7 +676,9 @@ void WriteRegisters(uint32_t index, uint32_t source, uint32_t count)
 // (At namespace scope: a function-local static checks its initialisation guard on every packet.)
 const int g_gpuSlow = getenv("FM2_GPUSLOW") ? atoi(getenv("FM2_GPUSLOW")) : 0;
 LiveSwitch g_tracePredication("FM2_TRACE_PRED");
-LiveSwitch g_lockedDrawCount("FM2_LOCKED_COUNTERS"); // A/B: the draw count as a locked add
+LiveSwitch g_lockedDrawCount("FM2_LOCKED_COUNTERS"); // A/B: the draw and predicated-skip counts as locked adds
+LiveSwitch g_traceCallAlways("FM2_TRACE_CALL_ALWAYS"); // A/B: call RendererTracing for every packet
+LiveSwitch g_noCpPrefetch("FM2_CP_NO_PREFETCH");       // A/B: no prefetch of the command stream
 // Only this thread adds to the draw count (GpuLogState just reads it): a plain add, not a locked op per draw.
 inline void CountDraw()
 {
@@ -650,6 +692,8 @@ inline void CountDraw()
 uint32_t ExecutePacket(uint32_t ptr)
 {
     const uint32_t header = LoadBE32(ptr);
+    if (g_cpDiag)
+        g_cpd.type[header >> 30]++;
     g_gpu.lastPacket.store(ptr, std::memory_order_relaxed); // diagnostics only: no fence per packet
     for (int i = 0; i < g_gpuSlow; i++)
         _mm_pause();
@@ -721,11 +765,19 @@ uint32_t ExecutePacket(uint32_t ptr)
             (g_gpu.binSelect & g_gpu.binMask) ? "run" : "skip");
     if (tracePredication && opcode == 0x2D && (header & 1) && (g_gpu.binSelect & g_gpu.binMask) && predLogged < 100000000)
         Log("pred: set constant %08X: %08X %08X %08X (count %u)", arg(0), count > 1 ? arg(1) : 0, count > 2 ? arg(2) : 0, count > 3 ? arg(3) : 0, count);
-    if (RendererTracing() && opcode != 0x10)
+    // (The inline armed check first: RendererTracing is a call, and this runs per packet.)
+    if ((g_traceCallAlways || RendererTraceArmed()) && RendererTracing() && opcode != 0x10)
         Log("pm4: op %02X count %u%s", opcode, count, (header & 1) && !(g_gpu.binSelect & g_gpu.binMask) ? " (predicated off)" : "");
     if ((header & 1) && !(g_gpu.binSelect & g_gpu.binMask))
     {
-        g_gpu.skippedPredicated++;
+        // Only this thread adds (GpuLogState just reads): a plain add, as CountDraw. A locked
+        // op also drains this thread's pending stores, ring writes included.
+        if (g_lockedDrawCount)
+            g_gpu.skippedPredicated++;
+        else
+            g_gpu.skippedPredicated.store(g_gpu.skippedPredicated.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
+        if (g_cpDiag)
+            g_cpd.predicatedOff++;
         return 1 + count;
     }
     if (g_trace && opcode != 0x10)
@@ -951,10 +1003,14 @@ uint32_t ExecutePacket(uint32_t ptr)
     }
     case 0x22: // DRAW_INDX: viz query, initiator, [index base, index size]
         CountDraw();
+        if (g_cpDiag)
+            CpDiagDraw();
         SubmitDraw(arg(1), count > 2 ? arg(2) : 0, count > 3 ? arg(3) : 0);
         break;
     case 0x36: // DRAW_INDX_2: initiator, [inline indices]
         CountDraw();
+        if (g_cpDiag)
+            CpDiagDraw();
         SubmitDraw(arg(0), 0, 0);
         break;
     case 0x46: // EVENT_WRITE
@@ -973,9 +1029,16 @@ void ExecuteBuffer(uint32_t address, uint32_t dwords)
     auto& cursors = t_cursors;
     const size_t level = cursors.size();
     cursors.push_back({ address, address + dwords * 4 });
+    const uint32_t end = address + dwords * 4;
     for (uint32_t done = 0; done < dwords;)
     {
         const uint32_t ptr = address + done * 4;
+        // The title wrote these packets on another core: start on the lines ahead while this
+        // one runs (the header load was most of this loop's time). Only inside this buffer: past
+        // its end is usually the segment the title is still writing, and pulling those lines
+        // here makes its stores miss.
+        if (!g_noCpPrefetch && ptr + 256 < end)
+            _mm_prefetch(GuestPtr<const char>(ptr + 256), _MM_HINT_T0);
         cursors[level].next = ptr + PacketLength(LoadBE32(ptr)) * 4;
         done += ExecutePacket(ptr);
     }

@@ -101,9 +101,11 @@ bool Cf::IsEnd() const
     return op() == CfOp::ExecEnd || op() == CfOp::CondExecEnd || op() == CfOp::CondExecPredEnd || op() == CfOp::CondExecPredCleanEnd;
 }
 
-uint32_t UsedDwords(const uint32_t* microcodeBE, uint32_t dwords)
+uint32_t UsedDwords(const uint32_t* microcodeBE, uint32_t dwords, uint32_t* cfDwords)
 {
     const Shader s = Parse(microcodeBE, dwords, false);
+    if (cfDwords)
+        *cfDwords = s.valid ? uint32_t(s.cf.size() / 2 * 3) : dwords; // Parse reads 2 Cf per triple
     if (!s.valid)
         return dwords;
     uint32_t slots = 0;
@@ -116,6 +118,8 @@ uint32_t UsedDwords(const uint32_t* microcodeBE, uint32_t dwords)
     }
     return slots && slots * 3 <= dwords ? slots * 3 : dwords;
 }
+
+uint32_t UsedDwords(const uint32_t* microcodeBE, uint32_t dwords) { return UsedDwords(microcodeBE, dwords, nullptr); }
 
 const char* VectorOpName(uint32_t op) { return kVectorOps[op & 31]; }
 const char* ScalarOpName(uint32_t op) { return kScalarOps[op & 63]; }
