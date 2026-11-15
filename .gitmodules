@@ -1,3 +1,6 @@
 [submodule "thirdparty/XenonRecomp"]
 	path = thirdparty/XenonRecomp
 	url = https://github.com/hedge-dev/XenonRecomp
+[submodule "thirdparty/meshoptimizer"]
+	path = thirdparty/meshoptimizer
+	url = https://github.com/zeux/meshoptimizer

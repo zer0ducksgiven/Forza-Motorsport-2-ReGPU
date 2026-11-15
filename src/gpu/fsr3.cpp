@@ -9,6 +9,9 @@
 
 #include "log.h"
 
+#include <cstdlib>
+#include <vector>
+
 namespace
 {
 struct Fsr3
@@ -38,6 +41,35 @@ bool Fsr3Evaluate(ID3D12Device* device, ID3D12GraphicsCommandList* list, const D
         create.header.pNext = &backend.header;
         create.maxRenderSize = { setup.renderWidth, setup.renderHeight };
         create.maxUpscaleSize = { setup.outputWidth, setup.outputHeight };
+        // FSR study: list the upscaler versions the loaded DLL offers; FM2_FSR_VERSION=<n> (index in that list) picks one.
+        std::vector<uint64_t> ids;
+        std::vector<const char*> names;
+        {
+            ffxQueryDescGetVersions q{};
+            q.header.type = FFX_API_QUERY_DESC_TYPE_GET_VERSIONS;
+            q.createDescType = FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE;
+            q.device = device;
+            uint64_t count = 0;
+            q.outputCount = &count;
+            ffxQuery(nullptr, &q.header);
+            ids.resize(count);
+            names.resize(count);
+            q.versionIds = ids.data();
+            q.versionNames = names.data();
+            if (count)
+                ffxQuery(nullptr, &q.header);
+            for (uint64_t i = 0; i < count; i++)
+                Log("fsr3: upscaler version %llu: %s (id %llx)", (unsigned long long)i, names[i] ? names[i] : "?", (unsigned long long)ids[i]);
+        }
+        ffxOverrideVersion over{};
+        over.header.type = FFX_API_DESC_TYPE_OVERRIDE_VERSION;
+        if (const char* v = getenv("FM2_FSR_VERSION"); v && size_t(atoi(v)) < ids.size())
+        {
+            over.versionId = ids[size_t(atoi(v))];
+            over.header.pNext = create.header.pNext;
+            create.header.pNext = &over.header;
+            Log("fsr3: using version %s", names[size_t(atoi(v))]);
+        }
         create.flags = FFX_UPSCALE_ENABLE_AUTO_EXPOSURE | (setup.depthInverted ? FFX_UPSCALE_ENABLE_DEPTH_INVERTED : 0) |
             (setup.hdr ? FFX_UPSCALE_ENABLE_HIGH_DYNAMIC_RANGE : 0);
         const ffxReturnCode_t r = ffxCreateContext(&g_fsr3.context, &create.header, nullptr);

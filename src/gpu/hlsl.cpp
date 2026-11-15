@@ -305,6 +305,10 @@ float4 CubeOp(float4 a, float4 b)
 float4 Mul9(float4 a, float4 b) { return (a == 0 || b == 0) ? 0 : a * b; }
 float Mul9(float a, float b) { return (a == 0 || b == 0) ? 0 : a * b; }
 float Dot9(float4 a, float4 b) { float4 m = Mul9(a, b); return m.x + m.y + m.z + m.w; }
+// Plain IEEE forms, for operands that cannot hold an infinity or NaN (Hyper, REGPU_HYPER_PLAIN_MUL=5).
+float4 MulP(float4 a, float4 b) { return a * b; }
+float MulP(float a, float b) { return a * b; }
+float DotP(float4 a, float4 b) { return dot(a, b); }
 
 bool BoolConstant(uint4 b[2], uint index) { return (b[index >> 7][(index >> 5) & 3] >> (index & 31)) & 1; }
 )";
@@ -399,12 +403,36 @@ struct Emitter
         return s;
     }
 
+    // Hyper (REGPU_HYPER_PLAIN_MUL=5, pixel shaders): registers that may hold an infinity or NaN, from the scalar ops that
+    // can produce one (exp2, unclamped log2, rcp and rsqrt) and anything computed from them. Sticky (never cleared), so
+    // branches stay conservative. Only multiplies with a tainted operand keep the Xenos zero rule (Mul9/Dot9); the rest
+    // use plain IEEE maths (MulP/DotP), which the GPU runs without a compare and select per component.
+    static bool SmartMul()
+    {
+        static const bool on = getenv("REGPU_HYPER_PLAIN_MUL") && atoi(getenv("REGPU_HYPER_PLAIN_MUL")) == 5;
+        return on;
+    }
+    uint64_t taint = 0;
+    bool psTaint = false;
+    bool curTaint = true; // the instruction being emitted reads a tainted operand
+    bool SrcTaint(const Source& s) const
+    {
+        if (s.isConstant)
+            return false;
+        if (s.relative)
+            return taint != 0;
+        return (taint >> (s.reg & 63)) & 1;
+    }
+    const char* MulName() const { return (pixel && SmartMul() && !curTaint) ? "MulP(" : "Mul9("; }
+    const char* DotName() const { return (pixel && SmartMul() && !curTaint) ? "DotP(" : "Dot9("; }
+
     std::string VectorExpr(const Alu& a, const std::string& A, const std::string& B, const std::string& C)
     {
+        const std::string mul = MulName(), dot = DotName();
         switch (a.vectorOp)
         {
         case 0: return A + " + " + B;
-        case 1: return "Mul9(" + A + ", " + B + ")";
+        case 1: return mul + A + ", " + B + ")";
         case 2: return "max(" + A + ", " + B + ")";
         case 3: return "min(" + A + ", " + B + ")";
         case 4: return "float4(" + A + " == " + B + ")";
@@ -414,13 +442,13 @@ struct Emitter
         case 8: return "frac(" + A + ")";
         case 9: return "trunc(" + A + ")";
         case 10: return "floor(" + A + ")";
-        case 11: return "Mul9(" + A + ", " + B + ") + " + C;
+        case 11: return mul + A + ", " + B + ") + " + C;
         case 12: return "(" + A + " == 0.0) ? " + B + " : " + C;
         case 13: return "(" + A + " >= 0.0) ? " + B + " : " + C;
         case 14: return "(" + A + " > 0.0) ? " + B + " : " + C;
-        case 15: return "Dot9(" + A + ", " + B + ").xxxx";
-        case 16: return "Dot9(float4((" + A + ").xyz, 0), float4((" + B + ").xyz, 0)).xxxx";
-        case 17: return "(Dot9(float4((" + A + ").xy, 0, 0), float4((" + B + ").xy, 0, 0)) + (" + C + ").x).xxxx";
+        case 15: return dot + A + ", " + B + ").xxxx";
+        case 16: return dot + "float4((" + A + ").xyz, 0), float4((" + B + ").xyz, 0)).xxxx";
+        case 17: return "(" + dot + "float4((" + A + ").xy, 0, 0), float4((" + B + ").xy, 0, 0)) + (" + C + ").x).xxxx";
         case 18: // CUBE: operands are v.zzxy and v.yxzz; result (tc, sc, 2 * major axis, face)
             return "CubeOp(" + A + ", " + B + ")";
         case 19: { std::string t = A; return "max(max(" + t + ".x, " + t + ".y), max(" + t + ".z, " + t + ".w)).xxxx"; }
@@ -440,8 +468,8 @@ struct Emitter
         {
         case 0: return set(A + " + " + B);
         case 1: return set(A + " + ps");
-        case 2: return set("Mul9(" + A + ", " + B + ")");
-        case 3: case 4: return set("Mul9(" + A + ", ps)");
+        case 2: return set(MulName() + A + ", " + B + ")");
+        case 3: case 4: return set(MulName() + A + ", ps)");
         case 5: return set("max(" + A + ", " + B + ")");
         case 6: return set("min(" + A + ", " + B + ")");
         case 7: return set("float(" + A + " == 0.0)");
@@ -491,7 +519,7 @@ struct Emitter
             const char* op = a.scalarOp <= 43 ? " * " : (a.scalarOp <= 45 ? " + " : " - ");
             const char* neg = a.src[2].negate ? "-" : "";
             if (a.scalarOp <= 43)
-                return set(std::string("Mul9(") + neg + ca + ", " + neg + tb + ")");
+                return set(std::string(((taint >> temp) & 1) || !pixel || !SmartMul() ? "Mul9(" : "MulP(") + neg + ca + ", " + neg + tb + ")");
             static const int negMode = getenv("FM2_SC_NEG") ? atoi(getenv("FM2_SC_NEG")) : 0; // 0 both, 1 constant, 2 temp
             const char* negC = negMode == 2 ? "" : neg;
             const char* negT = negMode == 1 ? "" : neg;
@@ -545,11 +573,31 @@ struct Emitter
             body += "} ";
         }
         else
+        {
+            curTaint = SrcTaint(a.src[0]) || SrcTaint(a.src[1]) || SrcTaint(a.src[2]);
             body += "v = " + VectorExpr(a, A, B, C) + "; ";
+        }
+        const bool vectorTaint = SrcTaint(a.src[0]) || SrcTaint(a.src[1]) || SrcTaint(a.src[2]);
         if (a.vectorClamp && !vectorUnused)
             body += "v = saturate(v); ";
+        // The scalar half reads src[2] (and for some ops ps): its result is tainted by them or by an op that can make an
+        // infinity (exp2, raw log2, raw rcp, raw rsqrt).
+        const bool scalarTaint = !scalarKept && (SrcTaint(a.src[2]) || psTaint || a.scalarOp == 14 || a.scalarOp == 16 ||
+                                                 a.scalarOp == 19 || a.scalarOp == 22);
         if (!scalarKept)
+        {
+            curTaint = SrcTaint(a.src[2]) || psTaint;
             body += ScalarCode(a) + " ";
+        }
+        curTaint = true;
+        if (!a.exportData)
+        {
+            if (vectorTaint && a.vectorMask && !vectorUnused)
+                taint |= 1ull << (a.vectorDest & 63);
+            if (scalarTaint && a.scalarMask)
+                taint |= 1ull << (a.scalarDest & 63);
+        }
+        psTaint = psTaint || scalarTaint;
         if (a.vectorOp == 29) // MAXAv: a0 from the first operand's W, after the reads
             body += "a0 = clamp(int(floor((" + A + ").w + 0.5)), -256, 255); ";
         if (a.scalarClamp)
@@ -626,6 +674,8 @@ struct Emitter
             // FM4 port. FM2_NO_MINI_CONST=1 takes the mini's own field again (A/B; read at translation).
             static const bool miniOwnConst = getenv("FM2_NO_MINI_CONST") != nullptr;
             const uint32_t constIndex = f.isMini && !miniOwnConst ? lastConst : f.constIndex;
+            if (!f.isMini && !result.positionFetch[0])
+                result.positionFetch = { constIndex + 1, f.format | (f.isSigned ? 0x100u : 0), lastStride, f.offset };
             // The index register, or (ScanFetchIndex) the value the full fetch kept before overwriting it.
             const std::string indexReg = "r[" + std::to_string(lastSrc) + "]." + "xyzw"[lastSrcSwizzle & 3];
             const std::string indexSrc = saveFetchIndex ? "vfi" : indexReg;
@@ -693,6 +743,15 @@ struct Emitter
             // the Suzuka grandstand pixel shader 0xcc2c1b5affd62985 among them).
             body = std::string("{ float4 t; t = ") + call + "; " + DestSwizzleWrite(f.dest, f.destSwizzle, "t") + "}";
             result.usedTextureSlots |= 1u << f.constIndex;
+            if (pixel)
+            {
+                // Measurement (ceiling, breaks the picture): REGPU_MEASURE_TFETCH_MAX=N keeps the first N texture fetches of
+                // each pixel shader; later ones return mid grey without sampling.
+                static const int maxFetches = getenv("REGPU_MEASURE_TFETCH_MAX") ? atoi(getenv("REGPU_MEASURE_TFETCH_MAX")) : -1;
+                if (maxFetches >= 0 && int(result.textureFetches) >= maxFetches)
+                    body = std::string("{ float4 t = float4(0.5, 0.5, 0.5, 1.0); ") + DestSwizzleWrite(f.dest, f.destSwizzle, "t") + "}";
+                result.textureFetches++;
+            }
         }
         else if (f.opcode == 18 && pixel)
         {
@@ -1069,6 +1128,7 @@ bool TranslateVertexFetchLayout(const Shader& shader, TranslatedShader& out)
             break;
     }
     out.vertexFetchLayout = std::move(result.vertexFetchLayout);
+    out.positionFetch = result.positionFetch;
     out.vertexFetchConstants = std::move(result.vertexFetchConstants);
     return true;
 }
@@ -1090,6 +1150,32 @@ TranslatedShader TranslateShader(const Shader& shader)
     }
 
     std::string h = kPreamble;
+    // Hyper (REGPU_HYPER_SWIZZLE_SEL=1): the fetch swizzle without a dynamically indexed register (v[sel] in a loop):
+    // each channel picked by a select chain. Same result; Intel's compiler can keep it in registers.
+    static const bool swizzleSel = getenv("REGPU_HYPER_SWIZZLE_SEL") && atoi(getenv("REGPU_HYPER_SWIZZLE_SEL")) != 0;
+    if (swizzleSel)
+    {
+        const std::string from = "    float4 r;\n    [unroll] for (uint c = 0; c < 4; c++)\n    {\n        uint sel = (w >> (8 + 3 * c)) & 7u;\n"
+                                 "        r[c] = sel < 4u ? v[sel] : (sel == 5u ? 1.0 : 0.0);\n    }\n    return r;\n";
+        const std::string to = "    uint4 sel = (uint4(w, w, w, w) >> uint4(8, 11, 14, 17)) & 7u;\n"
+                               "    return sel == 0u ? v.xxxx : sel == 1u ? v.yyyy : sel == 2u ? v.zzzz : sel == 3u ? v.wwww : sel == 5u ? 1.0 : 0.0;\n";
+        if (const size_t p = h.find(from); p != std::string::npos)
+            h.replace(p, from.size(), to);
+    }
+    // Hyper (REGPU_HYPER_LEAN_LOD=1, lossless): without the FM2_FORCE_LOD diagnostic, every fetch's test of pforceLod
+    // is dropped; only the instruction's own explicit LOD (filt bit 2, a literal at each call) stays.
+    static const bool leanLod = getenv("REGPU_HYPER_LEAN_LOD") && atoi(getenv("REGPU_HYPER_LEAN_LOD")) != 0 && !getenv("FM2_FORCE_LOD");
+    if (leanLod)
+    {
+        const std::pair<const char*, const char*> cuts[] = {
+            { "if (pforceLod.x >= 0.0 || (filt & 4u))", "if (filt & 4u)" },
+            { "const float lod = clamp((filt & 4u) ? bias : pforceLod.x, 0.0, 16.0);", "const float lod = clamp(bias, 0.0, 16.0);" },
+            { "if (!vertexStage && !(filt & 4u) && pforceLod.x < 0.0) return", "if (!vertexStage && !(filt & 4u)) return" },
+        };
+        for (const auto& [from, to] : cuts)
+            if (const size_t p = h.find(from); p != std::string::npos)
+                h.replace(p, std::string(from).size(), to);
+    }
     if (!shader.pixel)
     {
         h += "void GuestVS(uint vindex, out float4 opos, out float4 o[16], out float4 opts)\n{\n"
@@ -1245,6 +1331,14 @@ TranslatedShader TranslateShader(const Shader& shader)
              "    if (pinfo.z & 8u) oC[0] = clamp(oC[0], -32.0, 32.0); // 16_16 fixed range\n"
              "    if (pinfo2.w > 0.0) oC[0].rgb = clamp(oC[0].rgb, 0.0, pinfo2.w); // 7e3 target range\n"
              "    return oC[0];\n}\n";
+        // REGPU_MEASURE_NO_ALPHATEST=1 (measurement, breaks alpha-tested surfaces): no alpha test, so no discard.
+        static const bool measureNoAlphaTest = getenv("REGPU_MEASURE_NO_ALPHATEST") != nullptr;
+        if (measureNoAlphaTest)
+        {
+            const size_t s = h.rfind("    switch (pinfo.x)"), e2 = h.find("    }\n", s);
+            if (s != std::string::npos && e2 != std::string::npos)
+                h.erase(s, e2 + 6 - s);
+        }
     }
     // The colour exports as separate variables, not an array (from the FM4 port): fxc declares a local
     // array as an indexable temp, and a driver can reorder writes to one ahead of an earlier read of

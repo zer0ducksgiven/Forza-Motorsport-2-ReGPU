@@ -78,6 +78,26 @@ void GammaMain(uint3 id : SV_DispatchThreadID)
     dst[id.xy] = float4(GammaCurve(c.r, p), GammaCurve(c.g, p), GammaCurve(c.b, p), c.a);
 }
 
+// Hyper (gpu/hyper.h, cheap upscale): the frame upscaled bilinearly and put through the display gamma in one pass,
+// in place of EASU, RCAS and the gamma pass (three full-frame passes). outSize.z: 1 to apply the gamma curve
+// (its 17 points in con0..rcasCon.x, as GammaMain).
+[numthreads(8, 8, 1)]
+void HyperUpscaleMain(uint3 id : SV_DispatchThreadID)
+{
+    if (any(id.xy >= outSize.xy))
+        return;
+    float4 c = src.SampleLevel(linearClamp, (float2(id.xy) + 0.5) / float2(outSize.xy), 0);
+    if (outSize.z != 0)
+    {
+        const uint4 q[5] = { con0, con1, con2, con3, rcasCon };
+        float p[17];
+        [unroll] for (uint k = 0; k < 17; k++)
+            p[k] = asfloat(q[k / 4][k % 4]);
+        c = float4(GammaCurve(c.r, p), GammaCurve(c.g, p), GammaCurve(c.b, p), c.a);
+    }
+    dst[id.xy] = float4(c.rgb, 1);
+}
+
 // Ultrawide menus: the frame (drawn stretched across the whole width) squeezed back into the middle 16:9,
 // black at the sides. outSize.z is where that area starts, outSize.w its width.
 [numthreads(8, 8, 1)]
