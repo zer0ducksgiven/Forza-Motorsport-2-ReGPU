@@ -14,6 +14,7 @@
 
 #include "live_switch.h"
 #include "log.h"
+#include "settings.h"
 
 namespace
 {
@@ -143,8 +144,8 @@ void InitGuestContext(PPCContext& ctx, GuestThread& thread)
 
 namespace
 {
-// FM2_PIN: affinity masks for guest threads, set as each one is created (from boot). "auto" (below) is the
-// default; FM2_PIN=off pins nothing.
+// FM2_PIN: affinity masks for guest threads, set as each one is created (from boot). Unset, it is "auto"
+// (below), or "off" when the launcher's Thread pinning is off (thread_pinning=0); FM2_PIN=off pins nothing.
 // "3:3,9:C,*:F0" gives masks (hex) by guest thread id, '*' for the rest.
 // "auto": the main thread (t3) and the command processor get a physical core each (all its logical
 // processors; a module on Bulldozer-family CPUs), from the fastest efficiency class, and every other guest
@@ -186,7 +187,7 @@ PinSpec ParsePinSpec()
     PinSpec pin;
     const char* spec = getenv("FM2_PIN");
     if (!spec || !*spec)
-        spec = "auto";
+        spec = GetSettings().threadPinning ? "auto" : "off";
     if (!strcmp(spec, "off"))
         return pin;
     std::string autoSpec;

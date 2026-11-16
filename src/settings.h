@@ -33,6 +33,9 @@ struct Settings
     // them every frame where guest memory isn't mapped for the GPU).
     bool vertexArena = true;
     bool vramUploadRing = false; // the upload ring in a GPU upload heap (resizable BAR), FM2_GPU_UPLOAD_RING
+    // The main thread and the GPU command processor on a core each, everything else on the rest
+    // (kernel/thread.cpp, FM2_PIN=auto). FM2_PIN, when set, wins over it.
+    bool threadPinning = true;
     // Racing wheels (input/wheel.cpp): force feedback strength and the centring spring and damper
     // on top of it (percent), the steering force reversed, and the rotation the wheel is set to in
     // its own software (degrees; the game steers as the 360 wheel's 270 from it; 0 uses the

@@ -187,6 +187,10 @@
         <div><div class="toggle-title">Low performance mode</div><div class="toggle-sub">For older CPUs</div></div>
         <button class="switch" id="lowPerformance" role="switch"></button>
       </div>
+      <div class="toggle-row" data-tip="Gives the game's main thread and its graphics thread a CPU core each and keeps everything else on the other cores, so they aren't held up by other work. Faster on the PCs we tested (about 8% on an AMD FX). Turn it off if the game runs worse with it, and tell us your CPU.">
+        <div><div class="toggle-title">Thread pinning</div><div class="toggle-sub">A CPU core each for the busiest threads</div></div>
+        <button class="switch" id="threadPinning" role="switch"></button>
+      </div>
     </section>
 
     <section class="panel">
