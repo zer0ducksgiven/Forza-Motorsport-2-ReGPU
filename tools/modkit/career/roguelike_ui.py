@@ -258,6 +258,13 @@ NEXT_CAR = r'''
 						{ 26, "EngineDSC", "SuperchargerDSC", "Positive Displacement Supercharger", true },
 						{ 27, "EngineIntercooler", "Intercooler", "Intercooler", true },
 					}
+					-- parts won before 0.12.1.1 by body kits and flywheels were kept with no maker (0): mended here
+					for _, e in ipairs({ 6, 12, 13, 14, 15, 16 }) do
+						local t = PARTS[e]
+						pcall(function() DB:execute("UPDATE " .. Lobby.activePlayer.DB.PurchasedParts .. " SET ManufacturerId = " ..
+							"(SELECT u.ManufacturerID FROM List_Upgrade" .. t[2] .. " u WHERE u.Id = PartId) WHERE PartEnum = " .. t[1] ..
+							" AND ManufacturerId = 0 AND EXISTS (SELECT 1 FROM List_Upgrade" .. t[2] .. " u WHERE u.Id = PartId)") end)
+					end
 					local types = {}
 					for _, t in ipairs(PARTS) do
 						local key = string.sub(t[2], 1, 6) == "Engine" and ("EngineID = " .. engine) or ("Ordinal = " .. g.CarId)
