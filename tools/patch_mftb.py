@@ -3,6 +3,7 @@
 
   patch_mftb.py <recompiled sources dir>
 
+Only for older XenonRecomp output: ReXenon emits PPC_MFTB(), which src/ppc_hooks.h maps to Fm2Timebase().
 XenonRecomp turns mftb into the host's raw __rdtsc(): 3-5 GHz, counted since the PC booted.
 The console's timebase is 49.875 MHz from boot. The title multiplies ticks by 1,000,000 in 64 bits
 to get microseconds, which overflows within the first minutes of PC uptime with the raw counter, so

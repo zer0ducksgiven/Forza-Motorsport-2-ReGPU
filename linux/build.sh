@@ -86,14 +86,12 @@ export PATH="$SHIMBIN:$PATH"
 
 say "the recompiled game code (out/ppc)"
 if [ ! -d "$ROOT/out/ppc" ] || [ -z "$(ls -A "$ROOT/out/ppc" 2>/dev/null)" ]; then
-    # XenonRecomp runs on the host; the code it writes is then cross-compiled for Windows.
-    cmake -S "$ROOT/thirdparty/XenonRecomp" -B "$HOME_DIR/tools" -G Ninja -DCMAKE_BUILD_TYPE=Release \
+    # ReXenon runs on the host; the code it writes is then cross-compiled for Windows.
+    cmake -S "$ROOT/thirdparty/ReXenon" -B "$HOME_DIR/tools" -G Ninja -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ > /dev/null
     ninja -C "$HOME_DIR/tools" XenonRecomp/XenonRecomp > /dev/null
-    ( cd "$ROOT/thirdparty/XenonRecomp" && git apply ../../patches/xenonrecomp-fm2.patch 2>/dev/null || true )
-    ninja -C "$HOME_DIR/tools" XenonRecomp/XenonRecomp > /dev/null
     mkdir -p "$ROOT/out/ppc"
-    ( cd "$ROOT" && "$HOME_DIR/tools/XenonRecomp/XenonRecomp" config/fm2.toml thirdparty/XenonRecomp/XenonUtils/ppc_context.h > out/recomp.log 2>&1 )
+    ( cd "$ROOT" && "$HOME_DIR/tools/XenonRecomp/XenonRecomp" config/fm2.toml thirdparty/ReXenon/XenonUtils/ppc_context.h > out/recomp.log 2>&1 )
     echo "recompiled $(ls "$ROOT/out/ppc" | wc -l) files, $(du -sh "$ROOT/out/ppc" | cut -f1)"
 fi
 

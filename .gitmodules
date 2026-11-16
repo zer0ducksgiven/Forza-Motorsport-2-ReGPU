@@ -1,3 +1,3 @@
-[submodule "thirdparty/XenonRecomp"]
-	path = thirdparty/XenonRecomp
-	url = https://github.com/hedge-dev/XenonRecomp
+[submodule "thirdparty/ReXenon"]
+	path = thirdparty/ReXenon
+	url = https://github.com/zer0ducksgiven/ReXenon

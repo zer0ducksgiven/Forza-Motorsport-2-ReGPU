@@ -51,9 +51,9 @@
 #include "gpu/ps_glyphs.h"
 #include "gpu/pipeline_seed.h"
 #include "gpu/shader_seed.h"
-// XXH3 (xxHash, BSD 2-Clause, in XenonRecomp's thirdparty), inlined: the index buffers' full hash.
+// XXH3 (xxHash, BSD 2-Clause, in ReXenon's thirdparty), inlined: the index buffers' full hash.
 #define XXH_INLINE_ALL
-#include "../../thirdparty/XenonRecomp/thirdparty/xxHash/xxhash.h"
+#include "../../thirdparty/ReXenon/thirdparty/xxHash/xxhash.h"
 #include "settings.h"
 #include "gpu/regs.h"
 #include "gpu/texture.h"

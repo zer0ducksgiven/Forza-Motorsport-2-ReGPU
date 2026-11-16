@@ -3,7 +3,7 @@
 A native Windows port of **Forza Motorsport 2** (Xbox 360). Nothing is emulated:
 
 - **CPU:** the game's entire PowerPC executable is statically recompiled to x64 C++
-  with [XenonRecomp](https://github.com/hedge-dev/XenonRecomp) (51,034 functions), running on our own
+  with [ReXenon](https://github.com/zer0ducksgiven/ReXenon), our XenonRecomp fork (51,034 functions), running on our own
   implementation of the Xbox 360 kernel and XAM. No interpreter, no JIT.
 - **GPU:** a native Direct3D 12 renderer replaces Xenos GPU emulation. The game's
   Xenos shader microcode is translated to HLSL, its render state to D3D12 pipelines,
@@ -343,7 +343,6 @@ git clone --depth 1 --branch vulkan-sdk-1.4.363.0 https://github.com/KhronosGrou
 
 ```
 git submodule update --init --recursive
-git -C thirdparty/XenonRecomp apply ../../patches/xenonrecomp-fm2.patch
 py -3 tools/xiso.py extract "<your FM2 disc>.iso" game
 tools\vcenv.cmd cmake -S tools/xexdump -B build/tools -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl
 sh tools/recomp.sh
@@ -428,8 +427,7 @@ on the CPU), `FM2_VK_DEBUG_PS` / `FM2_VK_DEBUG_VS` (as `FM2_DEBUG_PS` / `FM2_DEB
 
 | Path | Contents |
 |---|---|
-| `config/` | XenonRecomp config and jump tables for FM2 |
-| `patches/` | Our XenonRecomp changes: FM2's extra VMX/PPC instructions, non-trapping divides, MSR[EE] hook |
+| `config/` | ReXenon config and jump tables for FM2 |
 | `src/` | Runtime: guest memory, loader, kernel/XAM imports, threads, renderer, audio output and XMA decoding |
 | `src/hooks/` | Overrides of recompiled functions (`sub_X`): XAPI fibers on host fibers, D3D instrumentation |
 | `tools/` | Disc extraction, XEX dump/disassembler, analysis scripts |
@@ -442,7 +440,9 @@ the GPU register map, command packet layouts, texture formats and tiling, and th
 microcode format. The renderer itself is our own code, written for this port; Xenia's
 documentation of the hardware made that possible.
 
-The game code is recompiled with [XenonRecomp](https://github.com/hedge-dev/XenonRecomp).
+The game code is recompiled with [ReXenon](https://github.com/zer0ducksgiven/ReXenon), our fork of
+hedge-dev's [XenonRecomp](https://github.com/hedge-dev/XenonRecomp) (MIT). It carries FM2's extra VMX/PPC
+instructions, non-trapping divides and the MSR[EE] hook that used to be a patch here.
 
 Controller button icons: the PlayStation ones are from Kenney's
 [Input Prompts](https://kenney.nl/assets/input-prompts) (CC0). The Xbox One / Series icons and both

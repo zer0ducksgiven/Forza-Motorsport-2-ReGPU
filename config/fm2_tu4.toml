@@ -5,7 +5,7 @@
 patched_file_path = "../out/tu4/default_tu4.xex"
 patch_file_path = "../out/tu4/default.xexp"
 file_path = "../game/default.xex"
-out_directory_path = "../out/ppc_tu4"
+out_directory_path = "../out/ppc_tu4_rexenon"
 switch_table_file_path = "fm2_switch_tables_tu4.toml"
 
 # Registers kept in host locals instead of the guest context (faster). Hooks, Lua's

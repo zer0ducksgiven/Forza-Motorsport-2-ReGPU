@@ -8,28 +8,29 @@ if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     message(FATAL_ERROR "fm2 needs clang-cl (the recompiled code uses clang builtins)")
 endif()
 
-add_subdirectory(thirdparty/XenonRecomp EXCLUDE_FROM_ALL)
+add_subdirectory(thirdparty/ReXenon EXCLUDE_FROM_ALL)
 
 # Build for the title-updated executable instead (tools/xexmap.py, tools/xexremap.py): the
 # recompiled code is out/ppc_tu4, the guest addresses in the hooks are translated into the
 # build folder, and the loader applies the update's default.xexp to your default.xex.
 option(FM2_TITLE_UPDATE "Build for the title-updated executable" OFF)
 
-# Recompiled game code (out/ppc, produced by XenonRecomp from your own
+# Recompiled game code (out/ppc, produced by ReXenon from your own
 # default.xex; never committed).
-# -DFM2_PPC_DIR=<folder> builds against other generated code (e.g. ReXenon's, for testing).
+# -DFM2_PPC_DIR=<folder> builds against other generated code. out/ppc_tu4 is older XenonRecomp output
+# that release branches before the ReXenon switch still build against: keep it as it is.
 if(FM2_PPC_DIR)
 elseif(FM2_TITLE_UPDATE)
-    set(FM2_PPC_DIR "${CMAKE_SOURCE_DIR}/out/ppc_tu4")
+    set(FM2_PPC_DIR "${CMAKE_SOURCE_DIR}/out/ppc_tu4_rexenon")
 else()
     set(FM2_PPC_DIR "${CMAKE_SOURCE_DIR}/out/ppc")
 endif()
 file(GLOB FM2_PPC_SOURCES CONFIGURE_DEPENDS "${FM2_PPC_DIR}/*.cpp")
 if(NOT FM2_PPC_SOURCES)
-    message(FATAL_ERROR "out/ppc is empty: run XenonRecomp first (see README)")
+    message(FATAL_ERROR "out/ppc is empty: run ReXenon first (see README)")
 endif()
 add_library(fm2_ppc STATIC ${FM2_PPC_SOURCES})
-target_include_directories(fm2_ppc PUBLIC "${FM2_PPC_DIR}" thirdparty/XenonRecomp/thirdparty/simde)
+target_include_directories(fm2_ppc PUBLIC "${FM2_PPC_DIR}" thirdparty/ReXenon/thirdparty/simde)
 target_compile_options(fm2_ppc PRIVATE -Wno-everything)
 target_compile_options(fm2_ppc PUBLIC -msse4.1 -fno-strict-aliasing)
 # Function names in crash reports and profiles.
