@@ -1585,21 +1585,38 @@ void BindTexture(gpu::PSConstants& pc, uint32_t slot)
     memcpy(memo.tbias, pc.tbias[slot], sizeof(memo.tbias));
 }
 
-void BuildConstants(const vk::VkShader* vs, const vk::VkShader* ps, gpu::VSConstants& vc, gpu::PSConstants& pc)
+// FM2_VK_FULL_CONSTANT_BLOCKS=1: both constant blocks are filled and copied whole for every draw, as before (A/B).
+const bool g_fullConstantBlocks = getenv("FM2_VK_FULL_CONSTANT_BLOCKS") != nullptr;
+
+// What the pair of shaders reads of the blocks. The float count is the translator's (highest constant read + 1, all
+// 256 when one is indexed by a register), the one the Direct3D 12 path copies by.
+vk::ConstantUse ConstantUseOf(const vk::VkShader* vs, const vk::VkShader* ps)
+{
+    vk::ConstantUse use;
+    if (g_fullConstantBlocks)
+        return use;
+    use.vsFloats = std::min(vs->constantsUsed, 256u);
+    use.psFloats = std::min(ps->constantsUsed, 256u);
+    use.layouts = uint32_t(std::min<size_t>(vs->vertexFetchLayout.size() / 4, 32));
+    const uint32_t mask = ps->usedTextureSlots | vs->usedTextureSlots;
+    use.slots = mask ? 32u - uint32_t(__builtin_clz(mask)) : 0u;
+    return use;
+}
+
+void BuildConstants(const vk::VkShader* vs, const vk::VkShader* ps, gpu::VSConstants& vc, gpu::PSConstants& pc,
+    const vk::ConstantUse& use)
 {
     const uint8_t* banks = gpureg::File() + gpureg::AluConstants * 4;
-    // The translated shaders read constants well past what their "constants used" count says: the
-    // sky shader's final colour is pc[254] + pc[255] and friends, while the count stops far below
-    // that. The whole bank is uploaded: 4 KB per draw.
+    // Only the float constants the shaders read are byte-swapped; DrawList copies the same ones to the ring.
     {
         ScopedMs bankTimed(g.perf ? &g.perfBankMs : nullptr);
         const __m128i swap = _mm_setr_epi8(3, 2, 1, 0, 7, 6, 5, 4, 11, 10, 9, 8, 15, 14, 13, 12);
         const auto* src = reinterpret_cast<const __m128i*>(banks);
         auto* dv = reinterpret_cast<__m128i*>(vc.c);
         auto* dp = reinterpret_cast<__m128i*>(pc.c);
-        for (uint32_t i = 0; i < 256; i++)
+        for (uint32_t i = 0; i < use.vsFloats; i++)
             _mm_storeu_si128(dv + i, _mm_shuffle_epi8(_mm_loadu_si128(src + i), swap));
-        for (uint32_t i = 0; i < 256; i++)
+        for (uint32_t i = 0; i < use.psFloats; i++)
             _mm_storeu_si128(dp + i, _mm_shuffle_epi8(_mm_loadu_si128(src + 256 + i), swap));
     }
     for (uint32_t i = 0; i < 8; i++)
@@ -2866,14 +2883,18 @@ void RendererVkOnDraw(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
                 key.flags);
         return;
     }
-    gpu::VSConstants vc{};
-    gpu::PSConstants pc{};
+    // The float banks are left as they are (BuildConstants writes the ones that are read); the rest starts at zero.
+    const vk::ConstantUse constantUse = ConstantUseOf(vs, ps);
+    gpu::VSConstants vc;
+    gpu::PSConstants pc;
+    memset(reinterpret_cast<uint8_t*>(&vc) + sizeof(vc.c), 0, sizeof(vc) - sizeof(vc.c));
+    memset(reinterpret_cast<uint8_t*>(&pc) + sizeof(pc.c), 0, sizeof(pc) - sizeof(pc.c));
     setupTimed.Stop();
     ScopedMs preConstTimed(g.perf ? &g.perfPreConstMs : nullptr);
     preConstTimed.Stop();
     {
         ScopedMs constantsTimed(g.perf ? &g.perfConstantsMs : nullptr);
-        BuildConstants(vs, ps, vc, pc);
+        BuildConstants(vs, ps, vc, pc, constantUse);
         // Polygon offset (window-space depth), as main's D3D12 path: without it a decal z-fights the surface under it.
         {
             static const bool noPolyOffset = getenv("FM2_NO_POLY_OFFSET") != nullptr;
@@ -2977,7 +2998,7 @@ void RendererVkOnDraw(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
         g.draw.psHashDebug = psHash;
         g.draw.vsHashDebug = vsHash;
         recorded = vk::DrawList(g.context, g.draw, g.cmd, pipeline, g.textures0.set, vc, pc, list.data(), drawCount, scissor,
-            &vs->vertexFetchConstants);
+            &vs->vertexFetchConstants, &constantUse);
     }
     if (recorded && g_phasePerDraw && g_phaseStarted)
         PhaseMarkWrite(4, base, surface->width, surface->height, psHash, drawCount);
