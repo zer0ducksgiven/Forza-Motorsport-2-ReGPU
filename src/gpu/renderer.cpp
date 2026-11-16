@@ -11604,8 +11604,24 @@ std::atomic<bool> g_benchRecording{ false };
 std::mutex g_benchMutex;
 std::vector<float> g_benchFrames; // ms
 
+// Guest thread CPU over the recording, measured when it stops (" t3:97% t9:95%").
+std::chrono::steady_clock::time_point g_benchStart;
+std::string g_benchThreads;
+
 void BenchmarkRecord(bool on)
 {
+    // Called every input poll: act only when recording starts or stops. GuestThreadCpuUsage reports the
+    // time since its previous call, so it is called at both ends.
+    if (on == g_benchRecording.load(std::memory_order_relaxed))
+        ;
+    else if (on)
+    {
+        GuestThreadPin();
+        GuestThreadCpuUsage(1.0);
+        g_benchStart = std::chrono::steady_clock::now();
+    }
+    else
+        g_benchThreads = GuestThreadCpuUsage(std::chrono::duration<double>(std::chrono::steady_clock::now() - g_benchStart).count());
     g_benchRecording.store(on, std::memory_order_relaxed);
 }
 
@@ -11715,6 +11731,9 @@ void BenchmarkWriteReport(const char* path)
         }
     }
     fprintf(out, "\n");
+    // Busy share of each guest thread while recording (only with FM2_PERF off is this the game's own cost).
+    if (!g_benchThreads.empty())
+        fprintf(out, "Threads:   %s\n", g_benchThreads.c_str());
     fclose(out);
     Log("benchmark: report written to %s", path);
 }
