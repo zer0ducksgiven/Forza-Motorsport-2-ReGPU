@@ -143,11 +143,13 @@ void InitGuestContext(PPCContext& ctx, GuestThread& thread)
 
 namespace
 {
-// FM2_PIN: affinity masks for guest threads, set as each one is created (from boot).
+// FM2_PIN: affinity masks for guest threads, set as each one is created (from boot). "auto" (below) is the
+// default; FM2_PIN=off pins nothing.
 // "3:3,9:C,*:F0" gives masks (hex) by guest thread id, '*' for the rest.
-// "auto": the main thread (t3) and the command processor (t9) get a physical core each (all its logical
+// "auto": the main thread (t3) and the command processor get a physical core each (all its logical
 // processors; a module on Bulldozer-family CPUs), from the fastest efficiency class, and every other guest
 // thread gets the remaining cores. Needs 4 cores or more in processor group 0; with fewer nothing is pinned.
+// "c:MASK" is the GPU command processor's mask, found by name (its id depends on the threads made before it).
 // "h:MASK" also keeps every other thread of the process (renderer, audio, the driver's) on those processors,
 // through the process's default CPU sets; "auto" adds h: with the remaining cores. The threads with their own
 // mask get matching CPU sets, so the default doesn't apply to them.
@@ -155,6 +157,7 @@ struct PinSpec
 {
     std::unordered_map<uint32_t, uint64_t> masks;
     uint64_t rest = 0;
+    uint64_t commandProcessor = 0;
     uint64_t host = 0;
 };
 
@@ -183,6 +186,8 @@ PinSpec ParsePinSpec()
     PinSpec pin;
     const char* spec = getenv("FM2_PIN");
     if (!spec || !*spec)
+        spec = "auto";
+    if (!strcmp(spec, "off"))
         return pin;
     std::string autoSpec;
     if (!strcmp(spec, "auto"))
@@ -209,22 +214,22 @@ PinSpec ParsePinSpec()
         for (size_t i = 2; i < cores.size(); i++)
             rest |= cores[i].second;
         char s[96];
-        snprintf(s, sizeof(s), "3:%llX,9:%llX,*:%llX,h:%llX", cores[0].second, cores[1].second, rest, rest);
+        snprintf(s, sizeof(s), "3:%llX,c:%llX,*:%llX,h:%llX", cores[0].second, cores[1].second, rest, rest);
         autoSpec = s;
         spec = autoSpec.c_str();
     }
     Log("pin: %s", spec);
     for (const char* p = spec; *p;)
     {
-        const bool star = *p == '*', host = *p == 'h';
+        const char key = *p == '*' || *p == 'h' || *p == 'c' ? *p : 0;
         char* end;
-        const uint32_t id = star || host ? 0 : uint32_t(strtoul(p, &end, 10));
-        p = star || host ? p + 1 : end;
+        const uint32_t id = key ? 0 : uint32_t(strtoul(p, &end, 10));
+        p = key ? p + 1 : end;
         if (*p != ':')
             break;
         const uint64_t mask = strtoull(p + 1, &end, 16);
         p = end;
-        (star ? pin.rest : host ? pin.host : pin.masks[id]) = mask;
+        (key == '*' ? pin.rest : key == 'h' ? pin.host : key == 'c' ? pin.commandProcessor : pin.masks[id]) = mask;
         if (*p == ',')
             ++p;
     }
@@ -241,7 +246,8 @@ void PinGuestThread(GuestThread& t)
 {
     static const PinSpec pin = ParsePinSpec();
     auto it = pin.masks.find(t.id);
-    const uint64_t mask = it != pin.masks.end() ? it->second : pin.rest;
+    const uint64_t mask = pin.commandProcessor && t.name == "gpu command processor" ? pin.commandProcessor
+        : it != pin.masks.end() ? it->second : pin.rest;
     if (!mask)
         return;
     bool ok = SetThreadAffinityMask(t.hostHandle, DWORD_PTR(mask)) != 0;
