@@ -143,6 +143,82 @@ void InitGuestContext(PPCContext& ctx, GuestThread& thread)
 
 namespace
 {
+// FM2_PIN: affinity masks for guest threads, set as each one is created (from boot).
+// "3:3,9:C,*:F0" gives masks (hex) by guest thread id, '*' for the rest.
+// "auto": the main thread (t3) and the command processor (t9) get a physical core each (all its logical
+// processors; a module on Bulldozer-family CPUs), from the fastest efficiency class, and every other guest
+// thread gets the remaining cores. Needs 4 cores or more in processor group 0; with fewer nothing is pinned.
+struct PinSpec
+{
+    std::unordered_map<uint32_t, uint64_t> masks;
+    uint64_t rest = 0;
+};
+
+PinSpec ParsePinSpec()
+{
+    PinSpec pin;
+    const char* spec = getenv("FM2_PIN");
+    if (!spec || !*spec)
+        return pin;
+    std::string autoSpec;
+    if (!strcmp(spec, "auto"))
+    {
+        DWORD bytes = 0;
+        GetLogicalProcessorInformationEx(RelationProcessorCore, nullptr, &bytes);
+        std::vector<uint8_t> buffer(bytes);
+        std::vector<std::pair<int, uint64_t>> cores; // efficiency class, mask
+        if (bytes && GetLogicalProcessorInformationEx(RelationProcessorCore, reinterpret_cast<SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*>(buffer.data()), &bytes))
+            for (DWORD at = 0; at < bytes;)
+            {
+                auto* info = reinterpret_cast<SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*>(buffer.data() + at);
+                if (info->Processor.GroupMask[0].Group == 0)
+                    cores.push_back({ info->Processor.EfficiencyClass, info->Processor.GroupMask[0].Mask });
+                at += info->Size;
+            }
+        if (cores.size() < 4)
+        {
+            Log("pin: auto needs 4 cores, found %zu", cores.size());
+            return pin;
+        }
+        std::stable_sort(cores.begin(), cores.end(), [](auto& a, auto& b) { return a.first > b.first; });
+        uint64_t rest = 0;
+        for (size_t i = 2; i < cores.size(); i++)
+            rest |= cores[i].second;
+        char s[96];
+        snprintf(s, sizeof(s), "3:%llX,9:%llX,*:%llX", cores[0].second, cores[1].second, rest);
+        autoSpec = s;
+        spec = autoSpec.c_str();
+    }
+    Log("pin: %s", spec);
+    for (const char* p = spec; *p;)
+    {
+        const bool star = *p == '*';
+        char* end;
+        const uint32_t id = star ? 0 : uint32_t(strtoul(p, &end, 10));
+        p = star ? p + 1 : end;
+        if (*p != ':')
+            break;
+        const uint64_t mask = strtoull(p + 1, &end, 16);
+        p = end;
+        (star ? pin.rest : pin.masks[id]) = mask;
+        if (*p == ',')
+            ++p;
+    }
+    return pin;
+}
+
+void PinGuestThread(GuestThread& t)
+{
+    static const PinSpec pin = ParsePinSpec();
+    auto it = pin.masks.find(t.id);
+    const uint64_t mask = it != pin.masks.end() ? it->second : pin.rest;
+    if (mask)
+        Log("pin: t%u -> %llX (%s)", t.id, mask, SetThreadAffinityMask(t.hostHandle, DWORD_PTR(mask)) ? "ok" : "failed");
+}
+}
+
+namespace
+{
 std::shared_ptr<ThreadObject> StartThread(uint32_t entry, uint32_t param, uint32_t xapiStartup, uint32_t stackSize,
     bool suspended, const char* name, std::function<void(PPCContext&)> hostEntry)
 {
@@ -167,6 +243,7 @@ std::shared_ptr<ThreadObject> StartThread(uint32_t entry, uint32_t param, uint32
     if (!handle)
         Fatal("CreateThread failed (%lu)", GetLastError());
     object->thread->hostHandle = handle;
+    PinGuestThread(*object->thread);
 
     wchar_t wname[64];
     swprintf(wname, 64, L"guest %u %S", object->thread->id, name ? name : "");
@@ -350,76 +427,6 @@ void TlsFreeSlot(uint32_t slot)
     std::lock_guard lock(g_tlsMutex);
     if (slot < g_tlsUsed.size())
         g_tlsUsed[slot] = false;
-}
-
-// Test only (FM2_PIN="3:1,9:4,*:F0"): affinity masks (hex) for guest threads by id, '*' for the rest.
-// Applied when a benchmark recording starts.
-void GuestThreadPin()
-{
-    const char* spec = getenv("FM2_PIN");
-    if (!spec || !*spec)
-        return;
-    // "auto": the main thread (t3) and the command processor (t9) get a physical core each (all its logical
-    // processors; a module on Bulldozer-family CPUs), from the fastest efficiency class, and every other guest
-    // thread gets the remaining cores. Needs 4 cores or more in processor group 0.
-    std::string autoSpec;
-    if (!strcmp(spec, "auto"))
-    {
-        DWORD bytes = 0;
-        GetLogicalProcessorInformationEx(RelationProcessorCore, nullptr, &bytes);
-        std::vector<uint8_t> buffer(bytes);
-        std::vector<std::pair<int, uint64_t>> cores; // efficiency class, mask
-        if (bytes && GetLogicalProcessorInformationEx(RelationProcessorCore, reinterpret_cast<SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*>(buffer.data()), &bytes))
-            for (DWORD at = 0; at < bytes;)
-            {
-                auto* info = reinterpret_cast<SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*>(buffer.data() + at);
-                if (info->Processor.GroupMask[0].Group == 0)
-                    cores.push_back({ info->Processor.EfficiencyClass, info->Processor.GroupMask[0].Mask });
-                at += info->Size;
-            }
-        if (cores.size() < 4)
-        {
-            Log("pin: auto needs 4 cores, found %zu", cores.size());
-            return;
-        }
-        std::stable_sort(cores.begin(), cores.end(), [](auto& a, auto& b) { return a.first > b.first; });
-        uint64_t rest = 0;
-        for (size_t i = 2; i < cores.size(); i++)
-            rest |= cores[i].second;
-        char s[96];
-        snprintf(s, sizeof(s), "3:%llX,9:%llX,*:%llX", cores[0].second, cores[1].second, rest);
-        autoSpec = s;
-        spec = autoSpec.c_str();
-        Log("pin: auto = %s", spec);
-    }
-    std::unordered_map<uint32_t, uint64_t> masks;
-    uint64_t rest = 0;
-    for (const char* p = spec; *p;)
-    {
-        const bool star = *p == '*';
-        char* end;
-        const uint32_t id = star ? 0 : uint32_t(strtoul(p, &end, 10));
-        p = star ? p + 1 : end;
-        if (*p != ':')
-            break;
-        const uint64_t mask = strtoull(p + 1, &end, 16);
-        p = end;
-        (star ? rest : masks[id]) = mask;
-        if (*p == ',')
-            ++p;
-    }
-    std::lock_guard lock(g_threadsMutex);
-    for (auto& [kthread, weak] : g_threadsByKthread)
-    {
-        auto object = weak.lock();
-        if (!object || object->exited || !object->thread->hostHandle)
-            continue;
-        GuestThread& t = *object->thread;
-        auto it = masks.find(t.id);
-        const uint64_t mask = it != masks.end() ? it->second : rest;
-        if (mask)
-            Log("pin: t%u -> %llX (%s)", t.id, mask, SetThreadAffinityMask(t.hostHandle, DWORD_PTR(mask)) ? "ok" : "failed");
-    }
 }
 
 // Per-thread CPU use since the previous call, as a percentage of wall time.

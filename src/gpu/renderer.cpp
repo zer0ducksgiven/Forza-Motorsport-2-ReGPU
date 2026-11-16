@@ -11616,7 +11616,6 @@ void BenchmarkRecord(bool on)
         ;
     else if (on)
     {
-        GuestThreadPin();
         GuestThreadCpuUsage(1.0);
         g_benchStart = std::chrono::steady_clock::now();
     }
