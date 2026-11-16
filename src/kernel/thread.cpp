@@ -148,11 +148,35 @@ namespace
 // "auto": the main thread (t3) and the command processor (t9) get a physical core each (all its logical
 // processors; a module on Bulldozer-family CPUs), from the fastest efficiency class, and every other guest
 // thread gets the remaining cores. Needs 4 cores or more in processor group 0; with fewer nothing is pinned.
+// "h:MASK" also keeps every other thread of the process (renderer, audio, the driver's) on those processors,
+// through the process's default CPU sets; "auto" adds h: with the remaining cores. The threads with their own
+// mask get matching CPU sets, so the default doesn't apply to them.
 struct PinSpec
 {
     std::unordered_map<uint32_t, uint64_t> masks;
     uint64_t rest = 0;
+    uint64_t host = 0;
 };
+
+// CPU set ids of the logical processors in mask (processor group 0).
+std::vector<ULONG> CpuSetIds(uint64_t mask)
+{
+    std::vector<ULONG> ids;
+    ULONG bytes = 0;
+    GetSystemCpuSetInformation(nullptr, 0, &bytes, GetCurrentProcess(), 0);
+    std::vector<uint8_t> buffer(bytes);
+    if (!bytes || !GetSystemCpuSetInformation(reinterpret_cast<SYSTEM_CPU_SET_INFORMATION*>(buffer.data()), bytes, &bytes, GetCurrentProcess(), 0))
+        return ids;
+    for (ULONG at = 0; at < bytes;)
+    {
+        auto* info = reinterpret_cast<SYSTEM_CPU_SET_INFORMATION*>(buffer.data() + at);
+        if (info->Type == CpuSetInformation && info->CpuSet.Group == 0 && info->CpuSet.LogicalProcessorIndex < 64 &&
+            (mask >> info->CpuSet.LogicalProcessorIndex & 1))
+            ids.push_back(info->CpuSet.Id);
+        at += info->Size;
+    }
+    return ids;
+}
 
 PinSpec ParsePinSpec()
 {
@@ -185,24 +209,30 @@ PinSpec ParsePinSpec()
         for (size_t i = 2; i < cores.size(); i++)
             rest |= cores[i].second;
         char s[96];
-        snprintf(s, sizeof(s), "3:%llX,9:%llX,*:%llX", cores[0].second, cores[1].second, rest);
+        snprintf(s, sizeof(s), "3:%llX,9:%llX,*:%llX,h:%llX", cores[0].second, cores[1].second, rest, rest);
         autoSpec = s;
         spec = autoSpec.c_str();
     }
     Log("pin: %s", spec);
     for (const char* p = spec; *p;)
     {
-        const bool star = *p == '*';
+        const bool star = *p == '*', host = *p == 'h';
         char* end;
-        const uint32_t id = star ? 0 : uint32_t(strtoul(p, &end, 10));
-        p = star ? p + 1 : end;
+        const uint32_t id = star || host ? 0 : uint32_t(strtoul(p, &end, 10));
+        p = star || host ? p + 1 : end;
         if (*p != ':')
             break;
         const uint64_t mask = strtoull(p + 1, &end, 16);
         p = end;
-        (star ? pin.rest : pin.masks[id]) = mask;
+        (star ? pin.rest : host ? pin.host : pin.masks[id]) = mask;
         if (*p == ',')
             ++p;
+    }
+    if (pin.host)
+    {
+        const std::vector<ULONG> ids = CpuSetIds(pin.host);
+        Log("pin: host threads -> %llX (%zu CPU sets, %s)", pin.host, ids.size(),
+            !ids.empty() && SetProcessDefaultCpuSets(GetCurrentProcess(), ids.data(), ULONG(ids.size())) ? "ok" : "failed");
     }
     return pin;
 }
@@ -212,8 +242,17 @@ void PinGuestThread(GuestThread& t)
     static const PinSpec pin = ParsePinSpec();
     auto it = pin.masks.find(t.id);
     const uint64_t mask = it != pin.masks.end() ? it->second : pin.rest;
-    if (mask)
-        Log("pin: t%u -> %llX (%s)", t.id, mask, SetThreadAffinityMask(t.hostHandle, DWORD_PTR(mask)) ? "ok" : "failed");
+    if (!mask)
+        return;
+    bool ok = SetThreadAffinityMask(t.hostHandle, DWORD_PTR(mask)) != 0;
+    if (pin.host)
+    {
+        // The process default would otherwise apply to this thread too (affinity beats CPU sets only when
+        // they don't overlap at all).
+        const std::vector<ULONG> ids = CpuSetIds(mask);
+        ok = ok && !ids.empty() && SetThreadSelectedCpuSets(t.hostHandle, ids.data(), ULONG(ids.size()));
+    }
+    Log("pin: t%u -> %llX (%s)", t.id, mask, ok ? "ok" : "failed");
 }
 }
 
