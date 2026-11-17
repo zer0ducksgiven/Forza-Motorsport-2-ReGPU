@@ -14,7 +14,8 @@ import argparse, os, subprocess, sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 ap = argparse.ArgumentParser()
 ap.add_argument('--track', type=int, help='Tracks id (default: the game\'s own)')
-ap.add_argument('--car', type=int, help='car id (default: the game\'s own)')
+ap.add_argument('--car', type=int, default=254,
+                help='car id (default 254, a Ferrari 360; the game\'s own default is a silent green placeholder)')
 ap.add_argument('--laps', type=int)
 ap.add_argument('--ai', type=int, help='number of AI cars')
 ap.add_argument('--autodrive', action='store_true', help='the AI drives the player car too (nohumans=true): a race that runs by itself')
