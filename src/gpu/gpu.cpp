@@ -24,6 +24,8 @@
 #include "gpu/renderer.h"
 #include "precise_sleep.h"
 
+extern HANDLE g_profiledWorker; // renderer.cpp (FM2_SAMPLE_THREAD=w)
+
 // The guest address the title's render thread sleeps on (hooks/perf_probe.cpp: its wait for a
 // fence the command processor writes), 0 when none: WriteBackNow wakes it.
 std::atomic<uint32_t> g_titleWaitAddress{ 0 };
@@ -1258,6 +1260,10 @@ void CommandProcessorLoop(PPCContext& ctx)
         std::thread worker(WorkerLoop);
         static HANDLE workerHandle = nullptr;
         DuplicateHandle(GetCurrentProcess(), worker.native_handle(), GetCurrentProcess(), &workerHandle, 0, FALSE, DUPLICATE_SAME_ACCESS);
+        // FM2_SAMPLE_THREAD=w samples the draw thread (the piece workers don't run with it).
+
+        if (!::g_profiledWorker)
+            DuplicateHandle(GetCurrentProcess(), worker.native_handle(), GetCurrentProcess(), &::g_profiledWorker, 0, FALSE, DUPLICATE_SAME_ACCESS);
         worker.detach();
         work::g_started.store(true, std::memory_order_release);
         Log("gpu: draw worker thread started");
