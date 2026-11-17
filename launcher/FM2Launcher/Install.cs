@@ -112,7 +112,7 @@ public sealed class GameSettings
                 case "smaa": s.Smaa = int.TryParse(v, out var sm) ? Math.Clamp(sm, 0, 4) : 0; break;
                 case "anisotropy": s.Anisotropy = int.TryParse(v, out var an) ? an : 16; break;
                 case "render_scale": s.RenderScale = int.TryParse(v, out var rs) ? rs : 100; break;
-                case "upscaler": s.Upscaler = v is "fsr3" or "fsr4" ? v : "fsr1"; break;
+                case "upscaler": s.Upscaler = v is "fsr3" or "fsr4" or "off" ? v : "fsr1"; break;
                 case "sharpness":
                     s.Sharpening = double.TryParse(v, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var sh)
                         ? (int)Math.Round(sh * 100) : 0;
@@ -166,7 +166,8 @@ public sealed class GameSettings
         var scale = Math.Clamp(RenderScale, 50, 100);
         var sharp = Math.Clamp(Sharpening, 0, 100);
         // FSR 3 and 4 stay on at 100% (anti-aliasing only); FSR 1 has nothing to do there without sharpening.
-        var upscaler = Upscaler is "fsr3" or "fsr4" ? Upscaler : scale < 100 || sharp > 0 ? "fsr1" : "off";
+        var upscaler = Upscaler is "fsr3" or "fsr4" or "off" ? Upscaler : scale < 100 || sharp > 0 ? "fsr1" : "off";
+        if (upscaler == "off") sharp = 0; // Off: the picture as rendered, no sharpening pass
         sb.Append($"frame_generation={B(FrameGen)}\n");
         sb.Append($"upscaler={upscaler}\nrender_scale={scale}\nsharpness={(sharp / 100.0).ToString(System.Globalization.CultureInfo.InvariantCulture)}\n");
         foreach (var (k, v) in keep) sb.Append($"{k}={v}\n");
@@ -233,7 +234,7 @@ public static class Options
     public static readonly (int Value, string Name)[] Msaa = [(1, "Off"), (2, "2x MSAA"), (4, "4x MSAA"), (8, "8x MSAA")];
     public static readonly (int Value, string Name)[] Smaa = [(0, "Off"), (1, "Low"), (2, "Medium"), (3, "High"), (4, "Ultra")];
     public static readonly (int Value, string Name)[] RenderScale = [(100, "100% (native)"), (85, "85%"), (77, "77%"), (67, "67%"), (59, "59%"), (50, "50%")];
-    public static readonly (string Value, string Name)[] Upscalers = [("fsr1", "FSR 1"), ("fsr3", "FSR 3 (experimental)"), ("fsr4", "FSR 4 (experimental, AMD RX 7000 / 9000)")];
+    public static readonly (string Value, string Name)[] Upscalers = [("off", "Off (native resolution)"), ("fsr1", "FSR 1"), ("fsr3", "FSR 3 (experimental)"), ("fsr4", "FSR 4 (experimental, AMD RX 7000 / 9000)")];
     public static readonly (int Value, string Name)[] Sharpening = [(0, "Off"), (25, "Low"), (50, "Medium"), (75, "High"), (100, "Maximum")];
     public static readonly (int Value, string Name)[] Anisotropy = [(0, "Off (trilinear)"), (2, "2x"), (4, "4x"), (8, "8x"), (16, "16x")];
 

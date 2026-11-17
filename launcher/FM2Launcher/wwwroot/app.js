@@ -217,6 +217,8 @@ function render() {
   fill($("sharpening"), o.sharpening, set.sharpening)
   // The Vulkan renderer has no MSAA, SMAA or upscalers yet.
   for (const k of ["smaa", "renderScale", "upscaler", "sharpening"]) $(k).disabled = vulkan
+  // Off renders at full resolution with no upscaling or sharpening pass.
+  for (const k of ["renderScale", "sharpening"]) $(k).disabled ||= set.upscaler === "off"
   fill($("language"), o.languages.map((l) => ({ value: l.id, name: l.name })), set.language)
   fill($("musicVolume"), [10, 20, 30, 40, 50, 60, 70, 80, 90, 100].map((v) => ({ value: v, name: v + "%" })), set.musicVolume)
   $("lang-note").textContent = o.missingLanguages.length
