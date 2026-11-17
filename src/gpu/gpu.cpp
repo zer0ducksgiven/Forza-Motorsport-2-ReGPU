@@ -173,12 +173,34 @@ void Drain()
 
 bool Active() { return g_enabled && g_started.load(std::memory_order_relaxed); }
 
+// What the draw thread's register file holds: writes that change nothing there are not sent, and a run is
+// cut to its changed words (from FM3-ReGPU's regpu-reg-skip: +8% there). The compare costs the command
+// processor; the draw thread copies less. FM2_NO_REG_SKIP=1 sends everything (live).
+std::vector<uint8_t> g_sent(0x8000 * 4);
 void LogRegs(uint32_t index, const uint32_t* valuesBE, uint32_t count)
 {
-    uint32_t* p = Begin(kRegs, count + 1);
-    p[0] = index;
-    memcpy(p + 1, valuesBE, size_t(count) * 4);
-    End(count + 1);
+    static LiveSwitch noSkip("FM2_NO_REG_SKIP");
+    if (uint64_t(index) + count > 0x8000)
+        count = index < 0x8000 ? 0x8000 - index : 0;
+    if (!count)
+        return;
+    uint32_t* const shadow = reinterpret_cast<uint32_t*>(g_sent.data()) + index;
+    uint32_t first = 0, last = count;
+    if (!noSkip)
+    {
+        while (first < count && shadow[first] == valuesBE[first])
+            first++;
+        if (first == count)
+            return;
+        while (last > first + 1 && shadow[last - 1] == valuesBE[last - 1])
+            last--;
+    }
+    const uint32_t n = last - first;
+    memcpy(shadow + first, valuesBE + first, size_t(n) * 4);
+    uint32_t* p = Begin(kRegs, n + 1);
+    p[0] = index + first;
+    memcpy(p + 1, valuesBE + first, size_t(n) * 4);
+    End(n + 1);
 }
 }
 
@@ -353,12 +375,34 @@ void SubmitShaderLoad(ShaderType type, const uint32_t* microcodeBE, uint32_t dwo
             return;
         }
     }
+    static std::vector<uint32_t> last[2]; // the last load of each type sent to the draw thread
+    static uint32_t lastAddress[2] = {};
     if (!work::Active())
     {
+        last[0].clear();
+        last[1].clear();
         FrameOnShaderLoad(type, microcodeBE, dwords, guestAddress);
         return;
     }
     dwords = std::min<uint32_t>(dwords, 0x10000);
+    // An exact repeat of the last load of its type changes nothing on the draw thread: not sent
+    // (FM3-ReGPU regpu-shader-repeat-skip). FM2_NO_SHADER_REPEAT_SKIP=1 sends every load (live).
+    {
+        static LiveSwitch noSkip("FM2_NO_SHADER_REPEAT_SKIP");
+        const uint32_t t = uint32_t(type);
+        if (t > 1 || noSkip)
+        {
+            last[0].clear();
+            last[1].clear();
+        }
+        else
+        {
+            if (lastAddress[t] == guestAddress && last[t].size() == dwords && memcmp(last[t].data(), microcodeBE, size_t(dwords) * 4) == 0)
+                return;
+            last[t].assign(microcodeBE, microcodeBE + dwords);
+            lastAddress[t] = guestAddress;
+        }
+    }
     uint32_t* p = work::Begin(work::kShader, dwords + 3);
     p[0] = uint32_t(type);
     p[1] = guestAddress;
@@ -1208,6 +1252,7 @@ void CommandProcessorLoop(PPCContext& ctx)
     if (work::g_enabled)
     {
         memcpy(work::g_file.data(), GuestPtr<uint8_t>(kRegisterBase), work::g_file.size());
+        memcpy(work::g_sent.data(), GuestPtr<uint8_t>(kRegisterBase), work::g_sent.size()); // what the draw thread has
         std::thread worker(WorkerLoop);
         static HANDLE workerHandle = nullptr;
         DuplicateHandle(GetCurrentProcess(), worker.native_handle(), GetCurrentProcess(), &workerHandle, 0, FALSE, DUPLICATE_SAME_ACCESS);
