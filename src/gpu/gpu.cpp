@@ -111,7 +111,7 @@ void RaiseInterrupt(uint32_t source, uint32_t cpu)
 // writes (the worker keeps its own register file), shader loads (with their microcode),
 // draws, swaps, and the memory writes the title treats as fences, so those land only after
 // the draws before them. Waits, conditional writes and interrupts first let the worker
-// catch up. Opt-in with FM2_DRAW_THREAD=1: the worker alone still does nearly all the work
+// catch up. On by default (FM2_NO_DRAW_THREAD=1 off): the worker alone still does nearly all the work
 // (translation, not parsing, is the cost), so it pays off once draws are spread over workers.
 namespace work
 {
@@ -121,7 +121,9 @@ std::vector<uint32_t> g_ring(kWords);
 alignas(64) std::atomic<uint64_t> g_head{ 0 }; // written by the command processor
 alignas(64) std::atomic<uint64_t> g_tail{ 0 }; // written by the worker
 std::vector<uint8_t> g_file(0x8000 * 4);       // the worker's register file (registers up to 0x7FFF)
-const bool g_enabled = getenv("FM2_DRAW_THREAD") != nullptr; // off by default (no gain until draws translate in parallel)
+// On by default since the register/shader skips and the asynchronous frame end (FM3-ReGPU): 720p +12%.
+// FM2_NO_DRAW_THREAD=1: the parallel draw workers on the command processor, as before.
+const bool g_enabled = getenv("FM2_NO_DRAW_THREAD") == nullptr;
 std::atomic<bool> g_started{ false };
 
 // Space for a record of `words` payload words; returns where to write it.
@@ -355,7 +357,7 @@ void Flush()
 
 bool Enabled()
 {
-    static const bool on = RendererDrawWorkers() > 0 && !getenv("FM2_DRAW_THREAD");
+    static const bool on = RendererDrawWorkers() > 0 && getenv("FM2_NO_DRAW_THREAD");
     return on;
 }
 }
