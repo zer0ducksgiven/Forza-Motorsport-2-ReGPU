@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Hypermode</title>
+<link rel="stylesheet" href="app.css">
+<style>
+  body { display: flex; flex-direction: column; }
+  .hyper-page { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 12px; padding: 16px 22px 14px; }
+  .hyper-top { display: flex; align-items: center; gap: 18px; }
+  .hyper-top h1 { margin: 0; font-size: 20px; font-weight: 700; letter-spacing: .2px; }
+  .hyper-top h1 .badge { font-size: 11px; vertical-align: 3px; margin-left: 8px; }
+  .hyper-top .lead { color: var(--muted); font-size: 12.5px; margin-top: 2px; max-width: 640px; }
+  .hyper-top .grow { flex: 1; min-width: 0; }
+  .hyper-master { margin: 0; min-width: 230px; border: 1px solid var(--line); }
+  .hyper-master.on { border-color: #6b2a2d; }
+  .hyper-presets { display: flex; align-items: center; gap: 14px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 14px; }
+  .hyper-presets > span { color: var(--muted); font-size: 12.5px; flex: none; }
+  .hyper-presets .segmented { grid-template-columns: repeat(4, 1fr); flex: none; width: 400px; }
+  .hyper-presets .blurb { color: var(--muted); font-size: 12.5px; min-width: 0; }
+  .hyper-banner { border-left: 2px solid var(--warn); background: #211c12; border-radius: 0 8px 8px 0; padding: 8px 12px; font-size: 12.5px; color: #e9d9b4; }
+  .hyper-banner.bad { border-left-color: var(--accent); background: #24161a; color: #ffc9c4; }
+  .hyper-banner b { color: #fff; }
+  .hyper-grid { flex: 1; min-height: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+  .hyper-grid .panel-head { flex-direction: column; align-items: flex-start; gap: 0; }
+  .hyper-grid .panel-note { color: var(--muted); font-size: 12px; }
+  .hyper-grid .toggle-sub, .hyper-grid .field .sub { color: var(--muted); font-size: 12px; }
+  .hyper-grid .toggle-row.child, .hyper-grid .field.child { margin-left: 16px; }
+  .hyper-grid .field { background: var(--panel-2); border-radius: 8px; padding: 8px 12px; margin-bottom: 10px; display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; align-items: center; }
+  .hyper-grid .field .name { color: var(--text); font-size: 14px; }
+  .hyper-grid .field .sub { grid-column: 1; }
+  .hyper-grid .field select { grid-column: 2; grid-row: 1 / span 2; min-width: 118px; }
+  .hyper-grid .off { opacity: .45; }
+  .hyper-page .badge { white-space: nowrap; }
+  .hyper-grid .toggle-row, .hyper-grid .field { margin-bottom: 8px; }
+  .badge.recompile { color: #ffb38a; border-color: #6b3a22; }
+  .badge.variants { color: #9cc7ff; border-color: #274a73; }
+  .hyper-foot { display: flex; align-items: center; gap: 12px; color: var(--muted); font-size: 12.5px; }
+  .hyper-foot .grow { flex: 1; }
+  .hyper-legend { display: flex; flex-direction: column; gap: 3px; font-size: 12px; }
+  .hyper-legend .badge { margin-left: 0; margin-right: 6px; }
+  #status { text-align: right; max-width: 330px; }
+  .tooltip { max-width: 360px; white-space: pre-line; }
+  @media (max-width: 900px) { .hyper-grid { grid-template-columns: 1fr; overflow-y: auto; } .hyper-grid .panel { overflow: visible; flex: none; } }
+</style>
+</head>
+<body>
+  <main class="hyper-page">
+    <div class="hyper-top">
+      <div class="grow">
+        <h1>Hypermode <span class="badge">Experimental</span></h1>
+        <div class="lead">Extra performance options for very weak graphics hardware: integrated graphics, old laptops and handhelds. Made by ircluzar. Hover any option to see what it does, what you will notice and what it gained in testing.</div>
+      </div>
+      <div class="toggle-row hyper-master" id="masterRow" data-tip="Turns every Hypermode option below on or off at once. Your choices are kept while it is off.">
+        <div><div class="toggle-title">Hypermode</div><div class="toggle-sub" id="masterSub">Off: the game runs as normal</div></div>
+        <button class="switch" id="master" role="switch"></button>
+      </div>
+    </div>
+
+    <div class="hyper-banner bad" id="vulkanNote" hidden><b>Not available with the Vulkan renderer.</b> Hypermode works with Direct3D 12 only. Turn the Vulkan renderer off in the launcher's Graphics tab to use it.</div>
+
+    <div class="hyper-presets" id="presetRow">
+      <span>Preset</span>
+      <div class="segmented" id="presets"></div>
+      <div class="blurb" id="presetBlurb"></div>
+    </div>
+
+    <div class="hyper-banner" id="recompileNote" hidden></div>
+
+    <div class="hyper-grid" id="grid"></div>
+
+    <div class="hyper-foot">
+      <div class="hyper-legend">
+        <span><span class="badge recompile">Recompiles shaders</span> every shader is rebuilt at the next start: several minutes, once</span>
+        <span><span class="badge variants">New shaders in play</span> brief stutters the first time each track is driven</span>
+      </div>
+      <div class="grow"></div>
+      <span id="status">Changes are saved as you make them.</span>
+      <button class="ghost small" id="close">Close</button>
+    </div>
+  </main>
+  <div class="tooltip" id="tooltip" hidden></div>
+  <div class="toast" id="toast" hidden></div>
+  <script src="host.js"></script>
+  <script src="hyper.js"></script>
+</body>
+</html>

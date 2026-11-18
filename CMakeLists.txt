@@ -85,6 +85,8 @@ if(FM2_VULKAN)
 else()
     list(FILTER FM2_SOURCES EXCLUDE REGEX "src/gpu/vk/")
 endif()
+# meshoptimizer (MIT): Hyper's mesh decimation.
+list(APPEND FM2_SOURCES "${CMAKE_SOURCE_DIR}/thirdparty/meshoptimizer/src/simplifier.cpp" "${CMAKE_SOURCE_DIR}/thirdparty/meshoptimizer/src/allocator.cpp" "${CMAKE_SOURCE_DIR}/thirdparty/meshoptimizer/src/vcacheoptimizer.cpp" "${CMAKE_SOURCE_DIR}/thirdparty/meshoptimizer/src/overdrawoptimizer.cpp")
 if(FM2_TITLE_UPDATE)
     set(FM2_TU_DIR "${CMAKE_SOURCE_DIR}/out/tu4")
     set(FM2_REMAP_DIR "${CMAKE_BINARY_DIR}/remapped")
@@ -125,7 +127,7 @@ endif()
 set(FM2_GENERATED "${CMAKE_BINARY_DIR}/generated")
 add_custom_command(OUTPUT "${FM2_GENERATED}/fsr1_cs.h"
     COMMAND ${FM2_PYTHON} -I "${CMAKE_SOURCE_DIR}/tools/embed_hlsl.py" "${CMAKE_SOURCE_DIR}/src/gpu/fsr1.hlsl" "${FM2_GENERATED}/fsr1_cs.h"
-            EasuMain,RcasMain,DepthCopyMain,GammaMain,EnhanceMain,PillarMain,ViewMain,TurnMain "${FM2_FFX}/api/internal/gpu" "${FM2_FFX}/upscalers/fsr3/include/gpu/fsr1"
+            EasuMain,RcasMain,DepthCopyMain,GammaMain,EnhanceMain,PillarMain,ViewMain,TurnMain,HyperUpscaleMain "${FM2_FFX}/api/internal/gpu" "${FM2_FFX}/upscalers/fsr3/include/gpu/fsr1"
     DEPENDS "${CMAKE_SOURCE_DIR}/src/gpu/fsr1.hlsl" "${CMAKE_SOURCE_DIR}/tools/embed_hlsl.py"
     COMMENT "Compiling FSR 1 shaders")
 list(APPEND FM2_SOURCES "${FM2_GENERATED}/fsr1_cs.h")

@@ -101,9 +101,25 @@ bool InsertAfter(std::string& s, const std::string& anchor, size_t from, const s
     return true;
 }
 
+bool RaceNowOn(); // --racenow (below)
+
 bool PatchForzaFlow(std::vector<uint8_t>& data)
 {
     std::string s(data.begin(), data.end());
+    if (RaceNowOn())
+    {
+        const std::string start = R"(<flow path="game:\Media\ui\Flows\StartScreen.xml" keephistory="true"/>)";
+        const std::string listed = R"(<flow path="game:\media\ui\flows\startscreen.xml"/>)";
+        const size_t at = s.find(start);
+        if (at != std::string::npos && s.find(listed) != std::string::npos)
+        {
+            s.replace(at, start.size(), R"(<flow path="game:\Media\ui\Flows\RaceNow.xml" keephistory="true"/>)");
+            s.insert(s.find(listed), std::string(R"(<flow path="game:\media\ui\flows\racenow.xml"/>)") + "\n            ");
+            Log("racenow: the boot flow goes straight to the race");
+        }
+        else
+            Log("racenow: the boot flow's start screen was not found; booting normally");
+    }
     // The main menu flow: the "invite" flow's branch ends with the Options choice.
     const size_t menu = s.find("<flow label=\"invite\">");
     if (menu == std::string::npos || s.find("FM2Quit") != std::string::npos)
@@ -189,6 +205,209 @@ bool PatchOptionsFlow(std::vector<uint8_t>& data)
     s.insert(titleAt, "if UI.Flow.OptionCategory == \"GraphicsOptions\" then UI.Strings.SceneTitle = UI.Strings.IDS_Graphics else ");
     s.insert(s.find("<choice event=\"HUDOptions\">"), kGraphicsChoice);
     s.insert(enter, kGraphicsQuery);
+    data.assign(s.begin(), s.end());
+    return true;
+}
+
+// --racenow (main.cpp): boot straight into a race. Flows/Forza.xml runs Flows/RaceNow.xml (added below) in
+// place of the start screen, and the race flow starts the race at once: the 3-2-1 scene (I_321_Go.xgf) ends by
+// calling Game:StartGame() (its onEndOfSlide, I_321_Go.lua); a logic block in its place calls it straight away.
+bool RaceNowOn()
+{
+    static const bool on = getenv("FM2_RACENOW") != nullptr;
+    return on;
+}
+
+bool RaceNowNoCountdown()
+{
+    return RaceNowOn() && !getenv("FM2_RACENOW_COUNTDOWN");
+}
+
+// The boot flow: the start screen's work without its scene (profile of controller 0), then what the Arcade
+// menus do for an Exhibition race (ArcadeMenu.xml, Arcade.xml, LiveCarSelect.xml, PopupAssists.xml) with no
+// scene shown, then Arcade.xml's launch: RequestGame, LaunchSinglePlayerGame, the loading screen, the race.
+std::string RaceNowFlow()
+{
+    auto env = [](const char* name, int fallback) {
+        const char* v = getenv(name);
+        return std::to_string(v ? atoi(v) : fallback);
+    };
+    std::string f = R"xml(<flow>
+    <resource>
+        <package name="racenowpackage" useHeap="fixed">
+            <flow path="GAME:\Media\UI\Flows\LoadGame.xml"/>
+            <scene path="GAME:\Media\UI\Scenes\P_Scenes\P_LOA\P_LOA_LoadingScreen.xgf"/>
+            <package name="GAME:\Media\UI\Scenes\P_Scenes\P_LOA\P_LOA_LoadingScreen.xgf"/>
+            <flow path="GAME:\Media\UI\Flows\ExhibitionCircuitRace.xml"/>
+            <package name="CarTextures"/>
+        </package>
+    </resource>
+    <setloadedpackage name="racenowpackage"/>
+    <!-- The start screen's start-up work (StartScreen.xml: the game is initialised from a scene's onUpdate,
+         and renders only while a scene is up), hosted by the loading screen, which then moves on by itself. -->
+    <scene path="GAME:\Media\UI\Scenes\P_Scenes\P_LOA\P_LOA_LoadingScreen.xgf" fadein="0" fadeout="0">
+        <onEnter>
+            ProfileManager:RegisterErrorFlows( "", "" )
+            MultiscreenConfig:EnableJoin()
+            RaceNowUpdates = 0
+            pcall(error, "racenow: start-up scene")
+        </onEnter>
+        <onUpdate>
+            Lobby:SetGameInitialized()
+            Game:IgnoreRenderSwap(false)
+            RaceNowUpdates = RaceNowUpdates + 1
+            if RaceNowUpdates == 3 then
+                UI.Flow.LastInputControllerIndex = 0
+                pcall(error, "racenow: leaving the start-up scene")
+                UI:flowProcess()
+            end
+        </onUpdate>
+    </scene>
+    <logic>
+        pcall(error, "racenow: loading the profile")
+        MultiscreenConfig:DisableJoin()
+        UI.Flow.pauseTimeTrigger = true
+    </logic>
+    <flow path="game:\Media\ui\Flows\LoadNewProfile.xml" />
+    <logic>
+        UI.Flow.pauseTimeTrigger = false
+        pcall(error, "racenow: profile loaded, setting the race up")
+        Lobby:SetSinglePlayer()
+        Lobby.gameOptions:InitSinglePlayerDefaults()
+        Lobby:SetLeaderboardModeArcade()
+        UI.Flow.IsArcadeMode = true
+        UI.Flow.GamePath = "Arcade"
+
+        local raceIndex = @RACE@
+        local classId = @CLASS@
+        local carId = @CAR@
+        local prefix = ProfileManager.activePlayerProfile.TablePrefix
+
+        -- The race: the Arcade track list's order (Arcade.xml)
+        local races = DB:execute("SELECT Races.id AS RaceId FROM Races, Events, Tracks WHERE Events.GameTypeId = 0 AND Events.id = Races.EventId AND Races.TrackId = Tracks.id ORDER BY Events.Level, Races.RaceNumber")
+        if raceIndex + 1 &gt; races.recordCount then raceIndex = 0 end
+        local raceId = races:getValue(raceIndex + 1, "RaceId", false)
+        Lobby.gameOptions.ArcadeEvent = raceId
+        local event = DB:execute("SELECT * FROM Races, Events WHERE Races.id = " .. raceId .. " AND Races.EventId = Events.id")
+        Lobby.gameOptions.ModeRaceNumber = event:getValue(1, "ModeRaceNumber", false)
+        Lobby.gameOptions.Track = DB:execute("SELECT TrackId FROM Races WHERE Races.id = " .. raceId):getValue(1, "TrackId", false)
+        Lobby.gameOptions.CarModel = Lobby.E_OPTION_VALUE_ANY
+
+        -- The car: the class's lowest Performance Index car (Data_Car, as LiveCarSelect.xml checks it); the
+        -- menu's own list comes from a native query (garage:GetArcadeCarListAsync), so locked cars count too
+        Lobby.activePlayer.carClass = classId
+        if carId &lt; 0 then
+            local cars = DB:execute("SELECT Id FROM Data_Car WHERE ClassID=" .. classId .. " ORDER BY PerformanceIndex")
+            if cars.recordCount == 0 then
+                cars = DB:execute("SELECT Id FROM Data_Car ORDER BY PerformanceIndex")
+            end
+            carId = cars:getValue(1, "Id", false)
+        end
+        Lobby.activePlayer.stockModelId = carId
+        Lobby.activePlayer.carColor = 0
+        Lobby.activePlayer:OnCarSelect()
+
+        -- Assists as the profile has them (PopupAssists.xml)
+        Lobby.activePlayer.Choices.AssistSuggestedLine = ProfileManager.Arcade.SuggestedLine
+        Lobby.activePlayer.Choices.AssistBraking = ProfileManager.Arcade.ABS
+        Lobby.activePlayer.Choices.AssistTraction = ProfileManager.Arcade.TCS
+        Lobby.activePlayer.Choices.AssistStability = ProfileManager.Arcade.STM
+        Lobby.activePlayer.Choices.AssistShifting = ProfileManager.Arcade.Shifting
+        Lobby.gameOptions.DamageType = 0
+        Lobby.gameOptions.TiresAndFuel = 0
+        -- FM2_RACENOW_AI=1 (payload ai=1): the game's own driver AI races the player's car, as Career's "Hire Driver"
+        -- does (CareerCircuitRace.xml): the most skilled free driver in AIPlayers.
+        if @AI@ ~= 0 then
+            local ok, err = pcall(function()
+                local ai = DB:execute("SELECT Id FROM AIPlayers WHERE isUsed = 0 ORDER BY UISkill DESC")
+                local aiId = ai:getValue(1, "Id", false)
+                Lobby.activePlayer.aiDriverId = aiId
+                pcall(error, "racenow: AI driver " .. tostring(aiId) .. " chosen (the car takes it at the start)")
+            end)
+            if not ok then pcall(error, "racenow: AI driver failed: " .. tostring(err)) end
+        end
+        pcall(error, "racenow: race " .. tostring(raceId) .. ", track " .. tostring(Lobby.gameOptions.Track) .. ", class " .. tostring(classId) .. ", car " .. tostring(carId))
+    </logic>
+    @WAITSCENE@
+    <event Name="RequestGame" GameType="ArcadeCircuitRace"/>
+    <logic>
+        pcall(error, "racenow: launching")
+        Lobby:LaunchSinglePlayerGame()
+    </logic>
+    <flow>
+        <background />
+        <flow path="GAME:\Media\UI\Flows\LoadGame.xml"/>
+        <flow path="GAME:\Media\UI\Flows\ExhibitionCircuitRace.xml" keephistory="false"/>
+    </flow>
+    <logic>
+        Lobby:ExitLobby()
+    </logic>
+</flow>
+)xml";
+    auto put = [&](const char* key, const std::string& value) {
+        for (size_t at; (at = f.find(key)) != std::string::npos;)
+            f.replace(at, strlen(key), value);
+    };
+    put("@RACE@", env("FM2_RACENOW_RACE", 0));
+    put("@AI@", env("FM2_RACENOW_AI", 0));
+    put("@CLASS@", env("FM2_RACENOW_CLASS", 1));
+    put("@CAR@", env("FM2_RACENOW_CAR", -1));
+    // FM2_RACENOW_WAIT=<updates> (experiment, 16 Nov 2026): the loading screen stays up for that many updates between
+    // setting the race up and launching it. The shortcut launches about 0.3 s after the profile loads; some launches
+    // then stay on the loading screen for ever (no track file is read). Does more time before the launch cure that?
+    const int wait = getenv("FM2_RACENOW_WAIT") ? atoi(getenv("FM2_RACENOW_WAIT")) : 30; // 30: 0 of 10 launches stuck, against 8 of 10 with 0
+    put("@WAITSCENE@", wait <= 0 ? std::string() : R"xml(<scene path="GAME:\Media\UI\Scenes\P_Scenes\P_LOA\P_LOA_LoadingScreen.xgf" fadein="0" fadeout="0">
+        <onEnter>
+            RaceNowWait = 0
+            pcall(error, "racenow: waiting before the launch")
+        </onEnter>
+        <onUpdate>
+            RaceNowWait = RaceNowWait + 1
+            if RaceNowWait == )xml" + std::to_string(wait) + R"xml( then
+                UI:flowProcess()
+            end
+        </onUpdate>
+    </scene>)xml");
+    return f;
+}
+
+bool PatchRaceFlowCountdown(std::vector<uint8_t>& data)
+{
+    std::string s(data.begin(), data.end());
+    // --racenow: no starting grid either. Its scene (I_PRE_All_Modes.xgf) is the race's pre-start menu; what
+    // follows it runs Game:HandleMenuOption(choice) and, for "StartRace", Game:Unpause(). Both, straight away.
+    if (RaceNowOn())
+    {
+        const size_t grid = s.find(R"(<scene path="GAME:\Media\UI\Scenes\I_Scenes\I_PRE\I_PRE_All_Modes.xgf">)");
+        const size_t start = grid == std::string::npos ? grid : s.find(R"(<choice event="StartRace">)", grid);
+        const size_t end = start == std::string::npos ? start : s.find("</branch>", start);
+        // FM2_RACENOW_AI: the race is loaded here, so the player's car exists and takes the AI driver, as after
+        // Career's "Hire Driver" (setAIDriverId, then the runtime re-init of the hired driver).
+        const char* ai = getenv("FM2_RACENOW_AI");
+        const std::string hire = ai && atoi(ai) ? std::string(
+            "        local id = Lobby.activePlayer.aiDriverId\n"
+            "        if id and id ~= 0 then\n"
+            "            local ok, err = pcall(function() Lobby.activePlayer:getCar():setAIDriverId(id) end)\n"
+            "            pcall(error, \"racenow: car setAIDriverId(\" .. tostring(id) .. \") \" .. (ok and \"ok\" or tostring(err)))\n"
+            "            ok, err = pcall(function() GameLib:RuntimeReInitCareerHireFireDriver() end)\n"
+            "            pcall(error, \"racenow: hired-driver re-init \" .. (ok and \"ok\" or tostring(err)))\n"
+            "        end\n") : std::string();
+        if (end != std::string::npos)
+            s.replace(grid, end + 9 - grid,
+                "<logic>\n" + hire + "        UI.Flow.SelectedOption = \"StartRace\"\n        Game:HandleMenuOption(\"StartRace\")\n"
+                "        Game:Unpause()\n    </logic>");
+        else
+            Log("racenow: the race flow's starting grid was not found; it stays");
+    }
+    const size_t at = s.find(R"(<scene path="GAME:\Media\UI\Scenes\I_Scenes\I_321\I_321_Go.xgf" fadein)");
+    if (at == std::string::npos)
+        return false;
+    const size_t end = s.find("</scene>", at);
+    if (end == std::string::npos)
+        return false;
+    s.replace(at, end + 8 - at,
+        "<logic>\n            UI.Storage.GameCanPause = false\n            UI.Storage.FadeHUDCountdownIn = true\n"
+        "            Game:StartGame()\n        </logic>");
     data.assign(s.begin(), s.end());
     return true;
 }
@@ -389,6 +608,8 @@ bool BuiltIn(const std::string& zip, const std::string& member, std::vector<uint
     }
     if (zip == "media/ui.zip" && member == "flows/forza.xml")
         return PatchForzaFlow(data);
+    if (RaceNowNoCountdown() && (member == "flows/exhibitioncircuitrace.xml" || member == "ui/flows/exhibitioncircuitrace.xml"))
+        return PatchRaceFlowCountdown(data);
     return false;
 }
 
@@ -634,6 +855,12 @@ bool Rewrite(const std::string& zipName, const std::vector<uint8_t>& zip, const 
         w.Stored(kGraphicsIcon, icon);
         changed++;
     }
+    if (RaceNowOn() && zipName == "media/ui.zip") // --racenow's boot flow
+    {
+        const std::string flow = RaceNowFlow();
+        w.Stored("Flows/RaceNow.xml", std::vector<uint8_t>(flow.begin(), flow.end()));
+        changed++;
+    }
     for (const auto& [l, m] : modByMember) // new files from mods
     {
         std::ifstream in(m->file, std::ios::binary);
@@ -684,6 +911,8 @@ fs::path ZipOverlay(const std::string& zip, const fs::path& host)
         std::replace(flat.begin(), flat.end(), '/', '_');
         if (zip == kHarmonicZip) // one copy per scale: the game may still have another open
             flat += "_" + std::to_string(int(exhaust * 100)) + ".zip";
+        else if (RaceNowOn()) // its own copy: a normal start keeps the countdown
+            flat += "_racenow.zip";
         const fs::path patched = dir / flat, stampFile = dir / (flat + ".stamp");
         const std::string want = Stamp(host, mods);
         std::string have;
@@ -691,7 +920,7 @@ fs::path ZipOverlay(const std::string& zip, const fs::path& host)
             std::ifstream in(stampFile, std::ios::binary);
             have.assign(std::istreambuf_iterator<char>(in), {});
         }
-        if (have == want && fs::exists(patched, ec))
+        if (have == want && fs::exists(patched, ec) && !RaceNowOn()) // a --racenow copy holds its payload
             result = patched;
         else
         {

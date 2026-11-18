@@ -4,1591 +4,2121 @@
 
 __attribute__((weak)) PPC_FUNC(__imp__DbgBreakPoint)
 {
+    TraceImport("DbgBreakPoint", ctx);
     LOG_ONCE("unimplemented import DbgBreakPoint (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("DbgBreakPoint", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__DbgPrint)
 {
+    TraceImport("DbgPrint", ctx);
     LOG_ONCE("unimplemented import DbgPrint (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("DbgPrint", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__ExAllocatePool)
 {
+    TraceImport("ExAllocatePool", ctx);
     LOG_ONCE("unimplemented import ExAllocatePool (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("ExAllocatePool", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__ExCreateThread)
 {
+    TraceImport("ExCreateThread", ctx);
     LOG_ONCE("unimplemented import ExCreateThread (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("ExCreateThread", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__ExFreePool)
 {
+    TraceImport("ExFreePool", ctx);
     LOG_ONCE("unimplemented import ExFreePool (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("ExFreePool", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__ExGetXConfigSetting)
 {
+    TraceImport("ExGetXConfigSetting", ctx);
     LOG_ONCE("unimplemented import ExGetXConfigSetting (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("ExGetXConfigSetting", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__ExRegisterTitleTerminateNotification)
 {
+    TraceImport("ExRegisterTitleTerminateNotification", ctx);
     LOG_ONCE("unimplemented import ExRegisterTitleTerminateNotification (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("ExRegisterTitleTerminateNotification", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__ExTerminateThread)
 {
+    TraceImport("ExTerminateThread", ctx);
     LOG_ONCE("unimplemented import ExTerminateThread (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("ExTerminateThread", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__FscSetCacheElementCount)
 {
+    TraceImport("FscSetCacheElementCount", ctx);
     LOG_ONCE("unimplemented import FscSetCacheElementCount (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("FscSetCacheElementCount", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__HalReturnToFirmware)
 {
+    TraceImport("HalReturnToFirmware", ctx);
     LOG_ONCE("unimplemented import HalReturnToFirmware (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("HalReturnToFirmware", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__InterlockedFlushSList)
 {
+    TraceImport("InterlockedFlushSList", ctx);
     LOG_ONCE("unimplemented import InterlockedFlushSList (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("InterlockedFlushSList", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__InterlockedPopEntrySList)
 {
+    TraceImport("InterlockedPopEntrySList", ctx);
     LOG_ONCE("unimplemented import InterlockedPopEntrySList (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("InterlockedPopEntrySList", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__IoDismountVolumeByFileHandle)
 {
+    TraceImport("IoDismountVolumeByFileHandle", ctx);
     LOG_ONCE("unimplemented import IoDismountVolumeByFileHandle (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("IoDismountVolumeByFileHandle", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__KeAcquireSpinLockAtRaisedIrql)
 {
+    TraceImport("KeAcquireSpinLockAtRaisedIrql", ctx);
     LOG_ONCE("unimplemented import KeAcquireSpinLockAtRaisedIrql (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("KeAcquireSpinLockAtRaisedIrql", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__KeBugCheck)
 {
+    TraceImport("KeBugCheck", ctx);
     LOG_ONCE("unimplemented import KeBugCheck (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("KeBugCheck", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__KeBugCheckEx)
 {
+    TraceImport("KeBugCheckEx", ctx);
     LOG_ONCE("unimplemented import KeBugCheckEx (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("KeBugCheckEx", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__KeDelayExecutionThread)
 {
+    TraceImport("KeDelayExecutionThread", ctx);
     LOG_ONCE("unimplemented import KeDelayExecutionThread (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("KeDelayExecutionThread", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__KeEnterCriticalRegion)
 {
+    TraceImport("KeEnterCriticalRegion", ctx);
     LOG_ONCE("unimplemented import KeEnterCriticalRegion (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("KeEnterCriticalRegion", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__KeGetCurrentProcessType)
 {
+    TraceImport("KeGetCurrentProcessType", ctx);
     LOG_ONCE("unimplemented import KeGetCurrentProcessType (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("KeGetCurrentProcessType", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__KeInitializeSemaphore)
 {
+    TraceImport("KeInitializeSemaphore", ctx);
     LOG_ONCE("unimplemented import KeInitializeSemaphore (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("KeInitializeSemaphore", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__KeLeaveCriticalRegion)
 {
+    TraceImport("KeLeaveCriticalRegion", ctx);
     LOG_ONCE("unimplemented import KeLeaveCriticalRegion (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("KeLeaveCriticalRegion", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__KeLockL2)
 {
+    TraceImport("KeLockL2", ctx);
     LOG_ONCE("unimplemented import KeLockL2 (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("KeLockL2", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__KeQueryBasePriorityThread)
 {
+    TraceImport("KeQueryBasePriorityThread", ctx);
     LOG_ONCE("unimplemented import KeQueryBasePriorityThread (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("KeQueryBasePriorityThread", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__KeQueryPerformanceFrequency)
 {
+    TraceImport("KeQueryPerformanceFrequency", ctx);
     LOG_ONCE("unimplemented import KeQueryPerformanceFrequency (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("KeQueryPerformanceFrequency", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__KeQuerySystemTime)
 {
+    TraceImport("KeQuerySystemTime", ctx);
     LOG_ONCE("unimplemented import KeQuerySystemTime (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("KeQuerySystemTime", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__KeRaiseIrqlToDpcLevel)
 {
+    TraceImport("KeRaiseIrqlToDpcLevel", ctx);
     LOG_ONCE("unimplemented import KeRaiseIrqlToDpcLevel (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("KeRaiseIrqlToDpcLevel", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__KeReleaseSemaphore)
 {
+    TraceImport("KeReleaseSemaphore", ctx);
     LOG_ONCE("unimplemented import KeReleaseSemaphore (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("KeReleaseSemaphore", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__KeReleaseSpinLockFromRaisedIrql)
 {
+    TraceImport("KeReleaseSpinLockFromRaisedIrql", ctx);
     LOG_ONCE("unimplemented import KeReleaseSpinLockFromRaisedIrql (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("KeReleaseSpinLockFromRaisedIrql", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__KeResetEvent)
 {
+    TraceImport("KeResetEvent", ctx);
     LOG_ONCE("unimplemented import KeResetEvent (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("KeResetEvent", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__KeResumeThread)
 {
+    TraceImport("KeResumeThread", ctx);
     LOG_ONCE("unimplemented import KeResumeThread (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("KeResumeThread", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__KeSetAffinityThread)
 {
+    TraceImport("KeSetAffinityThread", ctx);
     LOG_ONCE("unimplemented import KeSetAffinityThread (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("KeSetAffinityThread", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__KeSetBasePriorityThread)
 {
+    TraceImport("KeSetBasePriorityThread", ctx);
     LOG_ONCE("unimplemented import KeSetBasePriorityThread (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("KeSetBasePriorityThread", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__KeSetCurrentStackPointers)
 {
+    TraceImport("KeSetCurrentStackPointers", ctx);
     LOG_ONCE("unimplemented import KeSetCurrentStackPointers (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("KeSetCurrentStackPointers", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__KeSetEvent)
 {
+    TraceImport("KeSetEvent", ctx);
     LOG_ONCE("unimplemented import KeSetEvent (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("KeSetEvent", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__KeTlsAlloc)
 {
+    TraceImport("KeTlsAlloc", ctx);
     LOG_ONCE("unimplemented import KeTlsAlloc (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("KeTlsAlloc", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__KeTlsFree)
 {
+    TraceImport("KeTlsFree", ctx);
     LOG_ONCE("unimplemented import KeTlsFree (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("KeTlsFree", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__KeTlsGetValue)
 {
+    TraceImport("KeTlsGetValue", ctx);
     LOG_ONCE("unimplemented import KeTlsGetValue (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("KeTlsGetValue", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__KeTlsSetValue)
 {
+    TraceImport("KeTlsSetValue", ctx);
     LOG_ONCE("unimplemented import KeTlsSetValue (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("KeTlsSetValue", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__KeUnlockL2)
 {
+    TraceImport("KeUnlockL2", ctx);
     LOG_ONCE("unimplemented import KeUnlockL2 (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("KeUnlockL2", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__KeWaitForMultipleObjects)
 {
+    TraceImport("KeWaitForMultipleObjects", ctx);
     LOG_ONCE("unimplemented import KeWaitForMultipleObjects (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("KeWaitForMultipleObjects", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__KeWaitForSingleObject)
 {
+    TraceImport("KeWaitForSingleObject", ctx);
     LOG_ONCE("unimplemented import KeWaitForSingleObject (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("KeWaitForSingleObject", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__KfAcquireSpinLock)
 {
+    TraceImport("KfAcquireSpinLock", ctx);
     LOG_ONCE("unimplemented import KfAcquireSpinLock (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("KfAcquireSpinLock", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__KfLowerIrql)
 {
+    TraceImport("KfLowerIrql", ctx);
     LOG_ONCE("unimplemented import KfLowerIrql (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("KfLowerIrql", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__KfReleaseSpinLock)
 {
+    TraceImport("KfReleaseSpinLock", ctx);
     LOG_ONCE("unimplemented import KfReleaseSpinLock (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("KfReleaseSpinLock", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__KiApcNormalRoutineNop)
 {
+    TraceImport("KiApcNormalRoutineNop", ctx);
     LOG_ONCE("unimplemented import KiApcNormalRoutineNop (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("KiApcNormalRoutineNop", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__MmAllocatePhysicalMemoryEx)
 {
+    TraceImport("MmAllocatePhysicalMemoryEx", ctx);
     LOG_ONCE("unimplemented import MmAllocatePhysicalMemoryEx (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("MmAllocatePhysicalMemoryEx", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__MmCreateKernelStack)
 {
+    TraceImport("MmCreateKernelStack", ctx);
     LOG_ONCE("unimplemented import MmCreateKernelStack (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("MmCreateKernelStack", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__MmDeleteKernelStack)
 {
+    TraceImport("MmDeleteKernelStack", ctx);
     LOG_ONCE("unimplemented import MmDeleteKernelStack (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("MmDeleteKernelStack", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__MmFreePhysicalMemory)
 {
+    TraceImport("MmFreePhysicalMemory", ctx);
     LOG_ONCE("unimplemented import MmFreePhysicalMemory (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("MmFreePhysicalMemory", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__MmGetPhysicalAddress)
 {
+    TraceImport("MmGetPhysicalAddress", ctx);
     LOG_ONCE("unimplemented import MmGetPhysicalAddress (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("MmGetPhysicalAddress", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__MmQueryAddressProtect)
 {
+    TraceImport("MmQueryAddressProtect", ctx);
     LOG_ONCE("unimplemented import MmQueryAddressProtect (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("MmQueryAddressProtect", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__MmQueryAllocationSize)
 {
+    TraceImport("MmQueryAllocationSize", ctx);
     LOG_ONCE("unimplemented import MmQueryAllocationSize (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("MmQueryAllocationSize", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__MmSetAddressProtect)
 {
+    TraceImport("MmSetAddressProtect", ctx);
     LOG_ONCE("unimplemented import MmSetAddressProtect (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("MmSetAddressProtect", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__NetDll_WSACleanup)
 {
+    TraceImport("NetDll_WSACleanup", ctx);
     LOG_ONCE("unimplemented import NetDll_WSACleanup (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("NetDll_WSACleanup", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__NetDll_WSAGetLastError)
 {
+    TraceImport("NetDll_WSAGetLastError", ctx);
     LOG_ONCE("unimplemented import NetDll_WSAGetLastError (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("NetDll_WSAGetLastError", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__NetDll_WSAGetOverlappedResult)
 {
+    TraceImport("NetDll_WSAGetOverlappedResult", ctx);
     LOG_ONCE("unimplemented import NetDll_WSAGetOverlappedResult (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("NetDll_WSAGetOverlappedResult", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__NetDll_WSARecv)
 {
+    TraceImport("NetDll_WSARecv", ctx);
     LOG_ONCE("unimplemented import NetDll_WSARecv (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("NetDll_WSARecv", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__NetDll_WSARecvFrom)
 {
+    TraceImport("NetDll_WSARecvFrom", ctx);
     LOG_ONCE("unimplemented import NetDll_WSARecvFrom (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("NetDll_WSARecvFrom", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__NetDll_WSASend)
 {
+    TraceImport("NetDll_WSASend", ctx);
     LOG_ONCE("unimplemented import NetDll_WSASend (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("NetDll_WSASend", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__NetDll_WSASendTo)
 {
+    TraceImport("NetDll_WSASendTo", ctx);
     LOG_ONCE("unimplemented import NetDll_WSASendTo (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("NetDll_WSASendTo", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__NetDll_WSAStartup)
 {
+    TraceImport("NetDll_WSAStartup", ctx);
     LOG_ONCE("unimplemented import NetDll_WSAStartup (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("NetDll_WSAStartup", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__NetDll_XNetCleanup)
 {
+    TraceImport("NetDll_XNetCleanup", ctx);
     LOG_ONCE("unimplemented import NetDll_XNetCleanup (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("NetDll_XNetCleanup", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__NetDll_XNetConnect)
 {
+    TraceImport("NetDll_XNetConnect", ctx);
     LOG_ONCE("unimplemented import NetDll_XNetConnect (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("NetDll_XNetConnect", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__NetDll_XNetCreateKey)
 {
+    TraceImport("NetDll_XNetCreateKey", ctx);
     LOG_ONCE("unimplemented import NetDll_XNetCreateKey (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("NetDll_XNetCreateKey", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__NetDll_XNetGetConnectStatus)
 {
+    TraceImport("NetDll_XNetGetConnectStatus", ctx);
     LOG_ONCE("unimplemented import NetDll_XNetGetConnectStatus (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("NetDll_XNetGetConnectStatus", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__NetDll_XNetGetEthernetLinkStatus)
 {
+    TraceImport("NetDll_XNetGetEthernetLinkStatus", ctx);
     LOG_ONCE("unimplemented import NetDll_XNetGetEthernetLinkStatus (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("NetDll_XNetGetEthernetLinkStatus", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__NetDll_XNetGetTitleXnAddr)
 {
+    TraceImport("NetDll_XNetGetTitleXnAddr", ctx);
     LOG_ONCE("unimplemented import NetDll_XNetGetTitleXnAddr (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("NetDll_XNetGetTitleXnAddr", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__NetDll_XNetInAddrToString)
 {
+    TraceImport("NetDll_XNetInAddrToString", ctx);
     LOG_ONCE("unimplemented import NetDll_XNetInAddrToString (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("NetDll_XNetInAddrToString", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__NetDll_XNetInAddrToXnAddr)
 {
+    TraceImport("NetDll_XNetInAddrToXnAddr", ctx);
     LOG_ONCE("unimplemented import NetDll_XNetInAddrToXnAddr (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("NetDll_XNetInAddrToXnAddr", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__NetDll_XNetQosListen)
 {
+    TraceImport("NetDll_XNetQosListen", ctx);
     LOG_ONCE("unimplemented import NetDll_XNetQosListen (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("NetDll_XNetQosListen", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__NetDll_XNetQosLookup)
 {
+    TraceImport("NetDll_XNetQosLookup", ctx);
     LOG_ONCE("unimplemented import NetDll_XNetQosLookup (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("NetDll_XNetQosLookup", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__NetDll_XNetQosRelease)
 {
+    TraceImport("NetDll_XNetQosRelease", ctx);
     LOG_ONCE("unimplemented import NetDll_XNetQosRelease (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("NetDll_XNetQosRelease", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__NetDll_XNetRandom)
 {
+    TraceImport("NetDll_XNetRandom", ctx);
     LOG_ONCE("unimplemented import NetDll_XNetRandom (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("NetDll_XNetRandom", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__NetDll_XNetRegisterKey)
 {
+    TraceImport("NetDll_XNetRegisterKey", ctx);
     LOG_ONCE("unimplemented import NetDll_XNetRegisterKey (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("NetDll_XNetRegisterKey", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__NetDll_XNetServerToInAddr)
 {
+    TraceImport("NetDll_XNetServerToInAddr", ctx);
     LOG_ONCE("unimplemented import NetDll_XNetServerToInAddr (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("NetDll_XNetServerToInAddr", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__NetDll_XNetStartup)
 {
+    TraceImport("NetDll_XNetStartup", ctx);
     LOG_ONCE("unimplemented import NetDll_XNetStartup (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("NetDll_XNetStartup", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__NetDll_XNetUnregisterInAddr)
 {
+    TraceImport("NetDll_XNetUnregisterInAddr", ctx);
     LOG_ONCE("unimplemented import NetDll_XNetUnregisterInAddr (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("NetDll_XNetUnregisterInAddr", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__NetDll_XNetUnregisterKey)
 {
+    TraceImport("NetDll_XNetUnregisterKey", ctx);
     LOG_ONCE("unimplemented import NetDll_XNetUnregisterKey (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("NetDll_XNetUnregisterKey", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__NetDll_XNetXnAddrToInAddr)
 {
+    TraceImport("NetDll_XNetXnAddrToInAddr", ctx);
     LOG_ONCE("unimplemented import NetDll_XNetXnAddrToInAddr (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("NetDll_XNetXnAddrToInAddr", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__NetDll___WSAFDIsSet)
 {
+    TraceImport("NetDll___WSAFDIsSet", ctx);
     LOG_ONCE("unimplemented import NetDll___WSAFDIsSet (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("NetDll___WSAFDIsSet", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__NetDll_bind)
 {
+    TraceImport("NetDll_bind", ctx);
     LOG_ONCE("unimplemented import NetDll_bind (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("NetDll_bind", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__NetDll_closesocket)
 {
+    TraceImport("NetDll_closesocket", ctx);
     LOG_ONCE("unimplemented import NetDll_closesocket (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("NetDll_closesocket", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__NetDll_connect)
 {
+    TraceImport("NetDll_connect", ctx);
     LOG_ONCE("unimplemented import NetDll_connect (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("NetDll_connect", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__NetDll_getsockname)
 {
+    TraceImport("NetDll_getsockname", ctx);
     LOG_ONCE("unimplemented import NetDll_getsockname (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("NetDll_getsockname", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__NetDll_getsockopt)
 {
+    TraceImport("NetDll_getsockopt", ctx);
     LOG_ONCE("unimplemented import NetDll_getsockopt (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("NetDll_getsockopt", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__NetDll_inet_addr)
 {
+    TraceImport("NetDll_inet_addr", ctx);
     LOG_ONCE("unimplemented import NetDll_inet_addr (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("NetDll_inet_addr", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__NetDll_ioctlsocket)
 {
+    TraceImport("NetDll_ioctlsocket", ctx);
     LOG_ONCE("unimplemented import NetDll_ioctlsocket (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("NetDll_ioctlsocket", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__NetDll_recv)
 {
+    TraceImport("NetDll_recv", ctx);
     LOG_ONCE("unimplemented import NetDll_recv (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("NetDll_recv", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__NetDll_select)
 {
+    TraceImport("NetDll_select", ctx);
     LOG_ONCE("unimplemented import NetDll_select (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("NetDll_select", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__NetDll_send)
 {
+    TraceImport("NetDll_send", ctx);
     LOG_ONCE("unimplemented import NetDll_send (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("NetDll_send", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__NetDll_setsockopt)
 {
+    TraceImport("NetDll_setsockopt", ctx);
     LOG_ONCE("unimplemented import NetDll_setsockopt (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("NetDll_setsockopt", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__NetDll_shutdown)
 {
+    TraceImport("NetDll_shutdown", ctx);
     LOG_ONCE("unimplemented import NetDll_shutdown (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("NetDll_shutdown", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__NetDll_socket)
 {
+    TraceImport("NetDll_socket", ctx);
     LOG_ONCE("unimplemented import NetDll_socket (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("NetDll_socket", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__NtAllocateVirtualMemory)
 {
+    TraceImport("NtAllocateVirtualMemory", ctx);
     LOG_ONCE("unimplemented import NtAllocateVirtualMemory (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("NtAllocateVirtualMemory", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__NtCancelTimer)
 {
+    TraceImport("NtCancelTimer", ctx);
     LOG_ONCE("unimplemented import NtCancelTimer (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("NtCancelTimer", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__NtClearEvent)
 {
+    TraceImport("NtClearEvent", ctx);
     LOG_ONCE("unimplemented import NtClearEvent (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("NtClearEvent", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__NtClose)
 {
+    TraceImport("NtClose", ctx);
     LOG_ONCE("unimplemented import NtClose (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("NtClose", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__NtCreateEvent)
 {
+    TraceImport("NtCreateEvent", ctx);
     LOG_ONCE("unimplemented import NtCreateEvent (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("NtCreateEvent", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__NtCreateFile)
 {
+    TraceImport("NtCreateFile", ctx);
     LOG_ONCE("unimplemented import NtCreateFile (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("NtCreateFile", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__NtCreateMutant)
 {
+    TraceImport("NtCreateMutant", ctx);
     LOG_ONCE("unimplemented import NtCreateMutant (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("NtCreateMutant", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__NtCreateSemaphore)
 {
+    TraceImport("NtCreateSemaphore", ctx);
     LOG_ONCE("unimplemented import NtCreateSemaphore (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("NtCreateSemaphore", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__NtCreateTimer)
 {
+    TraceImport("NtCreateTimer", ctx);
     LOG_ONCE("unimplemented import NtCreateTimer (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("NtCreateTimer", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__NtDeviceIoControlFile)
 {
+    TraceImport("NtDeviceIoControlFile", ctx);
     LOG_ONCE("unimplemented import NtDeviceIoControlFile (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("NtDeviceIoControlFile", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__NtDuplicateObject)
 {
+    TraceImport("NtDuplicateObject", ctx);
     LOG_ONCE("unimplemented import NtDuplicateObject (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("NtDuplicateObject", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__NtFlushBuffersFile)
 {
+    TraceImport("NtFlushBuffersFile", ctx);
     LOG_ONCE("unimplemented import NtFlushBuffersFile (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("NtFlushBuffersFile", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__NtFreeVirtualMemory)
 {
+    TraceImport("NtFreeVirtualMemory", ctx);
     LOG_ONCE("unimplemented import NtFreeVirtualMemory (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("NtFreeVirtualMemory", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__NtOpenFile)
 {
+    TraceImport("NtOpenFile", ctx);
     LOG_ONCE("unimplemented import NtOpenFile (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("NtOpenFile", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__NtQueryDirectoryFile)
 {
+    TraceImport("NtQueryDirectoryFile", ctx);
     LOG_ONCE("unimplemented import NtQueryDirectoryFile (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("NtQueryDirectoryFile", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__NtQueryFullAttributesFile)
 {
+    TraceImport("NtQueryFullAttributesFile", ctx);
     LOG_ONCE("unimplemented import NtQueryFullAttributesFile (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("NtQueryFullAttributesFile", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__NtQueryInformationFile)
 {
+    TraceImport("NtQueryInformationFile", ctx);
     LOG_ONCE("unimplemented import NtQueryInformationFile (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("NtQueryInformationFile", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__NtQueryVirtualMemory)
 {
+    TraceImport("NtQueryVirtualMemory", ctx);
     LOG_ONCE("unimplemented import NtQueryVirtualMemory (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("NtQueryVirtualMemory", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__NtQueryVolumeInformationFile)
 {
+    TraceImport("NtQueryVolumeInformationFile", ctx);
     LOG_ONCE("unimplemented import NtQueryVolumeInformationFile (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("NtQueryVolumeInformationFile", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__NtReadFile)
 {
+    TraceImport("NtReadFile", ctx);
     LOG_ONCE("unimplemented import NtReadFile (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("NtReadFile", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__NtReleaseMutant)
 {
+    TraceImport("NtReleaseMutant", ctx);
     LOG_ONCE("unimplemented import NtReleaseMutant (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("NtReleaseMutant", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__NtReleaseSemaphore)
 {
+    TraceImport("NtReleaseSemaphore", ctx);
     LOG_ONCE("unimplemented import NtReleaseSemaphore (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("NtReleaseSemaphore", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__NtResumeThread)
 {
+    TraceImport("NtResumeThread", ctx);
     LOG_ONCE("unimplemented import NtResumeThread (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("NtResumeThread", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__NtSetEvent)
 {
+    TraceImport("NtSetEvent", ctx);
     LOG_ONCE("unimplemented import NtSetEvent (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("NtSetEvent", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__NtSetInformationFile)
 {
+    TraceImport("NtSetInformationFile", ctx);
     LOG_ONCE("unimplemented import NtSetInformationFile (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("NtSetInformationFile", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__NtSetTimerEx)
 {
+    TraceImport("NtSetTimerEx", ctx);
     LOG_ONCE("unimplemented import NtSetTimerEx (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("NtSetTimerEx", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__NtSignalAndWaitForSingleObjectEx)
 {
+    TraceImport("NtSignalAndWaitForSingleObjectEx", ctx);
     LOG_ONCE("unimplemented import NtSignalAndWaitForSingleObjectEx (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("NtSignalAndWaitForSingleObjectEx", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__NtSuspendThread)
 {
+    TraceImport("NtSuspendThread", ctx);
     LOG_ONCE("unimplemented import NtSuspendThread (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("NtSuspendThread", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__NtWaitForMultipleObjectsEx)
 {
+    TraceImport("NtWaitForMultipleObjectsEx", ctx);
     LOG_ONCE("unimplemented import NtWaitForMultipleObjectsEx (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("NtWaitForMultipleObjectsEx", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__NtWaitForSingleObjectEx)
 {
+    TraceImport("NtWaitForSingleObjectEx", ctx);
     LOG_ONCE("unimplemented import NtWaitForSingleObjectEx (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("NtWaitForSingleObjectEx", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__NtWriteFile)
 {
+    TraceImport("NtWriteFile", ctx);
     LOG_ONCE("unimplemented import NtWriteFile (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("NtWriteFile", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__NtYieldExecution)
 {
+    TraceImport("NtYieldExecution", ctx);
     LOG_ONCE("unimplemented import NtYieldExecution (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("NtYieldExecution", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__ObCreateSymbolicLink)
 {
+    TraceImport("ObCreateSymbolicLink", ctx);
     LOG_ONCE("unimplemented import ObCreateSymbolicLink (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("ObCreateSymbolicLink", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__ObDeleteSymbolicLink)
 {
+    TraceImport("ObDeleteSymbolicLink", ctx);
     LOG_ONCE("unimplemented import ObDeleteSymbolicLink (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("ObDeleteSymbolicLink", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__ObDereferenceObject)
 {
+    TraceImport("ObDereferenceObject", ctx);
     LOG_ONCE("unimplemented import ObDereferenceObject (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("ObDereferenceObject", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__ObReferenceObjectByHandle)
 {
+    TraceImport("ObReferenceObjectByHandle", ctx);
     LOG_ONCE("unimplemented import ObReferenceObjectByHandle (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("ObReferenceObjectByHandle", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__RtlCaptureContext)
 {
+    TraceImport("RtlCaptureContext", ctx);
     LOG_ONCE("unimplemented import RtlCaptureContext (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("RtlCaptureContext", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__RtlCompareMemoryUlong)
 {
+    TraceImport("RtlCompareMemoryUlong", ctx);
     LOG_ONCE("unimplemented import RtlCompareMemoryUlong (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("RtlCompareMemoryUlong", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__RtlEnterCriticalSection)
 {
+    TraceImport("RtlEnterCriticalSection", ctx);
     LOG_ONCE("unimplemented import RtlEnterCriticalSection (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("RtlEnterCriticalSection", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__RtlFillMemoryUlong)
 {
+    TraceImport("RtlFillMemoryUlong", ctx);
     LOG_ONCE("unimplemented import RtlFillMemoryUlong (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("RtlFillMemoryUlong", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__RtlFreeAnsiString)
 {
+    TraceImport("RtlFreeAnsiString", ctx);
     LOG_ONCE("unimplemented import RtlFreeAnsiString (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("RtlFreeAnsiString", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__RtlImageXexHeaderField)
 {
+    TraceImport("RtlImageXexHeaderField", ctx);
     LOG_ONCE("unimplemented import RtlImageXexHeaderField (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("RtlImageXexHeaderField", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__RtlInitAnsiString)
 {
+    TraceImport("RtlInitAnsiString", ctx);
     LOG_ONCE("unimplemented import RtlInitAnsiString (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("RtlInitAnsiString", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__RtlInitUnicodeString)
 {
+    TraceImport("RtlInitUnicodeString", ctx);
     LOG_ONCE("unimplemented import RtlInitUnicodeString (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("RtlInitUnicodeString", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__RtlInitializeCriticalSection)
 {
+    TraceImport("RtlInitializeCriticalSection", ctx);
     LOG_ONCE("unimplemented import RtlInitializeCriticalSection (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("RtlInitializeCriticalSection", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__RtlInitializeCriticalSectionAndSpinCount)
 {
+    TraceImport("RtlInitializeCriticalSectionAndSpinCount", ctx);
     LOG_ONCE("unimplemented import RtlInitializeCriticalSectionAndSpinCount (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("RtlInitializeCriticalSectionAndSpinCount", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__RtlLeaveCriticalSection)
 {
+    TraceImport("RtlLeaveCriticalSection", ctx);
     LOG_ONCE("unimplemented import RtlLeaveCriticalSection (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("RtlLeaveCriticalSection", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__RtlMultiByteToUnicodeN)
 {
+    TraceImport("RtlMultiByteToUnicodeN", ctx);
     LOG_ONCE("unimplemented import RtlMultiByteToUnicodeN (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("RtlMultiByteToUnicodeN", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__RtlNtStatusToDosError)
 {
+    TraceImport("RtlNtStatusToDosError", ctx);
     LOG_ONCE("unimplemented import RtlNtStatusToDosError (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("RtlNtStatusToDosError", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__RtlRaiseException)
 {
+    TraceImport("RtlRaiseException", ctx);
     LOG_ONCE("unimplemented import RtlRaiseException (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("RtlRaiseException", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__RtlTimeFieldsToTime)
 {
+    TraceImport("RtlTimeFieldsToTime", ctx);
     LOG_ONCE("unimplemented import RtlTimeFieldsToTime (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("RtlTimeFieldsToTime", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__RtlTimeToTimeFields)
 {
+    TraceImport("RtlTimeToTimeFields", ctx);
     LOG_ONCE("unimplemented import RtlTimeToTimeFields (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("RtlTimeToTimeFields", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__RtlTryEnterCriticalSection)
 {
+    TraceImport("RtlTryEnterCriticalSection", ctx);
     LOG_ONCE("unimplemented import RtlTryEnterCriticalSection (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("RtlTryEnterCriticalSection", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__RtlUnicodeStringToAnsiString)
 {
+    TraceImport("RtlUnicodeStringToAnsiString", ctx);
     LOG_ONCE("unimplemented import RtlUnicodeStringToAnsiString (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("RtlUnicodeStringToAnsiString", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__RtlUnicodeToMultiByteN)
 {
+    TraceImport("RtlUnicodeToMultiByteN", ctx);
     LOG_ONCE("unimplemented import RtlUnicodeToMultiByteN (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("RtlUnicodeToMultiByteN", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__RtlUnwind)
 {
+    TraceImport("RtlUnwind", ctx);
     LOG_ONCE("unimplemented import RtlUnwind (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("RtlUnwind", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__StfsControlDevice)
 {
+    TraceImport("StfsControlDevice", ctx);
     LOG_ONCE("unimplemented import StfsControlDevice (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("StfsControlDevice", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__StfsCreateDevice)
 {
+    TraceImport("StfsCreateDevice", ctx);
     LOG_ONCE("unimplemented import StfsCreateDevice (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("StfsCreateDevice", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__VdCallGraphicsNotificationRoutines)
 {
+    TraceImport("VdCallGraphicsNotificationRoutines", ctx);
     LOG_ONCE("unimplemented import VdCallGraphicsNotificationRoutines (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("VdCallGraphicsNotificationRoutines", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__VdEnableDisableClockGating)
 {
+    TraceImport("VdEnableDisableClockGating", ctx);
     LOG_ONCE("unimplemented import VdEnableDisableClockGating (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("VdEnableDisableClockGating", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__VdEnableRingBufferRPtrWriteBack)
 {
+    TraceImport("VdEnableRingBufferRPtrWriteBack", ctx);
     LOG_ONCE("unimplemented import VdEnableRingBufferRPtrWriteBack (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("VdEnableRingBufferRPtrWriteBack", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__VdGetCurrentDisplayGamma)
 {
+    TraceImport("VdGetCurrentDisplayGamma", ctx);
     LOG_ONCE("unimplemented import VdGetCurrentDisplayGamma (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("VdGetCurrentDisplayGamma", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__VdGetCurrentDisplayInformation)
 {
+    TraceImport("VdGetCurrentDisplayInformation", ctx);
     LOG_ONCE("unimplemented import VdGetCurrentDisplayInformation (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("VdGetCurrentDisplayInformation", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__VdGetSystemCommandBuffer)
 {
+    TraceImport("VdGetSystemCommandBuffer", ctx);
     LOG_ONCE("unimplemented import VdGetSystemCommandBuffer (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("VdGetSystemCommandBuffer", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__VdInitializeEngines)
 {
+    TraceImport("VdInitializeEngines", ctx);
     LOG_ONCE("unimplemented import VdInitializeEngines (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("VdInitializeEngines", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__VdInitializeRingBuffer)
 {
+    TraceImport("VdInitializeRingBuffer", ctx);
     LOG_ONCE("unimplemented import VdInitializeRingBuffer (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("VdInitializeRingBuffer", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__VdInitializeScalerCommandBuffer)
 {
+    TraceImport("VdInitializeScalerCommandBuffer", ctx);
     LOG_ONCE("unimplemented import VdInitializeScalerCommandBuffer (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("VdInitializeScalerCommandBuffer", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__VdIsHSIOTrainingSucceeded)
 {
+    TraceImport("VdIsHSIOTrainingSucceeded", ctx);
     LOG_ONCE("unimplemented import VdIsHSIOTrainingSucceeded (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("VdIsHSIOTrainingSucceeded", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__VdPersistDisplay)
 {
+    TraceImport("VdPersistDisplay", ctx);
     LOG_ONCE("unimplemented import VdPersistDisplay (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("VdPersistDisplay", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__VdQueryVideoFlags)
 {
+    TraceImport("VdQueryVideoFlags", ctx);
     LOG_ONCE("unimplemented import VdQueryVideoFlags (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("VdQueryVideoFlags", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__VdQueryVideoMode)
 {
+    TraceImport("VdQueryVideoMode", ctx);
     LOG_ONCE("unimplemented import VdQueryVideoMode (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("VdQueryVideoMode", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__VdRetrainEDRAM)
 {
+    TraceImport("VdRetrainEDRAM", ctx);
     LOG_ONCE("unimplemented import VdRetrainEDRAM (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("VdRetrainEDRAM", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__VdRetrainEDRAMWorker)
 {
+    TraceImport("VdRetrainEDRAMWorker", ctx);
     LOG_ONCE("unimplemented import VdRetrainEDRAMWorker (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("VdRetrainEDRAMWorker", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__VdSetDisplayMode)
 {
+    TraceImport("VdSetDisplayMode", ctx);
     LOG_ONCE("unimplemented import VdSetDisplayMode (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("VdSetDisplayMode", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__VdSetGraphicsInterruptCallback)
 {
+    TraceImport("VdSetGraphicsInterruptCallback", ctx);
     LOG_ONCE("unimplemented import VdSetGraphicsInterruptCallback (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("VdSetGraphicsInterruptCallback", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__VdSetSystemCommandBufferGpuIdentifierAddress)
 {
+    TraceImport("VdSetSystemCommandBufferGpuIdentifierAddress", ctx);
     LOG_ONCE("unimplemented import VdSetSystemCommandBufferGpuIdentifierAddress (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("VdSetSystemCommandBufferGpuIdentifierAddress", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__VdShutdownEngines)
 {
+    TraceImport("VdShutdownEngines", ctx);
     LOG_ONCE("unimplemented import VdShutdownEngines (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("VdShutdownEngines", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__VdSwap)
 {
+    TraceImport("VdSwap", ctx);
     LOG_ONCE("unimplemented import VdSwap (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("VdSwap", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XAudioGetVoiceCategoryVolume)
 {
+    TraceImport("XAudioGetVoiceCategoryVolume", ctx);
     LOG_ONCE("unimplemented import XAudioGetVoiceCategoryVolume (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XAudioGetVoiceCategoryVolume", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XAudioGetVoiceCategoryVolumeChangeMask)
 {
+    TraceImport("XAudioGetVoiceCategoryVolumeChangeMask", ctx);
     LOG_ONCE("unimplemented import XAudioGetVoiceCategoryVolumeChangeMask (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XAudioGetVoiceCategoryVolumeChangeMask", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XAudioRegisterRenderDriverClient)
 {
+    TraceImport("XAudioRegisterRenderDriverClient", ctx);
     LOG_ONCE("unimplemented import XAudioRegisterRenderDriverClient (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XAudioRegisterRenderDriverClient", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XAudioSubmitRenderDriverFrame)
 {
+    TraceImport("XAudioSubmitRenderDriverFrame", ctx);
     LOG_ONCE("unimplemented import XAudioSubmitRenderDriverFrame (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XAudioSubmitRenderDriverFrame", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XAudioUnregisterRenderDriverClient)
 {
+    TraceImport("XAudioUnregisterRenderDriverClient", ctx);
     LOG_ONCE("unimplemented import XAudioUnregisterRenderDriverClient (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XAudioUnregisterRenderDriverClient", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XGetAVPack)
 {
+    TraceImport("XGetAVPack", ctx);
     LOG_ONCE("unimplemented import XGetAVPack (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XGetAVPack", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XGetGameRegion)
 {
+    TraceImport("XGetGameRegion", ctx);
     LOG_ONCE("unimplemented import XGetGameRegion (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XGetGameRegion", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XGetLanguage)
 {
+    TraceImport("XGetLanguage", ctx);
     LOG_ONCE("unimplemented import XGetLanguage (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XGetLanguage", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XGetVideoMode)
 {
+    TraceImport("XGetVideoMode", ctx);
     LOG_ONCE("unimplemented import XGetVideoMode (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XGetVideoMode", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XMACreateContext)
 {
+    TraceImport("XMACreateContext", ctx);
     LOG_ONCE("unimplemented import XMACreateContext (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XMACreateContext", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XMADisableContext)
 {
+    TraceImport("XMADisableContext", ctx);
     LOG_ONCE("unimplemented import XMADisableContext (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XMADisableContext", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XMAEnableContext)
 {
+    TraceImport("XMAEnableContext", ctx);
     LOG_ONCE("unimplemented import XMAEnableContext (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XMAEnableContext", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XMAGetInputBufferReadOffset)
 {
+    TraceImport("XMAGetInputBufferReadOffset", ctx);
     LOG_ONCE("unimplemented import XMAGetInputBufferReadOffset (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XMAGetInputBufferReadOffset", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XMAGetOutputBufferReadOffset)
 {
+    TraceImport("XMAGetOutputBufferReadOffset", ctx);
     LOG_ONCE("unimplemented import XMAGetOutputBufferReadOffset (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XMAGetOutputBufferReadOffset", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XMAGetOutputBufferWriteOffset)
 {
+    TraceImport("XMAGetOutputBufferWriteOffset", ctx);
     LOG_ONCE("unimplemented import XMAGetOutputBufferWriteOffset (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XMAGetOutputBufferWriteOffset", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XMAInitializeContext)
 {
+    TraceImport("XMAInitializeContext", ctx);
     LOG_ONCE("unimplemented import XMAInitializeContext (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XMAInitializeContext", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XMAIsInputBuffer0Valid)
 {
+    TraceImport("XMAIsInputBuffer0Valid", ctx);
     LOG_ONCE("unimplemented import XMAIsInputBuffer0Valid (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XMAIsInputBuffer0Valid", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XMAIsInputBuffer1Valid)
 {
+    TraceImport("XMAIsInputBuffer1Valid", ctx);
     LOG_ONCE("unimplemented import XMAIsInputBuffer1Valid (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XMAIsInputBuffer1Valid", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XMAIsOutputBufferValid)
 {
+    TraceImport("XMAIsOutputBufferValid", ctx);
     LOG_ONCE("unimplemented import XMAIsOutputBufferValid (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XMAIsOutputBufferValid", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XMAReleaseContext)
 {
+    TraceImport("XMAReleaseContext", ctx);
     LOG_ONCE("unimplemented import XMAReleaseContext (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XMAReleaseContext", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XMASetInputBuffer0Valid)
 {
+    TraceImport("XMASetInputBuffer0Valid", ctx);
     LOG_ONCE("unimplemented import XMASetInputBuffer0Valid (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XMASetInputBuffer0Valid", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XMASetInputBuffer1Valid)
 {
+    TraceImport("XMASetInputBuffer1Valid", ctx);
     LOG_ONCE("unimplemented import XMASetInputBuffer1Valid (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XMASetInputBuffer1Valid", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XMASetInputBufferReadOffset)
 {
+    TraceImport("XMASetInputBufferReadOffset", ctx);
     LOG_ONCE("unimplemented import XMASetInputBufferReadOffset (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XMASetInputBufferReadOffset", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XMASetOutputBufferReadOffset)
 {
+    TraceImport("XMASetOutputBufferReadOffset", ctx);
     LOG_ONCE("unimplemented import XMASetOutputBufferReadOffset (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XMASetOutputBufferReadOffset", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XMASetOutputBufferValid)
 {
+    TraceImport("XMASetOutputBufferValid", ctx);
     LOG_ONCE("unimplemented import XMASetOutputBufferValid (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XMASetOutputBufferValid", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XMsgCancelIORequest)
 {
+    TraceImport("XMsgCancelIORequest", ctx);
     LOG_ONCE("unimplemented import XMsgCancelIORequest (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XMsgCancelIORequest", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XMsgInProcessCall)
 {
+    TraceImport("XMsgInProcessCall", ctx);
     LOG_ONCE("unimplemented import XMsgInProcessCall (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XMsgInProcessCall", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XMsgStartIORequest)
 {
+    TraceImport("XMsgStartIORequest", ctx);
     LOG_ONCE("unimplemented import XMsgStartIORequest (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XMsgStartIORequest", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XMsgStartIORequestEx)
 {
+    TraceImport("XMsgStartIORequestEx", ctx);
     LOG_ONCE("unimplemented import XMsgStartIORequestEx (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XMsgStartIORequestEx", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XNetLogonGetTitleID)
 {
+    TraceImport("XNetLogonGetTitleID", ctx);
     LOG_ONCE("unimplemented import XNetLogonGetTitleID (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XNetLogonGetTitleID", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XNotifyGetNext)
 {
+    TraceImport("XNotifyGetNext", ctx);
     LOG_ONCE("unimplemented import XNotifyGetNext (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XNotifyGetNext", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XamAlloc)
 {
+    TraceImport("XamAlloc", ctx);
     LOG_ONCE("unimplemented import XamAlloc (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XamAlloc", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XamContentClose)
 {
+    TraceImport("XamContentClose", ctx);
     LOG_ONCE("unimplemented import XamContentClose (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XamContentClose", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XamContentCreateEnumerator)
 {
+    TraceImport("XamContentCreateEnumerator", ctx);
     LOG_ONCE("unimplemented import XamContentCreateEnumerator (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XamContentCreateEnumerator", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XamContentCreateEx)
 {
+    TraceImport("XamContentCreateEx", ctx);
     LOG_ONCE("unimplemented import XamContentCreateEx (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XamContentCreateEx", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XamContentDelete)
 {
+    TraceImport("XamContentDelete", ctx);
     LOG_ONCE("unimplemented import XamContentDelete (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XamContentDelete", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XamContentFlush)
 {
+    TraceImport("XamContentFlush", ctx);
     LOG_ONCE("unimplemented import XamContentFlush (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XamContentFlush", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XamContentGetCreator)
 {
+    TraceImport("XamContentGetCreator", ctx);
     LOG_ONCE("unimplemented import XamContentGetCreator (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XamContentGetCreator", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XamContentGetDeviceData)
 {
+    TraceImport("XamContentGetDeviceData", ctx);
     LOG_ONCE("unimplemented import XamContentGetDeviceData (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XamContentGetDeviceData", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XamContentGetDeviceState)
 {
+    TraceImport("XamContentGetDeviceState", ctx);
     LOG_ONCE("unimplemented import XamContentGetDeviceState (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XamContentGetDeviceState", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XamCreateEnumeratorHandle)
 {
+    TraceImport("XamCreateEnumeratorHandle", ctx);
     LOG_ONCE("unimplemented import XamCreateEnumeratorHandle (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XamCreateEnumeratorHandle", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XamEnumerate)
 {
+    TraceImport("XamEnumerate", ctx);
     LOG_ONCE("unimplemented import XamEnumerate (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XamEnumerate", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XamFree)
 {
+    TraceImport("XamFree", ctx);
     LOG_ONCE("unimplemented import XamFree (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XamFree", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XamGetExecutionId)
 {
+    TraceImport("XamGetExecutionId", ctx);
     LOG_ONCE("unimplemented import XamGetExecutionId (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XamGetExecutionId", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XamGetPrivateEnumStructureFromHandle)
 {
+    TraceImport("XamGetPrivateEnumStructureFromHandle", ctx);
     LOG_ONCE("unimplemented import XamGetPrivateEnumStructureFromHandle (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XamGetPrivateEnumStructureFromHandle", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XamGetSystemVersion)
 {
+    TraceImport("XamGetSystemVersion", ctx);
     LOG_ONCE("unimplemented import XamGetSystemVersion (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XamGetSystemVersion", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XamInputGetCapabilities)
 {
+    TraceImport("XamInputGetCapabilities", ctx);
     LOG_ONCE("unimplemented import XamInputGetCapabilities (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XamInputGetCapabilities", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XamInputGetState)
 {
+    TraceImport("XamInputGetState", ctx);
     LOG_ONCE("unimplemented import XamInputGetState (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XamInputGetState", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XamInputSetState)
 {
+    TraceImport("XamInputSetState", ctx);
     LOG_ONCE("unimplemented import XamInputSetState (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XamInputSetState", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XamLoaderGetLaunchData)
 {
+    TraceImport("XamLoaderGetLaunchData", ctx);
     LOG_ONCE("unimplemented import XamLoaderGetLaunchData (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XamLoaderGetLaunchData", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XamLoaderGetLaunchDataSize)
 {
+    TraceImport("XamLoaderGetLaunchDataSize", ctx);
     LOG_ONCE("unimplemented import XamLoaderGetLaunchDataSize (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XamLoaderGetLaunchDataSize", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XamLoaderLaunchTitle)
 {
+    TraceImport("XamLoaderLaunchTitle", ctx);
     LOG_ONCE("unimplemented import XamLoaderLaunchTitle (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XamLoaderLaunchTitle", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XamLoaderSetLaunchData)
 {
+    TraceImport("XamLoaderSetLaunchData", ctx);
     LOG_ONCE("unimplemented import XamLoaderSetLaunchData (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XamLoaderSetLaunchData", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XamLoaderTerminateTitle)
 {
+    TraceImport("XamLoaderTerminateTitle", ctx);
     LOG_ONCE("unimplemented import XamLoaderTerminateTitle (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XamLoaderTerminateTitle", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XamNotifyCreateListener)
 {
+    TraceImport("XamNotifyCreateListener", ctx);
     LOG_ONCE("unimplemented import XamNotifyCreateListener (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XamNotifyCreateListener", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XamSessionCreateHandle)
 {
+    TraceImport("XamSessionCreateHandle", ctx);
     LOG_ONCE("unimplemented import XamSessionCreateHandle (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XamSessionCreateHandle", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XamSessionRefObjByHandle)
 {
+    TraceImport("XamSessionRefObjByHandle", ctx);
     LOG_ONCE("unimplemented import XamSessionRefObjByHandle (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XamSessionRefObjByHandle", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XamShowDeviceSelectorUI)
 {
+    TraceImport("XamShowDeviceSelectorUI", ctx);
     LOG_ONCE("unimplemented import XamShowDeviceSelectorUI (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XamShowDeviceSelectorUI", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XamShowDirtyDiscErrorUI)
 {
+    TraceImport("XamShowDirtyDiscErrorUI", ctx);
     LOG_ONCE("unimplemented import XamShowDirtyDiscErrorUI (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XamShowDirtyDiscErrorUI", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XamShowFriendsUI)
 {
+    TraceImport("XamShowFriendsUI", ctx);
     LOG_ONCE("unimplemented import XamShowFriendsUI (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XamShowFriendsUI", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XamShowGamerCardUIForXUID)
 {
+    TraceImport("XamShowGamerCardUIForXUID", ctx);
     LOG_ONCE("unimplemented import XamShowGamerCardUIForXUID (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XamShowGamerCardUIForXUID", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XamShowKeyboardUI)
 {
+    TraceImport("XamShowKeyboardUI", ctx);
     LOG_ONCE("unimplemented import XamShowKeyboardUI (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XamShowKeyboardUI", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XamShowMessageBoxUI)
 {
+    TraceImport("XamShowMessageBoxUI", ctx);
     LOG_ONCE("unimplemented import XamShowMessageBoxUI (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XamShowMessageBoxUI", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XamShowMessageBoxUIEx)
 {
+    TraceImport("XamShowMessageBoxUIEx", ctx);
     LOG_ONCE("unimplemented import XamShowMessageBoxUIEx (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XamShowMessageBoxUIEx", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XamShowSigninUI)
 {
+    TraceImport("XamShowSigninUI", ctx);
     LOG_ONCE("unimplemented import XamShowSigninUI (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XamShowSigninUI", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XamTaskCloseHandle)
 {
+    TraceImport("XamTaskCloseHandle", ctx);
     LOG_ONCE("unimplemented import XamTaskCloseHandle (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XamTaskCloseHandle", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XamTaskSchedule)
 {
+    TraceImport("XamTaskSchedule", ctx);
     LOG_ONCE("unimplemented import XamTaskSchedule (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XamTaskSchedule", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XamTaskShouldExit)
 {
+    TraceImport("XamTaskShouldExit", ctx);
     LOG_ONCE("unimplemented import XamTaskShouldExit (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XamTaskShouldExit", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XamUserAreUsersFriends)
 {
+    TraceImport("XamUserAreUsersFriends", ctx);
     LOG_ONCE("unimplemented import XamUserAreUsersFriends (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XamUserAreUsersFriends", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XamUserCheckPrivilege)
 {
+    TraceImport("XamUserCheckPrivilege", ctx);
     LOG_ONCE("unimplemented import XamUserCheckPrivilege (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XamUserCheckPrivilege", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XamUserCreateStatsEnumerator)
 {
+    TraceImport("XamUserCreateStatsEnumerator", ctx);
     LOG_ONCE("unimplemented import XamUserCreateStatsEnumerator (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XamUserCreateStatsEnumerator", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XamUserGetName)
 {
+    TraceImport("XamUserGetName", ctx);
     LOG_ONCE("unimplemented import XamUserGetName (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XamUserGetName", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XamUserGetSigninState)
 {
+    TraceImport("XamUserGetSigninState", ctx);
     LOG_ONCE("unimplemented import XamUserGetSigninState (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XamUserGetSigninState", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XamUserGetXUID)
 {
+    TraceImport("XamUserGetXUID", ctx);
     LOG_ONCE("unimplemented import XamUserGetXUID (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XamUserGetXUID", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XamUserReadProfileSettings)
 {
+    TraceImport("XamUserReadProfileSettings", ctx);
     LOG_ONCE("unimplemented import XamUserReadProfileSettings (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XamUserReadProfileSettings", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XamVoiceClose)
 {
+    TraceImport("XamVoiceClose", ctx);
     LOG_ONCE("unimplemented import XamVoiceClose (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XamVoiceClose", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XamVoiceCreate)
 {
+    TraceImport("XamVoiceCreate", ctx);
     LOG_ONCE("unimplemented import XamVoiceCreate (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XamVoiceCreate", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XamVoiceHeadsetPresent)
 {
+    TraceImport("XamVoiceHeadsetPresent", ctx);
     LOG_ONCE("unimplemented import XamVoiceHeadsetPresent (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XamVoiceHeadsetPresent", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XamVoiceSubmitPacket)
 {
+    TraceImport("XamVoiceSubmitPacket", ctx);
     LOG_ONCE("unimplemented import XamVoiceSubmitPacket (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XamVoiceSubmitPacket", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XeCryptSha)
 {
+    TraceImport("XeCryptSha", ctx);
     LOG_ONCE("unimplemented import XeCryptSha (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XeCryptSha", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XeCryptShaFinal)
 {
+    TraceImport("XeCryptShaFinal", ctx);
     LOG_ONCE("unimplemented import XeCryptShaFinal (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XeCryptShaFinal", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XeCryptShaInit)
 {
+    TraceImport("XeCryptShaInit", ctx);
     LOG_ONCE("unimplemented import XeCryptShaInit (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XeCryptShaInit", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XeCryptShaUpdate)
 {
+    TraceImport("XeCryptShaUpdate", ctx);
     LOG_ONCE("unimplemented import XeCryptShaUpdate (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XeCryptShaUpdate", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XeKeysConsolePrivateKeySign)
 {
+    TraceImport("XeKeysConsolePrivateKeySign", ctx);
     LOG_ONCE("unimplemented import XeKeysConsolePrivateKeySign (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XeKeysConsolePrivateKeySign", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XeKeysConsoleSignatureVerification)
 {
+    TraceImport("XeKeysConsoleSignatureVerification", ctx);
     LOG_ONCE("unimplemented import XeKeysConsoleSignatureVerification (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XeKeysConsoleSignatureVerification", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XexCheckExecutablePrivilege)
 {
+    TraceImport("XexCheckExecutablePrivilege", ctx);
     LOG_ONCE("unimplemented import XexCheckExecutablePrivilege (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XexCheckExecutablePrivilege", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XexGetModuleHandle)
 {
+    TraceImport("XexGetModuleHandle", ctx);
     LOG_ONCE("unimplemented import XexGetModuleHandle (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XexGetModuleHandle", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XexGetModuleSection)
 {
+    TraceImport("XexGetModuleSection", ctx);
     LOG_ONCE("unimplemented import XexGetModuleSection (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XexGetModuleSection", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__XexGetProcedureAddress)
 {
+    TraceImport("XexGetProcedureAddress", ctx);
     LOG_ONCE("unimplemented import XexGetProcedureAddress (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("XexGetProcedureAddress", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp____C_specific_handler)
 {
+    TraceImport("__C_specific_handler", ctx);
     LOG_ONCE("unimplemented import __C_specific_handler (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("__C_specific_handler", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp___vsnprintf)
 {
+    TraceImport("_vsnprintf", ctx);
     LOG_ONCE("unimplemented import _vsnprintf (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("_vsnprintf", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__sprintf)
 {
+    TraceImport("sprintf", ctx);
     LOG_ONCE("unimplemented import sprintf (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("sprintf", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__vsprintf)
 {
+    TraceImport("vsprintf", ctx);
     LOG_ONCE("unimplemented import vsprintf (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("vsprintf", ctx);
 }
 
 __attribute__((weak)) PPC_FUNC(__imp__vswprintf)
 {
+    TraceImport("vswprintf", ctx);
     LOG_ONCE("unimplemented import vswprintf (lr %08llX)", ctx.lr);
     Return(ctx, 0);
+    TraceImportReturn("vswprintf", ctx);
 }
 

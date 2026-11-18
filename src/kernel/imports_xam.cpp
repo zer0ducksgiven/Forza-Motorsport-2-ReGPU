@@ -22,6 +22,7 @@ std::atomic<int64_t> g_inputEpochNs{ 0 };
 #include "kernel/sessions.h"
 #include "kernel/wheel_ff.h"
 #include "debug.h"
+#include "hooks/autodrive.h"
 #include "kernel/imports.h"
 #include "kernel/runtime.h"
 #include "kernel/thread.h"
@@ -1025,6 +1026,17 @@ bool ReadPad(uint32_t user, PadState& s)
                 }
                 else if (step.rfind("WAIT:", 0) == 0)
                     advance = elapsed >= atof(step.c_str() + 5);
+                else if (step.rfind("SWITCH:", 0) == 0)
+                {
+                    // "SWITCH:FM2_NAME": turn a live switch on (auto-drive, the FPS meter, at a point in the route); a
+                    // switch that is on already is flipped off and on, so a reset switch fires again.
+                    const std::string name = step.substr(7);
+                    for (auto& [n, on] : LiveSwitch::List())
+                        if (n == name && on)
+                            LiveSwitch::Set(name, false);
+                    LiveSwitch::Set(name, true);
+                    advance = true;
+                }
                 else if (step == "IDLE")
                 {
                     advance = elapsed >= 2.0 && RendererCompileIdle();
@@ -1176,6 +1188,18 @@ bool ReadPad(uint32_t user, PadState& s)
                     first = false;
                 }
             }
+        }
+    }
+    // Auto-drive (hooks/autodrive.h): the stick and triggers it decides, for player 1.
+    if (int16_t lx = 0; user == 0)
+    {
+        uint8_t throttle = 0, brake = 0;
+        if (AutodrivePad(lx, throttle, brake))
+        {
+            connected = true;
+            s.lx = lx;
+            s.rightTrigger = std::max(s.rightTrigger, throttle);
+            s.leftTrigger = std::max(s.leftTrigger, brake);
         }
     }
     // The debug server's input (debug.cpp) on top of everything else.

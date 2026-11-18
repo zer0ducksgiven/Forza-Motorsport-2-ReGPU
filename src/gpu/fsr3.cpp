@@ -19,6 +19,9 @@
 
 #include "log.h"
 
+#include <cstdlib>
+#include <vector>
+
 namespace
 {
 struct Fsr3

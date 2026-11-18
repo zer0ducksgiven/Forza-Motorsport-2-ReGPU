@@ -1,3 +1,4 @@
+#include "gpu/hyper.h"
 // The player's system in out\play.log at boot: OS (with its update), Wine/Proton, CPU, memory,
 // every GPU with its driver version, the displays, and what the D3D12 driver supports. Bug reports
 // arrive as a log; this makes them say what they ran on.
@@ -185,4 +186,5 @@ void LogSystemInfo(ID3D12Device* device)
     Log("system: settings %ux%u %s, vsync %s, max %u fps, MSAA %ux, anisotropic %ux, upscaler %s%s%s%s", st.width, st.height, st.fullscreen ? "fullscreen" : "windowed",
         st.vsync ? "on" : "off", st.maxFps, st.msaa, st.anisotropy, upscalers[std::min<uint32_t>(uint32_t(st.upscaler), 4)], st.enhance ? ", enhanced lighting" : "", st.lowPerformance ? ", low performance mode" : "",
         st.vertexArena ? "" : ", vertex arena off");
+    HyperLogSummary();
 }

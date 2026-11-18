@@ -1,3 +1,6 @@
 [submodule "thirdparty/ReXenon"]
 	path = thirdparty/ReXenon
 	url = https://github.com/zer0ducksgiven/ReXenon
+[submodule "thirdparty/meshoptimizer"]
+	path = thirdparty/meshoptimizer
+	url = https://github.com/zeux/meshoptimizer

@@ -13,6 +13,7 @@ const pending = new Map()
 if (host) host.addEventListener("message", (e) => {
   const m = e.data
   if (m.event === "progress") return onProgress(m.data)
+  if (m.event === "hyper") { if (state) { state.hyper = m.data; render() } return }
   const p = pending.get(m.id)
   if (!p) return
   pending.delete(m.id)
@@ -219,6 +220,9 @@ function render() {
   for (const k of ["smaa", "renderScale", "upscaler", "sharpening"]) $(k).disabled = vulkan
   // Off renders at full resolution with no upscaling or sharpening pass.
   for (const k of ["renderScale", "sharpening"]) $(k).disabled ||= set.upscaler === "off"
+  // Hypermode (its own window, hyper.html): Direct3D 12 only.
+  $("hyperOpen").disabled = vulkan
+  $("hyperSub").textContent = vulkan ? "Not available with the Vulkan renderer" : s.hyper && s.hyper.enabled ? "On: " + s.hyper.preset : "Off"
   fill($("language"), o.languages.map((l) => ({ value: l.id, name: l.name })), set.language)
   fill($("musicVolume"), [10, 20, 30, 40, 50, 60, 70, 80, 90, 100].map((v) => ({ value: v, name: v + "%" })), set.musicVolume)
   $("lang-note").textContent = o.missingLanguages.length
@@ -446,6 +450,21 @@ $("vulkan").onclick = async () => {
     + "graphics options don't work with it yet. If something goes wrong, turn it off here to go back to Direct3D 12.",
     "I understand")
   if (ok) change({ renderer: "vulkan" })
+}
+// Hypermode Options: while it is off, the window opens after a warning that says what it is for.
+$("hyperOpen").onclick = async () => {
+  if (!(state.hyper && state.hyper.enabled)) {
+    const ok = await confirmBox("Hypermode (experimental)",
+      "Hypermode is a set of extra performance options by ircluzar, made for very weak graphics hardware: integrated "
+      + "graphics, old laptops and handhelds that can't reach a steady frame rate at 720p. It makes the graphics card's "
+      + "work cheaper instead of removing effects: softer reflections and glow, simpler distant scenery, tiny far-away "
+      + "objects left out, and leaner shaders. The picture can look worse, and some options rebuild every shader the next "
+      + "time the game starts, which takes several minutes once. On a gaming PC with a dedicated graphics card it gains "
+      + "little or nothing: leave it off there. Nothing changes until you turn it on in the window that opens.",
+      "I understand")
+    if (!ok) return
+  }
+  guarded(() => call("hyper.open"))
 }
 $("resolution").onchange = (e) => change({ resolution: e.target.value })
 $("aspect").onchange = (e) => change({ aspect: e.target.value })

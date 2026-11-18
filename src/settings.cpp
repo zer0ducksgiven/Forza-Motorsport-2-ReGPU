@@ -1,5 +1,9 @@
 // Player settings (see settings.h): a small key=value file.
 #include "settings.h"
+#include "gpu/hyper.h"
+
+#include <utility>
+#include <vector>
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -18,6 +22,7 @@ namespace
 {
 Settings g_settings;
 bool g_loaded = false;
+HyperSettings g_hyperSettings; // settings.ini's hyper keys, handed to Hyper after loading
 
 std::filesystem::path Path() { return UserDir() / "settings.ini"; }
 
@@ -64,6 +69,68 @@ static bool UnderWine()
 {
     const HMODULE ntdll = GetModuleHandleA("ntdll.dll");
     return ntdll && GetProcAddress(ntdll, "wine_get_version");
+}
+
+// Hyper (gpu/hyper.h): the preset and each cut, from settings.ini or the launcher's hypermode.ini. False: not a Hyper key.
+bool HyperKey(const std::string& key, const std::string& value)
+{
+    if (key == "hyper")
+        g_hyperSettings.preset = value;
+    else if (key == "hyper_scene")
+        g_hyperSettings.scenePercent = atoi(value.c_str());
+    else if (key == "hyper_upscale")
+        g_hyperSettings.cheapUpscale = atoi(value.c_str());
+    else if (key == "hyper_nodiscard")
+        g_hyperSettings.noDiscard = atoi(value.c_str());
+    else if (key == "hyper_resolve1010")
+        g_hyperSettings.resolve1010 = atoi(value.c_str());
+    else if (key == "hyper_helpers")
+        g_hyperSettings.helpers = atoi(value.c_str());
+    else if (key == "hyper_aniso")
+        g_hyperSettings.aniso = atoi(value.c_str());
+    else if (key == "hyper_decimate")
+        g_hyperSettings.decimate = atoi(value.c_str());
+    // Any other hyper_<name> key sets REGPU_HYPER_<NAME> (unless the environment already does): every Hyper switch
+    // has a settings key, over the preset's default.
+    else if (key.rfind("hyper_", 0) == 0 && key.size() > 6)
+    {
+        std::string name = "REGPU_HYPER_" + key.substr(6);
+        for (char& c : name)
+            c = char(toupper(static_cast<unsigned char>(c)));
+        if (!getenv(name.c_str()))
+            _putenv_s(name.c_str(), value.c_str());
+    }
+    else
+        return false;
+    return true;
+}
+
+// Hypermode (the launcher's Graphics > Hypermode Options window): Documents/fm2/hypermode.ini, its own file so
+// that the game's Options > Graphics screen, which writes settings.ini again, leaves it alone. "enabled=1" and the
+// hyper keys above, one per cut. Direct3D 12 only.
+void LoadHypermode()
+{
+    std::ifstream in(UserDir() / "hypermode.ini");
+    std::vector<std::pair<std::string, std::string>> keys;
+    bool enabled = false;
+    std::string line;
+    while (std::getline(in, line))
+    {
+        if (!line.empty() && line.back() == '\r')
+            line.pop_back();
+        const size_t eq = line.find('=');
+        if (line.empty() || line[0] == '#' || eq == std::string::npos)
+            continue;
+        const std::string key = line.substr(0, eq), value = line.substr(eq + 1);
+        if (key == "enabled")
+            enabled = value == "1";
+        else
+            keys.emplace_back(key, value);
+    }
+    if (!enabled || g_settings.renderer == Settings::Renderer::Vulkan)
+        return;
+    for (const auto& [key, value] : keys)
+        HyperKey(key, value);
 }
 
 void Load()
@@ -150,6 +217,8 @@ void Load()
             g_settings.quality = uint32_t(atoi(value.c_str()));
         else if (key == "sharpness")
             g_settings.sharpness = float(atof(value.c_str()));
+        else
+            HyperKey(key, value);
     }
     // settings_rev 2 (0.12.1): Linux is on Direct3D 12 by default; 0.12.0 could have written renderer=vulkan there
     // without the player choosing it. The launcher reads older files the same way.
@@ -195,6 +264,17 @@ void Load()
     if (const char* v = getenv("FM2_FSR_SCALE"))
         g_settings.renderScale = uint32_t(atoi(v));
     g_settings.renderScale = std::clamp<uint32_t>(g_settings.renderScale, 50, 100);
+    LoadHypermode();
+    // Hyper (gpu/hyper.h), cut 2: the whole frame at a lower render scale, FSR 1 upscaling it (25% at the lowest).
+    HyperConfigure(g_hyperSettings);
+    // Potato is native resolution: no upscaler pass at 100% unless asked for (FM2_UPSCALER or a scene scale).
+    if (HyperLevel() == HyperPreset::Potato && !getenv("FM2_UPSCALER") && !HyperSceneScalePercent())
+        g_settings.upscaler = Settings::Upscaler::Off;
+    if (const uint32_t hyper = HyperSceneScalePercent())
+    {
+        g_settings.upscaler = Settings::Upscaler::Fsr1;
+        g_settings.renderScale = std::min(g_settings.renderScale, hyper);
+    }
     if (const char* v = getenv("FM2_UPSCALE_QUALITY"))
         g_settings.quality = uint32_t(atoi(v));
     if (const char* v = getenv("FM2_SHARPNESS"))
@@ -288,6 +368,9 @@ float Settings::SceneScale() const
     // FSR 1, 3 and 4 share the launcher's render scale (at 100% FSR 3/4 only anti-alias).
     if (upscaler == Upscaler::Fsr1 || upscaler == Upscaler::Fsr3 || upscaler == Upscaler::Fsr4)
         return float(renderScale) / 100.0f;
+    // FSR study: FM2_TEMPORAL_SCALE=<percent> sets a temporal upscaler's render scale directly (e.g. 80: 720p -> 900p).
+    if (const char* e = getenv("FM2_TEMPORAL_SCALE"))
+        return std::clamp(float(atof(e)) / 100.0f, 0.25f, 1.0f);
     // The usual presets (native, 1.5x, 1.7x, 2x, 3x per axis).
     static const float scales[] = { 1.0f, 1.0f / 1.5f, 1.0f / 1.7f, 0.5f, 1.0f / 3.0f };
     return scales[std::min<uint32_t>(quality, 4)];

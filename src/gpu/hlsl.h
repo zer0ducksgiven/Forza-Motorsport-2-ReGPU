@@ -27,8 +27,12 @@ struct TranslatedShader
     std::string error;
     std::string hlsl;
     uint32_t usedTextureSlots = 0;  // bit per fetch slot (pixel shaders)
+    uint32_t textureFetches = 0;    // texture fetch instructions in a pixel shader (Hyper measurements)
     std::vector<uint32_t> vertexFetchConstants; // vertex shaders
     std::vector<std::array<uint32_t, 4>> vertexFetchLayout; // vfl[k] for each vertex fetch (see hlsl.cpp)
+    // The first full vertex fetch: fetch constant + 1 (0: none), format | 0x100 signed, stride and offset in dwords.
+    // Hyper's mesh decimation reads positions through it.
+    std::array<uint32_t, 4> positionFetch{};
     // Float constants the code reads: c[0] up to this (exclusive), 256 with relative
     // addressing. Only these are uploaded per draw.
     uint32_t constantsUsed = 0;

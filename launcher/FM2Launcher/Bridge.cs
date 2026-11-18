@@ -133,6 +133,17 @@ public sealed class Bridge
             case "controls.active":
                 if (Controls is not null) Controls.Active = a!.GetValue<bool>();
                 return null;
+            case "hyper.open":
+                HypermodeWindow.Show(_window);
+                return null;
+            case "hyper.state": return Hypermode.State();
+            case "hyper.close":
+                _window.Invoke(_window.Close);
+                return null;
+            case "hyper.save":
+                Hypermode.Save(a.Deserialize<Hypermode.Settings>(Json)!);
+                HypermodeWindow.Changed();
+                return Hypermode.State();
             case "photos.open":
                 PhotosWindow.Show(_window);
                 return null;
@@ -363,6 +374,7 @@ public sealed class Bridge
             mods = Dlc.Mods().Where(p => p.Id != CareerMod.Roguelike.Id),
             rogue = new { available = CareerMod.Available, enabled = CareerMod.Roguelike.IsEnabled },
             online = Online.State(),
+            hyper = Hypermode.Summary(),
         };
     }
 }

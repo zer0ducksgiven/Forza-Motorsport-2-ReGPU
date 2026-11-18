@@ -28,6 +28,9 @@
 #include <shared_mutex>
 #include <regex>
 #include <unordered_set>
+#include <condition_variable>
+#include <deque>
+#include "../../thirdparty/meshoptimizer/src/meshoptimizer.h"
 #include <unordered_map>
 
 #include <d3d12.h>
@@ -37,6 +40,9 @@
 #include <wrl/client.h>
 
 #include "gpu/hlsl.h"
+#include "gpu/fps_meter.h"
+#include "gpu/hyper.h"
+#include "hooks/autodrive.h"
 #include "gpu/dlss.h"
 #include "gpu/fsr3.h"
 #include "gpu/fsrfg.h"
@@ -175,11 +181,17 @@ struct MotionUnknownStat
 };
 std::unordered_map<uint64_t, MotionUnknownStat> g_motionUnknown;
 uint32_t g_motionUnknownFrames = 0;
+bool TemporalUpscalerSet()
+{
+    const Settings& st = GetSettings();
+    return st.upscaler == Settings::Upscaler::Dlss || st.upscaler == Settings::Upscaler::Fsr3 || st.upscaler == Settings::Upscaler::Fsr4;
+}
 struct Upscale
 {
     bool tried = false, ready = false;
     ComPtr<ID3D12RootSignature> root;
-    ComPtr<ID3D12PipelineState> easu, rcas, depthCopy, gamma, enhance, pillar, view, turn;
+    ComPtr<ID3D12PipelineState> easu, rcas, depthCopy, gamma, enhance, pillar, view, turn, hyperUpscale;
+    bool gammaFused = false; // the present image already went through the gamma curve (Hyper cheap upscale)
     // Frame generation: the scene's depth and motion turned the way up the picture is shown (render size).
     ComPtr<ID3D12Resource> turnedDepth, turnedMotion;
     // This frame's motion and depth were handed to the upscaler, at this render size (ViewFrontBuffer).
@@ -355,8 +367,16 @@ float PassScale()
     thread_local Memo memo;
     const uint32_t surface = gpureg::Get(0x2000), color = gpureg::Get(0x2001) & 0xFFF, generation = g_nativeMsaaGeneration.load(std::memory_order_relaxed);
     if (surface != memo.surface || color != memo.color || generation != memo.generation || g_tallInfo != memo.tallInfo || g_tallHeight != memo.tallHeight)
-        memo = { surface, color, generation, g_tallInfo, g_tallHeight,
-            std::min(float(kWidth) / float(PassWidth()), float(kHeight) / float(PassHeight())) };
+    {
+        float scale = std::min(float(kWidth) / float(PassWidth()), float(kHeight) / float(PassHeight()));
+        // Hyper (gpu/hyper.h, helper scale): a surface narrower than half the screen is an offscreen helper
+        // (reflection views, blur and bloom levels), never the view itself: drawn smaller. Not the big or tall passes.
+        const uint32_t pitch = surface & 0x3FFF;
+        if (HyperHelperScalePercent() < 100 && pitch && pitch < kWidth / 2 && !BigPassSize() &&
+            !(g_tallHeight && (surface == g_tallInfo || TallView())))
+            scale *= float(HyperHelperScalePercent()) / 100.0f;
+        memo = { surface, color, generation, g_tallInfo, g_tallHeight, scale };
+    }
     return memo.result;
 }
 float ScaleY() { return float(OutputHeight()) / float(kHeight) * g_sceneScale * PassScale(); }
@@ -610,7 +630,7 @@ struct Renderer
     ComPtr<ID3D12RootSignature> blitRootSignature;
     ComPtr<ID3D12RootSignature> motionRootSignature; // root signature + b2 (motion-vector pipelines)
     ComPtr<ID3D12PipelineState> depthBlit;                // depth buffer -> R32_FLOAT
-    ComPtr<ID3D12PipelineState> colorBlit8, colorBlit16;  // colour -> 8888 / RGBA16F, scaled
+    ComPtr<ID3D12PipelineState> colorBlit8, colorBlit16, colorBlit1010;  // colour -> 8888 / RGBA16F, scaled
     ComPtr<ID3D12PipelineState> boxBlit8, boxBlit16;      // a texture averaged down (SceneAtGameSize)
     ComPtr<ID3D12PipelineState> depthBlitMs[9], colorBlitMs8[9], colorBlitMs16[9]; // the same from multisampled surfaces, by sample count
     ComPtr<ID3D12RootSignature> bytesRootSignature;        // depth and stencil SRVs + the blit constants
@@ -800,6 +820,14 @@ const char* g_waitWhat = "?";
 thread_local bool g_drawSamplesResolve = false;
 // FM2_PERF: GPU time per frame from timestamps at the start and end of each frame's list.
 ComPtr<ID3D12QueryHeap> g_timestamps;
+// FM2_GPU_STATS=1 (REGPU_GPU_STATS=1): D3D12 pipeline statistics over each whole frame (vertices fetched, vertex shader
+// runs, triangles, pixel shader runs), logged as per-frame averages: is a frame vertex- or pixel-bound?
+const bool g_gpuStats = getenv("FM2_GPU_STATS") != nullptr || getenv("REGPU_GPU_STATS") != nullptr;
+ComPtr<ID3D12QueryHeap> g_statsHeap;
+ComPtr<ID3D12Resource> g_statsReadback;
+bool g_statsPending[3] = {};
+D3D12_QUERY_DATA_PIPELINE_STATISTICS g_statsSum{};
+uint32_t g_statsFrames = 0;
 
 // FM2_GPU_PASSES=1: GPU time per pass (between render target switches and resolves),
 // summed by pass and logged every 2 s, to find where GPU time goes.
@@ -811,7 +839,7 @@ ComPtr<ID3D12QueryHeap> g_passQueries;
 ComPtr<ID3D12Resource> g_passReadback;
 struct PassMarkInfo
 {
-    char label[48];
+    char label[64];
     uint32_t draws; // draws in the pass this mark starts (filled at the next mark)
 };
 std::vector<PassMarkInfo> g_passMarks[3];
@@ -1586,9 +1614,12 @@ float4 psBox(float4 pos : SV_Position) : SV_Target
     Check(d->CreateGraphicsPipelineState(&pd, IID_PPV_ARGS(&g_r.colorBlit8)), "CreateGraphicsPipelineState(colour blit 8)");
     pd.RTVFormats[0] = DXGI_FORMAT_R16G16B16A16_FLOAT;
     Check(d->CreateGraphicsPipelineState(&pd, IID_PPV_ARGS(&g_r.colorBlit16)), "CreateGraphicsPipelineState(colour blit 16)");
+    pd.RTVFormats[0] = DXGI_FORMAT_R10G10B10A2_UNORM;
+    Check(d->CreateGraphicsPipelineState(&pd, IID_PPV_ARGS(&g_r.colorBlit1010)), "CreateGraphicsPipelineState(colour blit 1010)");
     ComPtr<ID3DBlob> psBox;
     Check(D3DCompile(kSource, sizeof(kSource) - 1, nullptr, nullptr, nullptr, "psBox", "ps_5_0", 0, 0, &psBox, &error), "D3DCompile(blit psBox)");
     pd.PS = { psBox->GetBufferPointer(), psBox->GetBufferSize() };
+    pd.RTVFormats[0] = DXGI_FORMAT_R16G16B16A16_FLOAT;
     Check(d->CreateGraphicsPipelineState(&pd, IID_PPV_ARGS(&g_r.boxBlit16)), "CreateGraphicsPipelineState(box blit 16)");
     pd.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
     Check(d->CreateGraphicsPipelineState(&pd, IID_PPV_ARGS(&g_r.boxBlit8)), "CreateGraphicsPipelineState(box blit 8)");
@@ -1753,12 +1784,16 @@ void Init()
         // over a long footprint breaks the shadows (black patches, glitchy car shadows). The
         // level is the player's setting (settings.ini anisotropy, 16 by default; 0 is trilinear).
         static LiveSwitch noAniso("FM2_NO_ANISO"); // A/B
-        const uint32_t anisotropy = GetSettings().anisotropy;
+        // Hyper (gpu/hyper.h): capped by the preset (2x costs about what trilinear does; 16x ~2 ms more at 720p on a Vega iGPU).
+        const uint32_t anisotropy = std::min(GetSettings().anisotropy, HyperAnisotropyCap());
         if (filters[i] == D3D12_FILTER_MIN_MAG_MIP_LINEAR && modes[i] == D3D12_TEXTURE_ADDRESS_MODE_WRAP && !noAniso && anisotropy >= 2)
         {
             samplers[i].Filter = D3D12_FILTER_ANISOTROPIC;
             samplers[i].MaxAnisotropy = anisotropy;
         }
+        // Measurement (REGPU_MEASURE_BILINEAR=1): the wrapping sampler without mip blending (bilinear, nearest mip).
+        if (i == 0 && getenv("REGPU_MEASURE_BILINEAR"))
+            samplers[i].Filter = D3D12_FILTER_MIN_MAG_LINEAR_MIP_POINT, samplers[i].MaxAnisotropy = 0;
         samplers[i].AddressU = samplers[i].AddressV = samplers[i].AddressW = modes[i];
         samplers[i].MaxLOD = D3D12_FLOAT32_MAX;
         samplers[i].ShaderRegister = i;
@@ -2024,6 +2059,10 @@ Renderer::Surface& GetSurface(bool depth, uint32_t base)
     {
         td.Format = kColorFormat;
         td.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+        // Measurement: REGPU_MEASURE_COLOR_UAV=1 also allows unordered access on the EDRAM colour surfaces, which turns off AMD's
+        // colour compression (DCC), so a resolve's transition to shader-readable no longer decompresses the whole surface.
+        if (getenv("REGPU_MEASURE_COLOR_UAV"))
+            td.Flags |= D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
         cv.Format = td.Format;
         Check(g_r.device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &td, D3D12_RESOURCE_STATE_RENDER_TARGET, &cv,
                   IID_PPV_ARGS(&s.resource)),
@@ -2052,7 +2091,11 @@ void PassMark(const char* fmt, uint32_t a, uint32_t b)
         marks.back().draws = g_passDraws;
     g_passDraws = 0;
     PassMarkInfo m{};
-    snprintf(m.label, sizeof(m.label), fmt, a, b);
+    // Hyper's pass labels: the phase (scene = drawn at the scene scale before the upscale, post = after it at full
+    // size) and the surface's width in game pixels, so each pass's cost can be put down to what it is.
+    char what[sizeof(m.label)];
+    snprintf(what, sizeof(what), fmt, a, b);
+    snprintf(m.label, sizeof(m.label), "%s w%-4u %s", g_scenePhase ? "scene" : "post ", gpureg::Get(0x2000 /* RB_SURFACE_INFO */) & 0x3FFF, what);
     C().list->EndQuery(g_passQueries.Get(), D3D12_QUERY_TYPE_TIMESTAMP, frameIndex * kPassMarks + UINT(marks.size()));
     marks.push_back(m);
 }
@@ -2316,6 +2359,36 @@ void UploadStatsHit(UploadStats& s, uint64_t key, const uint8_t* src, uint32_t b
     if (g_sw_FM2_UPLOAD_STATS_EXACT)
         if (auto it = s.bytes.find(key); it != s.bytes.end() && it->second.size() == bytes && memcmp(it->second.data(), src, bytes) != 0)
             s.staleHits++;
+}
+
+// The fetch constant's sampling mode as the shader reads it (tinfo.x): sampler (bits 0-1: 0 linear wrap, 1 linear clamp,
+// 2 point clamp, 3 point wrap), exponent adjust (8-13), border (16-17), one-axis clamp (18-19), mirror (20-23). Built
+// from the fetch dwords alone, so Hyper's per-pipeline fetch variants can read it before the draw's constants exist.
+uint32_t FetchModeBits(const TextureFetch& fetch)
+{
+    // Clamp X and Y (dword 0 bits 10-12, 13-15): 0 wrap, 1 mirrored repeat, 2 and up clamp,
+    // the odd ones mirrored once first. Filter: dword 3 bits 19-20 (mag): 0 point. With only one
+    // axis clamped (kerbs: clamped across, repeating along) the wrapping sampler is used and the
+    // shader clamps that axis (bits 18, 19). The shader mirrors first (bits 20, 21 repeat; 22, 23
+    // once): the telemetry's car diagram draws its symmetric parts mirrored, which clamped smeared
+    // the edge column across the other half (report #26). A mirrored axis is still clamped after
+    // the fold: wrapped, the filter blended the opposite edge in, a line down menu images.
+    const uint32_t clampX = (fetch.dwords[0] >> 10) & 7, clampY = (fetch.dwords[0] >> 13) & 7;
+    LiveSwitch &oldClamp = g_sw_FM2_OLD_CLAMP; // A/B: X's mode for both axes (before the kerb fix)
+    static LiveSwitch noMirror("FM2_NO_TEXTURE_MIRROR"); // A/B: mirrored modes clamped only
+    const bool clamp = oldClamp ? clampX != 0 : clampX != 0 && clampY != 0;
+    const bool point = ((fetch.dwords[3] >> 19) & 3) == 0;
+    uint32_t x = (point ? (clamp ? 2 : 3) : (clamp ? 1 : 0)) | ((uint32_t(fetch.ExpAdjust()) & 0x3F) << 8);
+    if (!clamp && !oldClamp)
+        x |= (clampX ? 1u << 18 : 0u) | (clampY ? 1u << 19 : 0u);
+    if (!oldClamp && !noMirror)
+        x |= (clampX == 1 ? 1u << 20 : 0u) | (clampY == 1 ? 1u << 21 : 0u) | (clampX >= 3 && (clampX & 1) ? 1u << 22 : 0u) |
+            (clampY >= 3 && (clampY & 1) ? 1u << 23 : 0u);
+    // Clamp to border on both axes (modes 6, 7): the shader returns the border colour
+    // outside the image (dword 5 bits 0-1: 1 white, else black).
+    if (clampX >= 6 && clampY >= 6)
+        x |= (1u << 16) | ((fetch.dwords[5] & 3) == 1 ? 1u << 17 : 0u);
+    return x;
 }
 
 // Each thread remembers this frame's descriptors (eviction only takes ones unused for frames).
@@ -2680,6 +2753,59 @@ void HdrProbeReport(uint32_t event)
     }
 }
 
+// Hyper draw culling (experiment, generic): REGPU_HYPER_CULL_PIXELS=<n> counts the pixels each main-view colour draw
+// produced (an occlusion query per draw); a draw that produced n pixels or fewer the last time it was measured is
+// skipped, except every REGPU_HYPER_CULL_RETEST (4)-th frame, when it is drawn and measured again. n=0: only draws
+// that were entirely hidden (occlusion culling); larger n also drops tiny ones (contribution culling).
+namespace drawcull
+{
+constexpr UINT kPerFrame = 4096;
+struct State { uint64_t pixels = ~0ull; bool culled = false; bool pinned = false; uint8_t flips = 0; uint64_t lastUncull = 0; };
+std::unordered_map<uint64_t, State> g_states;
+std::unordered_map<uint64_t, uint32_t> g_occurrence;
+uint64_t g_occurrenceFrame = ~0ull;
+ComPtr<ID3D12QueryHeap> g_heap;
+ComPtr<ID3D12Resource> g_readback;
+struct Pending { uint64_t key; UINT index; };
+std::vector<Pending> g_pending[kFrames];
+UINT g_used[kFrames] = {};
+uint64_t g_drawn = 0, g_skipped = 0, g_logFrame = 0, g_pinned = 0;
+int Threshold()
+{
+    static const int n = HyperCullPixels();
+    return n;
+}
+uint32_t Retest()
+{
+    static const uint32_t n = getenv("REGPU_HYPER_CULL_RETEST") ? uint32_t(std::max(1, atoi(getenv("REGPU_HYPER_CULL_RETEST")))) : 4;
+    return n;
+}
+// The finished frame in this slot: its counts update the states.
+void Collect(UINT frameIndex)
+{
+    if (g_pending[frameIndex].empty() || !g_readback)
+    {
+        g_used[frameIndex] = 0;
+        return;
+    }
+    uint64_t* counts = nullptr;
+    const D3D12_RANGE range{ size_t(frameIndex) * kPerFrame * 8, size_t(frameIndex + 1) * kPerFrame * 8 };
+    if (SUCCEEDED(g_readback->Map(0, &range, reinterpret_cast<void**>(&counts))))
+    {
+        // Summed over every occurrence of the mesh in that frame (tiles, repeats): culled only if all of them were tiny.
+        std::unordered_map<uint64_t, uint64_t> sums;
+        for (const Pending& p : g_pending[frameIndex])
+            sums[p.key] += counts[p.index];
+        for (const auto& [key, pixels] : sums)
+            g_states[key].pixels = pixels;
+        const D3D12_RANGE none{ 0, 0 };
+        g_readback->Unmap(0, &none);
+    }
+    g_pending[frameIndex].clear();
+    g_used[frameIndex] = 0;
+}
+}
+
 void BeginFrameIfNeeded()
 {
     if (g_r.listOpen)
@@ -2706,7 +2832,9 @@ void BeginFrameIfNeeded()
     RewarmPipelines();
     void FinishDepthWriteback(UINT frameIndex);
     void FinishPhotoWriteback(UINT frameIndex);
+    void FinishDriveReadback(UINT frameIndex);
     FinishDepthWriteback(UINT(&f - g_r.frames)); // this slot's previous frame has completed
+    FinishDriveReadback(UINT(&f - g_r.frames));
     FinishPhotoWriteback(UINT(&f - g_r.frames));
     static LiveSwitch perf("FM2_PERF");
     const UINT frameIndex = UINT(&f - g_r.frames);
@@ -2728,6 +2856,7 @@ void BeginFrameIfNeeded()
         }
         g_occlusionPending[frameIndex].clear();
     }
+    drawcull::Collect(frameIndex);
     if (!g_timestamps)
     {
         D3D12_QUERY_HEAP_DESC qd{};
@@ -2781,7 +2910,13 @@ void BeginFrameIfNeeded()
             }
             std::sort(top.rbegin(), top.rend());
             Log("gpu passes: %.2f ms/frame over %llu frames", sum / g_passFrames, (unsigned long long)g_passFrames);
-            for (size_t i = 0; i < top.size() && i < (g_gpuShaders ? 30u : 14u); i++)
+            {
+                double scene = 0, post = 0;
+                for (auto& [ms, label] : top)
+                    (label.rfind("scene", 0) == 0 ? scene : post) += ms;
+                Log("gpu passes: scene phase %.2f ms, post phase %.2f ms per frame", scene / g_passFrames, post / g_passFrames);
+            }
+            for (size_t i = 0; i < top.size() && i < (g_gpuShaders ? 30u : 24u); i++)
                 Log("gpu passes: %6.3f ms  %5.0f draws  %s", top[i].first / g_passFrames, double(g_passTotals[top[i].second].second) / g_passFrames,
                     top[i].second.c_str());
             g_passTotals.clear();
@@ -2850,6 +2985,49 @@ void BeginFrameIfNeeded()
     PassMark("frame start %u%u", 0, 0);
     if (g_timestamps)
         C().list->EndQuery(g_timestamps.Get(), D3D12_QUERY_TYPE_TIMESTAMP, frameIndex * 2);
+    if (g_gpuStats)
+    {
+        constexpr UINT64 kStats = sizeof(D3D12_QUERY_DATA_PIPELINE_STATISTICS);
+        if (!g_statsHeap)
+        {
+            D3D12_QUERY_HEAP_DESC qd{};
+            qd.Type = D3D12_QUERY_HEAP_TYPE_PIPELINE_STATISTICS;
+            qd.Count = kFrames;
+            g_r.device->CreateQueryHeap(&qd, IID_PPV_ARGS(&g_statsHeap));
+            g_statsReadback = CreateBuffer(kStats * kFrames, D3D12_HEAP_TYPE_READBACK, D3D12_RESOURCE_STATE_COPY_DEST);
+        }
+        // This slot's previous frame has completed (waited for above): add up its statistics.
+        if (g_statsPending[frameIndex] && g_statsReadback)
+        {
+            g_statsPending[frameIndex] = false;
+            D3D12_QUERY_DATA_PIPELINE_STATISTICS* s = nullptr;
+            const D3D12_RANGE range{ size_t(frameIndex * kStats), size_t((frameIndex + 1) * kStats) };
+            if (SUCCEEDED(g_statsReadback->Map(0, &range, reinterpret_cast<void**>(&s))))
+            {
+                const D3D12_QUERY_DATA_PIPELINE_STATISTICS& d = s[frameIndex];
+                g_statsSum.IAVertices += d.IAVertices;
+                g_statsSum.VSInvocations += d.VSInvocations;
+                g_statsSum.IAPrimitives += d.IAPrimitives;
+                g_statsSum.CInvocations += d.CInvocations;
+                g_statsSum.CPrimitives += d.CPrimitives;
+                g_statsSum.PSInvocations += d.PSInvocations;
+                const D3D12_RANGE none{ 0, 0 };
+                g_statsReadback->Unmap(0, &none);
+                if (++g_statsFrames == 120)
+                {
+                    const double n = g_statsFrames;
+                    Log("gpu stats per frame: %.0fk vertices fetched, %.0fk vertex shader runs, %.0fk triangles in, %.0fk drawn, %.0fk pixel shader runs (%.2f per output pixel)",
+                        g_statsSum.IAVertices / n / 1000, g_statsSum.VSInvocations / n / 1000, g_statsSum.IAPrimitives / n / 1000,
+                        g_statsSum.CPrimitives / n / 1000, g_statsSum.PSInvocations / n / 1000,
+                        g_statsSum.PSInvocations / n / (double(OutputWidth()) * OutputHeight()));
+                    g_statsSum = {};
+                    g_statsFrames = 0;
+                }
+            }
+        }
+        if (g_statsHeap)
+            C().list->BeginQuery(g_statsHeap.Get(), D3D12_QUERY_TYPE_PIPELINE_STATISTICS, frameIndex);
+    }
     if (const UINT64 used = f.ringUsed.load(); used > g_ringPeak)
     {
         g_ringPeak = used;
@@ -3161,6 +3339,282 @@ bool GetIndexBuffer(uint32_t base, uint32_t count, bool is32, uint32_t endian, D
     return true;
 }
 
+// ---- Hyper mesh decimation (gpu/hyper.h). A triangle-list draw of a big mesh gets a simplified index buffer:
+// the same vertices, fewer triangles. The positions come from the vertex shader's first fetch (TranslatedShader::
+// positionFetch), read from guest memory; meshoptimizer simplifies on a worker thread, keeping open borders so
+// track pieces still meet. Until a mesh is done (and for meshes it can't help) the draw uses its own indices.
+// Cached by the index data's address, size and content.
+bool DynamicBuffer(uint32_t address, uint32_t bytes);
+
+// The content hash of the index buffer GetIndexBufferLocked last returned (checked this frame), so hyperdec::Apply need not
+// hash the same indices again. REGPU_MEASURE_DOUBLE_HASH=1: Apply hashes on its own, as before (A/B).
+struct LastIndexHash { uint32_t base = 0, bytes = 0; uint64_t frame = ~0ull, hash = 0; };
+thread_local LastIndexHash g_lastIndexHash;
+namespace hyperdec
+{
+struct Mesh
+{
+    std::atomic<int> state{ 0 }; // 0 queued, 1 ready, 2 not decimated
+    std::vector<uint32_t> indices; // result: vertex IDs as in the source
+    uint64_t hash = 0, checkedFrame = ~0ull;
+    ComPtr<ID3D12Resource> buffer;
+    D3D12_INDEX_BUFFER_VIEW view{};
+    uint32_t count = 0;
+};
+struct Job
+{
+    std::shared_ptr<Mesh> mesh;
+    std::vector<uint32_t> indices; // rebased to the first vertex
+    std::vector<float> positions;  // xyz per vertex
+    uint32_t firstVertex = 0, target = 0;
+};
+std::mutex g_mutex;
+std::condition_variable g_cv;
+std::deque<Job> g_jobs;
+std::unordered_map<uint64_t, std::shared_ptr<Mesh>> g_meshes;
+std::atomic<uint32_t> g_done{ 0 }, g_kept{ 0 };
+
+void Worker()
+{
+    for (;;)
+    {
+        Job job;
+        {
+            std::unique_lock lock(g_mutex);
+            g_cv.wait(lock, [] { return !g_jobs.empty(); });
+            job = std::move(g_jobs.front());
+            g_jobs.pop_front();
+        }
+        const size_t vertices = job.positions.size() / 3;
+        std::vector<uint32_t> out(job.indices.size());
+        float error = 0;
+        static const float maxError = getenv("REGPU_HYPER_DECIMATE_ERROR") ? float(atof(getenv("REGPU_HYPER_DECIMATE_ERROR"))) : 0.2f;
+        const size_t n = meshopt_simplify(out.data(), job.indices.data(), job.indices.size(), job.positions.data(), vertices, 12, job.target,
+            maxError, meshopt_SimplifyLockBorder, &error);
+        // REGPU_HYPER_VCACHE (experiment, lossless: same triangles, new order): 1 reorders each mesh's triangles for the
+        // post-transform vertex cache (meshopt_optimizeVertexCache), 2 also for less overdraw (meshopt_optimizeOverdraw).
+        // Meshes the simplifier can't cut get the reordered original indices.
+        static const int vcache = getenv("REGPU_HYPER_VCACHE") ? atoi(getenv("REGPU_HYPER_VCACHE")) : 0;
+        const bool cut = n >= 3 && n < job.indices.size() * 9 / 10;
+        if (vcache > 0 && !cut)
+        {
+            out = job.indices;
+            out.resize(job.indices.size());
+        }
+        if (vcache > 0)
+        {
+            const size_t m = cut ? n : out.size();
+            std::vector<uint32_t> tmp(m);
+            meshopt_optimizeVertexCache(tmp.data(), out.data(), m, vertices);
+            if (vcache >= 2)
+                meshopt_optimizeOverdraw(out.data(), tmp.data(), m, job.positions.data(), vertices, 12, 1.05f);
+            else
+                std::copy(tmp.begin(), tmp.end(), out.begin());
+        }
+        if (cut || (vcache > 0 && out.size() >= 3))
+        {
+            if (cut)
+                out.resize(n);
+            for (uint32_t& i : out)
+                i += job.firstVertex;
+            job.mesh->indices = std::move(out);
+            job.mesh->state.store(1, std::memory_order_release);
+            g_done++;
+        }
+        else
+        {
+            static int logged = 0;
+            if (logged++ < 8)
+                Log("hyper decimate: %zu indices simplified only to %zu (error %.3f)", job.indices.size(), n, error);
+            job.mesh->state.store(2, std::memory_order_release);
+            g_kept++;
+        }
+    }
+}
+
+uint32_t Word(const uint8_t* p, uint32_t endian)
+{
+    uint32_t v;
+    memcpy(&v, p, 4);
+    return endian == 2 ? __builtin_bswap32(v) : endian == 1 ? ((v & 0x00FF00FFu) << 8) | ((v >> 8) & 0x00FF00FFu) : v;
+}
+
+float Half(uint16_t h)
+{
+    const uint32_t s = (h >> 15) & 1, e = (h >> 10) & 31, m = h & 1023;
+    const float v = e ? std::ldexp(1.0f + m / 1024.0f, int(e) - 15) : std::ldexp(m / 1024.0f, -14);
+    return s ? -v : v;
+}
+
+// The vertex's position, false for formats it can't read.
+bool Position(const uint8_t* v, uint32_t format, uint32_t endian, float* xyz)
+{
+    const bool isSigned = format & 0x100;
+    switch (format & 0xFF)
+    {
+    case 57: // 32_32_32_FLOAT
+    case 38: // 32_32_32_32_FLOAT
+        for (int i = 0; i < 3; i++)
+        {
+            const uint32_t w = Word(v + i * 4, endian);
+            memcpy(&xyz[i], &w, 4);
+        }
+        return std::isfinite(xyz[0]) && std::isfinite(xyz[1]) && std::isfinite(xyz[2]);
+    case 26: // 16_16_16_16
+    {
+        const uint32_t w0 = Word(v, endian), w1 = Word(v + 4, endian);
+        const uint32_t u[3] = { w0 & 0xFFFF, w0 >> 16, w1 & 0xFFFF };
+        for (int i = 0; i < 3; i++)
+            xyz[i] = isSigned ? float(int16_t(u[i])) : float(u[i]);
+        return true;
+    }
+    case 32: // 16_16_16_16_FLOAT
+    {
+        const uint32_t w0 = Word(v, endian), w1 = Word(v + 4, endian);
+        xyz[0] = Half(uint16_t(w0));
+        xyz[1] = Half(uint16_t(w0 >> 16));
+        xyz[2] = Half(uint16_t(w1));
+        return std::isfinite(xyz[0]) && std::isfinite(xyz[1]) && std::isfinite(xyz[2]);
+    }
+    }
+    return false;
+}
+
+// Replaces view and drawCount with the decimated mesh's when there is one.
+void Apply(const TranslatedShader& vs, uint32_t base, uint32_t count, bool is32, uint32_t endian, D3D12_INDEX_BUFFER_VIEW& view, uint32_t& drawCount)
+{
+    static const uint32_t kMinIndices = getenv("REGPU_HYPER_DECIMATE_MIN") ? uint32_t(atoi(getenv("REGPU_HYPER_DECIMATE_MIN"))) : 300;
+    const uint32_t percent = HyperDecimatePercent();
+    if (!percent)
+        return;
+    static uint64_t seen = 0, tooSmall = 0, noFetch = 0, dynamic = 0, used = 0, logFrame = 0;
+    seen++;
+    if (g_r.frame >= logFrame + 600)
+    {
+        logFrame = g_r.frame;
+        Log("hyper decimate: %llu draws, %llu small, %llu no position fetch, %llu dynamic, %llu decimated; meshes %u done, %u kept",
+            (unsigned long long)seen, (unsigned long long)tooSmall, (unsigned long long)noFetch, (unsigned long long)dynamic, (unsigned long long)used,
+            g_done.load(), g_kept.load());
+    }
+    if (count < kMinIndices)
+        return void(tooSmall++);
+    if (!vs.positionFetch[0] || C().worker)
+        return void(noFetch++);
+    const uint32_t k = vs.positionFetch[0] - 1, format = vs.positionFetch[1], stride = vs.positionFetch[2], offset = vs.positionFetch[3];
+    if (!stride || k >= 96)
+        return;
+    const uint32_t d0 = gpureg::Get(gpureg::FetchConstants + k * 2), d1 = gpureg::Get(gpureg::FetchConstants + k * 2 + 1);
+    const uint32_t address = d0 & 0x1FFFFFFC, bytes = ((d1 >> 2) & 0xFFFFFF) * 4, vendian = d1 & 3;
+    if (!address || !bytes || DynamicBuffer(address, bytes))
+        return void(dynamic++);
+    const uint32_t indexOffset = gpureg::Get(VGT_INDX_OFFSET);
+    const uint64_t key = (uint64_t(base) << 32) ^ (uint64_t(count) << 2) ^ (uint64_t(address) * 0x9E3779B97F4A7C15ull) ^ (uint64_t(stride) << 56) ^
+        (uint64_t(offset) << 48) ^ indexOffset;
+    static const bool started = [] { std::thread(Worker).detach(); return true; }();
+    (void)started;
+    std::shared_ptr<Mesh>& slot = g_meshes[key];
+    const uint8_t* src = GuestPtr<uint8_t>(GpuPhysToGuest(base));
+    const uint32_t indexBytes = count * (is32 ? 4 : 2);
+    if (slot && slot->checkedFrame != g_r.frame)
+    {
+        slot->checkedFrame = g_r.frame;
+        static const bool doubleHash = getenv("REGPU_MEASURE_DOUBLE_HASH") != nullptr;
+        const bool known = !doubleHash && g_lastIndexHash.frame == g_r.frame && g_lastIndexHash.base == base && g_lastIndexHash.bytes == indexBytes;
+        if ((known ? g_lastIndexHash.hash : IndexHash(src, indexBytes)) != slot->hash)
+        {
+            if (slot->buffer)
+                Frame().garbage.push_back(std::move(slot->buffer)); // (frames in flight may still draw with it)
+            slot.reset(); // new content at the same place: simplified again
+        }
+    }
+    if (!slot)
+    {
+        auto mesh = std::make_shared<Mesh>();
+        mesh->hash = g_lastIndexHash.frame == g_r.frame && g_lastIndexHash.base == base && g_lastIndexHash.bytes == indexBytes ? g_lastIndexHash.hash : IndexHash(src, indexBytes);
+        mesh->checkedFrame = g_r.frame;
+        slot = mesh;
+        Job job;
+        job.mesh = mesh;
+        job.indices.resize(count);
+        uint32_t lo = ~0u, hi = 0;
+        for (uint32_t i = 0; i < count; i++)
+        {
+            uint32_t v;
+            if (is32)
+                v = Word(src + i * 4, endian);
+            else
+            {
+                uint16_t h;
+                memcpy(&h, src + i * 2, 2);
+                v = endian ? __builtin_bswap16(h) : h;
+            }
+            job.indices[i] = v;
+            lo = std::min(lo, v);
+            hi = std::max(hi, v);
+        }
+        // Vertex ID = index + VGT_INDX_OFFSET; each within the fetch constant's buffer.
+        if (hi - lo > 1u << 20 || (uint64_t(hi) + indexOffset) * stride * 4 + uint64_t(offset) * 4 + 16 > bytes)
+        {
+            static int logged = 0;
+            if (logged++ < 8)
+                Log("hyper decimate: out of range: indices %u-%u offset %u stride %u fetch offset %u, buffer %u bytes", lo, hi, indexOffset, stride, offset, bytes);
+            mesh->state = 2;
+            return;
+        }
+        job.firstVertex = lo;
+        job.positions.resize(size_t(hi - lo + 1) * 3);
+        const uint8_t* vb = GuestPtr<uint8_t>(GpuPhysToGuest(address));
+        for (uint32_t v = lo; v <= hi; v++)
+            if (!Position(vb + ((uint64_t(v) + indexOffset) * stride + offset) * 4, format, vendian, &job.positions[size_t(v - lo) * 3]))
+            {
+                static int logged = 0;
+                if (logged++ < 8)
+                    Log("hyper decimate: position format %u (signed %d) not read", format & 0xFF, (format >> 8) & 1);
+                mesh->state = 2;
+                return;
+            }
+        for (uint32_t& i : job.indices)
+            i -= lo;
+        job.target = uint32_t(uint64_t(count) * percent / 100 / 3 * 3);
+        std::lock_guard lock(g_mutex);
+        g_jobs.push_back(std::move(job));
+        g_cv.notify_one();
+        return;
+    }
+    Mesh& m = *slot;
+    if (m.state.load(std::memory_order_acquire) != 1)
+        return;
+    if (!m.buffer)
+    {
+        const UINT64 size = UINT64(m.indices.size()) * (is32 ? 4 : 2);
+        m.buffer = CreateBuffer((size + 255) & ~255ull, D3D12_HEAP_TYPE_UPLOAD, D3D12_RESOURCE_STATE_GENERIC_READ);
+        if (!m.buffer)
+        {
+            m.state = 2;
+            return;
+        }
+        uint8_t* p = nullptr;
+        const D3D12_RANGE none{ 0, 0 };
+        m.buffer->Map(0, &none, reinterpret_cast<void**>(&p));
+        for (size_t i = 0; i < m.indices.size(); i++)
+            if (is32)
+                memcpy(p + i * 4, &m.indices[i], 4);
+            else
+            {
+                const uint16_t h = uint16_t(m.indices[i]);
+                memcpy(p + i * 2, &h, 2);
+            }
+        m.buffer->Unmap(0, nullptr);
+        m.view = { m.buffer->GetGPUVirtualAddress(), UINT(size), is32 ? DXGI_FORMAT_R32_UINT : DXGI_FORMAT_R16_UINT };
+        m.count = uint32_t(m.indices.size());
+        m.indices = {};
+    }
+    view = m.view;
+    drawCount = m.count;
+    used++;
+}
+}
+
 bool GetIndexBufferLocked(uint32_t base, uint32_t count, bool is32, uint32_t endian, D3D12_INDEX_BUFFER_VIEW& view)
 {
     IndexArena& arena = g_indexArena;
@@ -3214,6 +3668,7 @@ bool GetIndexBufferLocked(uint32_t base, uint32_t count, bool is32, uint32_t end
     {
         if (e.stagedFrame == g_r.frame)
             view.BufferLocation = e.staged;
+        g_lastIndexHash = { base, bytes, g_r.frame, e.hash };
         return true;
     }
     const bool checkedLate = g_sw_FM2_INDEX_CHECKED_LATE;
@@ -3264,6 +3719,7 @@ bool GetIndexBufferLocked(uint32_t base, uint32_t count, bool is32, uint32_t end
     if (!inserted && hash == e.hash && (!checkedLate || e.stagedFrame != ~0ull))
     {
         e.checkedFrame = g_r.frame;
+        g_lastIndexHash = { base, bytes, g_r.frame, e.hash };
         return true;
     }
     // Swap into the upload ring (as the vertex shader would read them), then copy.
@@ -3308,6 +3764,7 @@ bool GetIndexBufferLocked(uint32_t base, uint32_t count, bool is32, uint32_t end
     view.BufferLocation = e.staged;
     arena.pending.push_back({ Frame().ring.Get(), offset, e.offset, bytes });
     e.hash = hash;
+    g_lastIndexHash = { base, bytes, g_r.frame, e.hash };
     return true;
 }
 
@@ -3356,7 +3813,7 @@ ID3D12Resource* VertexCacheBeginFrame()
     // the main PC's 4070 and the FX's GTX 970), the arena would have to hash every buffer each frame
     // to see changes: 65 fps on the FX against 80 read in place. Read in place instead, from the
     // frame after the first failure. Without zero-copy the arena is the only way: it hashes.
-    if (g_r.physical && WriteWatchUnavailable())
+    if (g_r.physical && WriteWatchUnavailable() && !getenv("REGPU_MEASURE_FORCE_ARENA")) // measurement: keep the arena (hashing)
     {
         static bool logged = false;
         if (!logged)
@@ -3677,10 +4134,20 @@ struct Manifest
 // Shader cache entries' seed: pixel 3 since they compile without FM2_VERTEX_STAGE (the 1 entries
 // sampled without mipmapping); pixel 4 and vertex 5 since the register file compiles as variables
 // (RegistersAsVariables: the cache is keyed on the HLSL before that rewrite).
+// Experiment (Hyper, generic): REGPU_HYPER_SHADER_OPT=0-3 compiles game shaders with fxc optimisation level 0-3 instead of
+// D3DCOMPILE_SKIP_OPTIMIZATION (-1, the default). Slower first compiles (cached afterwards); the level is in the cache seed.
+int ShaderOptLevel()
+{
+    static const int level = getenv("REGPU_HYPER_SHADER_OPT") ? std::clamp(atoi(getenv("REGPU_HYPER_SHADER_OPT")), -1, 3) : -1;
+    return level;
+}
+
 uint64_t CacheSeed(bool pixel)
 {
-    return RegistersAsArray() ? (pixel ? 3 : 2) : (pixel ? 4 : 5);
+    const uint64_t base = RegistersAsArray() ? (pixel ? 3 : 2) : (pixel ? 4 : 5);
+    return (ShaderOptLevel() < 0 ? base : base + 16 * uint64_t(ShaderOptLevel() + 1));
 }
+
 
 std::filesystem::path ShaderCachePath(uint64_t key)
 {
@@ -3800,6 +4267,18 @@ struct ShaderCompiler
         }
     }
 
+    static UINT OptFlags()
+    {
+        switch (ShaderOptLevel())
+        {
+        case 0: return D3DCOMPILE_OPTIMIZATION_LEVEL0;
+        case 1: return D3DCOMPILE_OPTIMIZATION_LEVEL1;
+        case 2: return D3DCOMPILE_OPTIMIZATION_LEVEL2;
+        case 3: return D3DCOMPILE_OPTIMIZATION_LEVEL3;
+        default: return D3DCOMPILE_SKIP_OPTIMIZATION;
+        }
+    }
+
     static void Compile(CompiledShader& cs)
     {
         ComPtr<ID3DBlob> errors;
@@ -3815,7 +4294,7 @@ struct ShaderCompiler
         const D3D_SHADER_MACRO vertexMacros[] = { { "FM2_VERTEX_STAGE", "" }, { nullptr, nullptr } };
         const std::string hlsl = RegistersAsVariables(cs.info.hlsl);
         const HRESULT hr = D3DCompile(hlsl.data(), hlsl.size(), nullptr, cs.pixel ? nullptr : vertexMacros, nullptr, "main",
-            cs.pixel ? "ps_5_1" : "vs_5_1", D3DCOMPILE_SKIP_OPTIMIZATION | D3DCOMPILE_ENABLE_UNBOUNDED_DESCRIPTOR_TABLES, 0, &cs.code, &errors);
+            cs.pixel ? "ps_5_1" : "vs_5_1", OptFlags() | D3DCOMPILE_ENABLE_UNBOUNDED_DESCRIPTOR_TABLES, 0, &cs.code, &errors);
         const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
         if (FAILED(hr))
         {
@@ -3885,6 +4364,70 @@ bool IsPsEditAlias(uint64_t hash)
         return false;
     std::lock_guard lock(g_psEditMutex);
     return g_psEditEver.count(hash) != 0;
+}
+// Hyper lean fetch: the alias hash of a pixel shader's variant without the fetch helper's run-time texture-mode
+// checks (DrawImpl picks it per draw). Registered as an edit alias so the pipeline manifest leaves it out.
+std::unordered_set<uint64_t> g_leanFetchAliases;
+uint64_t LeanFetchAlias(uint64_t hash)
+{
+    const uint64_t alias = hash ^ 0x4C45414E46455443ull;
+    thread_local std::unordered_set<uint64_t> made;
+    if (made.insert(alias).second)
+    {
+        std::lock_guard lock(g_psEditMutex);
+        g_leanFetchAliases.insert(alias);
+        g_psEditEver.insert(alias);
+    }
+    return alias;
+}
+bool IsLeanFetchAlias(uint64_t hash)
+{
+    std::lock_guard lock(g_psEditMutex);
+    return g_leanFetchAliases.count(hash) != 0;
+}
+// Hyper lean fetch v2 (REGPU_HYPER_LEAN_FETCH=2): the variant bakes each used slot's texture-mode state (mirror, border,
+// axis clamp and exponent bits of tinfo.x, the whole tinfo.w: type and swizzle, and whether the resolve scale applies)
+// as literals, so the compiler folds the fetch helper's checks for every draw, not only plain ones.
+struct BakedFetch
+{
+    uint32_t x[32] = {}, w[32] = {};
+    uint8_t s[32] = {};
+    uint32_t fastMul = 0; // REGPU_HYPER_LEAN_FETCH=3: plain multiplies too (3D draws only, see DrawImpl)
+};
+std::unordered_map<uint64_t, BakedFetch> g_bakedFetch;
+uint64_t BakedFetchAlias(uint64_t hash, uint32_t used, const uint32_t (*tinfo)[4], const float (*tbias)[4], bool fastMul)
+{
+    BakedFetch b;
+    b.fastMul = fastMul;
+    for (uint32_t m = used; m; m &= m - 1)
+    {
+        const uint32_t slot = uint32_t(std::countr_zero(m));
+        b.x[slot] = tinfo[slot][0] & 0xFFFF00u;
+        b.w[slot] = tinfo[slot][3];
+        b.s[slot] = tbias[slot][2] > 0.0f && (tbias[slot][2] != 1.0f || tbias[slot][3] != 1.0f);
+    }
+    const uint64_t alias = Fnv(&b, sizeof(b), hash ^ 0x42414B4546455443ull);
+    thread_local std::unordered_set<uint64_t> made;
+    thread_local std::unordered_map<uint64_t, uint32_t> perShader;
+    if (!made.count(alias))
+    {
+        if (++perShader[hash] > 24)
+            return 0; // too many texture-state combinations for this shader: keep the generic one
+        made.insert(alias);
+        std::lock_guard lock(g_psEditMutex);
+        g_bakedFetch.emplace(alias, b);
+        g_psEditEver.insert(alias);
+    }
+    return alias;
+}
+bool GetBakedFetch(uint64_t hash, BakedFetch& out)
+{
+    std::lock_guard lock(g_psEditMutex);
+    auto it = g_bakedFetch.find(hash);
+    if (it == g_bakedFetch.end())
+        return false;
+    out = it->second;
+    return true;
 }
 uint64_t PsEditAlias(uint64_t hash)
 {
@@ -4080,6 +4623,7 @@ const CompiledShader& GetShaderLocked(uint64_t hash, const std::vector<uint32_t>
                 cs.info.readsLoops = base.info.readsLoops;
                 cs.info.vertexFetchLayout = std::move(layout.vertexFetchLayout);
                 cs.info.vertexFetchConstants = std::move(layout.vertexFetchConstants);
+                cs.info.positionFetch = layout.positionFetch;
                 cs.cacheKey = base.cacheKey;
                 cs.code = base.code;
                 cs.hlslSource = &base;
@@ -4223,6 +4767,148 @@ const CompiledShader& GetShaderLocked(uint64_t hash, const std::vector<uint32_t>
     // The debug edits above can read any constant: give those shaders the bool and loop constants.
     if (getenv("FM2_DEBUG_VS") || getenv("FM2_DEBUG_PS") || getenv("FM2_DEBUG_PS_ALL") || g_psEdits.load(std::memory_order_relaxed))
         cs.info.readsBools = cs.info.readsLoops = true;
+    // Measurement (ceiling, can break textures that mirror, clamp to border or are offset): REGPU_MEASURE_FAST_TFETCH=1
+    // makes every 2D texture fetch a plain sample (no run-time mirror, border, axis-clamp, texel-offset or filter checks),
+    // to measure what the generic fetch helper's checks cost.
+    // Hyper lean vertex fetch (REGPU_HYPER_LEAN_VFETCH=1, lossless): the shader's vertex fetch layout (vfl: constant slot, format,
+    // sign/normalise, stride, offset, exponent, swizzle) is fixed per vertex shader, so it is baked in as constants: the
+    // compiler folds the format switch and drops the loads a format does not use. Patched copies no longer share a compile.
+    if (!pixel && HyperLeanVFetch() && !cs.info.vertexFetchLayout.empty())
+    {
+        std::string table = "static const uint4 kVfl[" + std::to_string(cs.info.vertexFetchLayout.size()) + "] = {";
+        for (const auto& l : cs.info.vertexFetchLayout)
+            table += " uint4(" + std::to_string(l[0]) + "u, " + std::to_string(l[1]) + "u, " + std::to_string(l[2]) + "u, " + std::to_string(l[3]) + "u),";
+        table.back() = ' ';
+        table += "};\n";
+        std::string& h = cs.info.hlsl;
+        if (size_t at = h.find("float4 VFetchK(uint k, float i)"); at != std::string::npos)
+        {
+            h.insert(at, table);
+            for (const char* from : { "uint4 p = vfl[k];", "uint sw = vfl[k].w & 0xFFFu;" })
+                if (size_t f = h.find(from); f != std::string::npos)
+                    h.replace(f, strlen(from), std::string(from).replace(std::string(from).find("vfl"), 3, "kVfl"));
+        }
+    }
+    // Measurement (ceiling, can break vertices): REGPU_MEASURE_VFETCH_FIXED=1: vertex fetch always reads guest memory in place
+    // with the 32-bit byte swap (no run-time memory or endian choice).
+    if (!pixel && getenv("REGPU_MEASURE_VFETCH_FIXED"))
+        if (size_t at = cs.info.hlsl.find("return Swap(vf[fetch].z ? gphys.Load(a) : gmem.Load(a), vf[fetch].y);"); at != std::string::npos)
+            cs.info.hlsl.replace(at, strlen("return Swap(vf[fetch].z ? gphys.Load(a) : gmem.Load(a), vf[fetch].y);"),
+                "uint v = gphys.Load(a); return (v >> 24) | ((v >> 8) & 0xFF00u) | ((v << 8) & 0xFF0000u) | (v << 24);");
+    if (getenv("REGPU_MEASURE_FAST_TFETCH"))
+    {
+        const std::string from = "    float2 uv = coord.xy;\n    const float2 texelSize";
+        if (size_t at = cs.info.hlsl.find(from); at != std::string::npos)
+            cs.info.hlsl.insert(at, "    if (!vertexStage && !(filt & 4u) && pforceLod.x < 0.0) return FM2_SAMPLE_BIAS_2D(t, gSamplers[tinfo[slot].x & 3u], coord.xy, bias);\n");
+    }
+    // Measurement: REGPU_MEASURE_TFETCH_SKIP=<bitmask> drops one part of the 2D fetch helper at a time, to split the
+    // FAST_TFETCH gain: 1 mirror, 2 border, 4 axis clamp, 8 tbias scale, 16 filter override, 32 forced-LOD branch,
+    // 64 exponent adjust + swizzle (TFetch wrapper).
+    // Measurement (ceiling, can change the picture): REGPU_MEASURE_FAST_MUL=1 drops the Direct3D 9 rule that zero times
+    // anything is zero (Mul9), so multiplies are plain.
+    if (getenv("REGPU_MEASURE_FAST_MUL"))
+    {
+        auto rep = [&](const char* from, const char* to) {
+            if (size_t at = cs.info.hlsl.find(from); at != std::string::npos)
+                cs.info.hlsl.replace(at, strlen(from), to);
+        };
+        rep("float4 Mul9(float4 a, float4 b) { return (a == 0 || b == 0) ? 0 : a * b; }", "float4 Mul9(float4 a, float4 b) { return a * b; }");
+        rep("float Mul9(float a, float b) { return (a == 0 || b == 0) ? 0 : a * b; }", "float Mul9(float a, float b) { return a * b; }");
+    }
+    const char* skipEnv = getenv("REGPU_MEASURE_TFETCH_SKIP");
+    const bool leanVariant = pixel && IsLeanFetchAlias(hash);
+    if (skipEnv || leanVariant)
+    {
+        const unsigned m = (skipEnv ? unsigned(strtoul(skipEnv, nullptr, 0)) : 0u) | (leanVariant ? 1u | 2u | 4u | 8u | 32u | 64u : 0u);
+        auto kill = [&](const char* from, const char* to) {
+            if (size_t at = cs.info.hlsl.find(from); at != std::string::npos)
+                cs.info.hlsl.replace(at, strlen(from), to);
+        };
+        if (m & 1) {
+            kill("if ((tinfo[slot].x >> 20) & 1u) uv.x", "if (false) uv.x");
+            kill("if ((tinfo[slot].x >> 21) & 1u) uv.y", "if (false) uv.y");
+            kill("if ((tinfo[slot].x >> 22) & 1u) uv.x", "if (false) uv.x");
+            kill("if ((tinfo[slot].x >> 23) & 1u) uv.y", "if (false) uv.y");
+        }
+        if (m & 2) kill("if (((tinfo[slot].x >> 16) & 1u) && any(", "if (false && any(");
+        if (m & 4) {
+            kill("if ((tinfo[slot].x >> 18) & 1u) uv.x", "if (false) uv.x");
+            kill("if ((tinfo[slot].x >> 19) & 1u) uv.y", "if (false) uv.y");
+        }
+        if (m & 8) kill("if (tbias[slot].z > 0.0) uv *=", "if (false) uv *=");
+        if (m & 16) kill("if ((filt & 3u) <= 1u)\n", "if (false)\n");
+        if (m & 32) kill("if (pforceLod.x >= 0.0 || (filt & 4u))", "if (filt & 4u)");
+        if (m & 64) kill("    uint w = tinfo[slot].w;\n    if (!(w >> 31))", "    uint w = 0;\n    return v;\n    if (!(w >> 31))");
+    }
+    if (BakedFetch b; pixel && GetBakedFetch(hash, b))
+    {
+        // Measurement (ceiling, breaks the picture): REGPU_MEASURE_FLAT_MAIN=1: main-view pixel shaders return flat grey, so the
+        // compiler drops their work: what main-view pixel shading costs in all.
+        if (getenv("REGPU_MEASURE_FLAT_MAIN"))
+            if (size_t at = cs.info.hlsl.rfind("return oC[0];"); at != std::string::npos)
+                cs.info.hlsl.replace(at, 13, "return float4(0.5, 0.5, 0.5, 1);");
+        auto all = [&](const std::string& from, const std::string& to) {
+            for (size_t at = cs.info.hlsl.find(from); at != std::string::npos; at = cs.info.hlsl.find(from, at + to.size()))
+                cs.info.hlsl.replace(at, from.size(), to);
+        };
+        std::string decl = "static const uint kLeanX[32] = {";
+        for (int i = 0; i < 32; i++) decl += std::to_string(b.x[i]) + "u,";
+        decl += "};\nstatic const uint kLeanW[32] = {";
+        for (int i = 0; i < 32; i++) decl += std::to_string(b.w[i]) + "u,";
+        decl += "};\nstatic const bool kLeanS[32] = {";
+        for (int i = 0; i < 32; i++) decl += b.s[i] ? "true," : "false,";
+        decl += "};\n";
+        if (size_t at = cs.info.hlsl.find("float4 TFetchRaw(uint slot"); at != std::string::npos)
+        {
+            cs.info.hlsl.insert(at, decl);
+            all("tinfo[slot].x >> ", "kLeanX[slot] >> ");
+            all("tinfo[slot].x << 18", "kLeanX[slot] << 18");
+            all("tinfo[slot].w", "kLeanW[slot]");
+            all("if (tbias[slot].z > 0.0) uv *=", "if (kLeanS[slot]) uv *=");
+            all("pforceLod.x >= 0.0 || ", "");
+        }
+        if (b.fastMul)
+        {
+            all("float4 Mul9(float4 a, float4 b) { return (a == 0 || b == 0) ? 0 : a * b; }", "float4 Mul9(float4 a, float4 b) { return a * b; }");
+            all("float Mul9(float a, float b) { return (a == 0 || b == 0) ? 0 : a * b; }", "float Mul9(float a, float b) { return a * b; }");
+        }
+    }
+    // Measurement (ceiling, breaks filters): REGPU_MEASURE_NO_TEXEL_OFFSET=1 zeroes every fetch's texel offset, so
+    // multi-tap filters (soft shadows, blurs) collapse onto one texel.
+    if (getenv("REGPU_MEASURE_NO_TEXEL_OFFSET"))
+    {
+        const std::string from = "    float2 uv = coord.xy;\n    const float2 texelSize";
+        if (size_t at = cs.info.hlsl.find(from); at != std::string::npos)
+            cs.info.hlsl.insert(at, "    texel = float2(0.0, 0.0);\n");
+    }
+    // Experiment (Hyper, generic): REGPU_HYPER_PLAIN_MUL=1 (pixel shaders) or 2 (both stages) drops the Xenos
+    // "zero times anything is zero" rule from MUL/DOT: a plain a * b instead of a compare and select per component.
+    // Can change effects that switch terms off with a zero weight against an infinity or NaN.
+    {
+        static const int plainMul = getenv("REGPU_HYPER_PLAIN_MUL") ? atoi(getenv("REGPU_HYPER_PLAIN_MUL")) : 0;
+        // 3 (both stages): near-exact and cheaper. IEEE a * b differs from the Xenos rule only when a zero meets an infinity
+        // or NaN, and then gives NaN: so "NaN -> 0" keeps the rule with one compare (differs only for NaN times non-zero).
+        if (plainMul == 3)
+        {
+            const std::pair<const char*, const char*> swaps[] = {
+                { "float4 Mul9(float4 a, float4 b) { return (a == 0 || b == 0) ? 0 : a * b; }", "float4 Mul9(float4 a, float4 b) { float4 m = a * b; return m == m ? m : 0; }" },
+                { "float Mul9(float a, float b) { return (a == 0 || b == 0) ? 0 : a * b; }", "float Mul9(float a, float b) { float m = a * b; return m == m ? m : 0; }" },
+            };
+            for (const auto& [from, to] : swaps)
+                if (size_t at = cs.info.hlsl.find(from); at != std::string::npos)
+                    cs.info.hlsl.replace(at, strlen(from), to);
+        }
+        else if (plainMul == 2 || (plainMul == 1 && pixel) || ((plainMul == 4 || plainMul == 5) && !pixel))
+        {
+            const std::pair<const char*, const char*> swaps[] = {
+                { "float4 Mul9(float4 a, float4 b) { return (a == 0 || b == 0) ? 0 : a * b; }", "float4 Mul9(float4 a, float4 b) { return a * b; }" },
+                { "float Mul9(float a, float b) { return (a == 0 || b == 0) ? 0 : a * b; }", "float Mul9(float a, float b) { return a * b; }" },
+            };
+            for (const auto& [from, to] : swaps)
+                if (size_t at = cs.info.hlsl.find(from); at != std::string::npos)
+                    cs.info.hlsl.replace(at, strlen(from), to);
+        }
+    }
     cs.cacheKey = Fnv(cs.info.hlsl.data(), cs.info.hlsl.size(), CacheSeed(pixel));
     static LiveSwitch shaderKeys("FM2_SHADER_KEYS"); // for tools/shader_seed.py
     if (shaderKeys)
@@ -4406,6 +5092,125 @@ const CompiledShader* MotionShaderLookup(const CompiledShader& base)
     else
         g_compiler.PushQuiet(&cs);
     return &cs;
+}
+
+// Hyper (gpu/hyper.h, no-discard pixel shaders): the pixel shader without the alpha-test switch (its only discard
+// unless the guest code kills pixels itself), for draws with the alpha test off. Compiled on first use; nullptr if
+// there is nothing to take out.
+std::unordered_map<uint64_t, std::unique_ptr<CompiledShader>> g_noDiscardShaders;
+const CompiledShader* NoDiscardShader(const CompiledShader& base)
+{
+    const CompiledShader& source = base.hlslSource ? *base.hlslSource : base;
+    auto [it, inserted] = g_noDiscardShaders.try_emplace(source.cacheKey);
+    if (!inserted)
+        return it->second && it->second->state.load(std::memory_order_acquire) == CompiledShader::Ready ? it->second.get() : nullptr;
+    std::string h = source.info.hlsl;
+    const size_t s = h.rfind("    switch (pinfo.x)"), e = s == std::string::npos ? s : h.find("    }\n", s);
+    if (!source.pixel || s == std::string::npos || e == std::string::npos)
+    {
+        it->second = nullptr;
+        return nullptr;
+    }
+    h.erase(s, e + 6 - s);
+    it->second = std::make_unique<CompiledShader>();
+    CompiledShader& cs = *it->second;
+    cs.hash = source.hash;
+    cs.pixel = true;
+    cs.info = source.info;
+    cs.info.hlsl = std::move(h);
+    cs.cacheKey = Fnv(cs.info.hlsl.data(), cs.info.hlsl.size(), CacheSeed(true));
+    if (auto b = g_bytecode.find(cs.cacheKey); b != g_bytecode.end())
+    {
+        cs.code = b->second;
+        cs.state = CompiledShader::Ready;
+        return &cs;
+    }
+    if (std::ifstream in{ ShaderCachePath(cs.cacheKey), std::ios::binary | std::ios::ate })
+    {
+        const auto size = size_t(in.tellg());
+        if (size && SUCCEEDED(D3DCreateBlob(size, &cs.code)))
+        {
+            in.seekg(0);
+            in.read(static_cast<char*>(cs.code->GetBufferPointer()), std::streamsize(size));
+            cs.state = CompiledShader::Ready;
+            g_bytecode.emplace(cs.cacheKey, cs.code);
+            return &cs;
+        }
+    }
+    g_compiler.Push(&cs, false);
+    return nullptr;
+}
+
+// Hyper (experiment, REGPU_HYPER_FETCHSPEC=1): a pixel shader specialised to the sampling modes its draw binds. Each used
+// slot's mode bits (FetchModeBits: sampler, exponent, mirror, clamp, border) and cube-ness become constants in the fetch
+// helper, so the compiler drops the checks that don't apply. Sizes, descriptor index, swizzle and sub-image scale stay
+// dynamic, so one variant serves every texture bound with the same modes. `sig` holds (slot, mode bits, cube) per slot.
+std::unordered_map<uint64_t, std::unique_ptr<CompiledShader>> g_fetchSpecShaders;
+const CompiledShader* FetchSpecShader(const CompiledShader& draw, uint64_t sigHash, const std::vector<std::array<uint32_t, 3>>& sig,
+    const std::vector<std::pair<std::string, std::string>>& subs = {})
+{
+    const CompiledShader& source = draw.hlslSource ? *draw.hlslSource : draw;
+    auto [it, inserted] = g_fetchSpecShaders.try_emplace(source.cacheKey ^ (sigHash * 0x9E3779B97F4A7C15ull));
+    if (!inserted)
+        return it->second && it->second->state.load(std::memory_order_acquire) == CompiledShader::Ready ? it->second.get() : nullptr;
+    std::string h = source.info.hlsl;
+    const std::string decl = "float4 TFetchRaw(uint slot, float3 coord, bool denorm, bool vertexStage, float bias, float2 texel, uint filt);";
+    const size_t at = h.find(decl);
+    if (!source.pixel || at == std::string::npos || (sig.empty() && subs.empty()))
+    {
+        it->second = nullptr;
+        return nullptr;
+    }
+    // Climb 2 (tail / bias specialisation): constant-buffer reads that are fixed for this draw become literals.
+    for (const auto& [from, to] : subs)
+        for (size_t p = h.find(from); p != std::string::npos; p = h.find(from, p + to.size()))
+            h.replace(p, from.size(), to);
+    std::string specX = "uint SpecX(uint s)\n{\n    switch (s)\n    {\n", specCube = "bool SpecCube(uint s)\n{\n    switch (s)\n    {\n";
+    for (const auto& [slot, x, cube] : sig)
+    {
+        char line[96];
+        snprintf(line, sizeof(line), "    case %uu: return 0x%Xu;\n", slot, x);
+        specX += line;
+        snprintf(line, sizeof(line), "    case %uu: return %s;\n", slot, cube ? "true" : "false");
+        specCube += line;
+    }
+    specX += "    default: return tinfo[s].x;\n    }\n}\n";
+    specCube += "    default: return (tinfo[s].w & 0xFFu) == 3;\n    }\n}\n";
+    h.insert(at, specX + specCube);
+    const size_t body = at + specX.size() + specCube.size() + decl.size();
+    auto replaceAll = [&](const std::string& from, const std::string& to) {
+        for (size_t p = h.find(from, body); p != std::string::npos; p = h.find(from, p + to.size()))
+            h.replace(p, from.size(), to);
+    };
+    replaceAll("(tinfo[slot].w & 0xFFu) == 3", "SpecCube(slot)");
+    replaceAll("tinfo[slot].x", "SpecX(slot)");
+    it->second = std::make_unique<CompiledShader>();
+    CompiledShader& cs = *it->second;
+    cs.hash = source.hash;
+    cs.pixel = true;
+    cs.info = source.info;
+    cs.info.hlsl = std::move(h);
+    cs.cacheKey = Fnv(cs.info.hlsl.data(), cs.info.hlsl.size(), CacheSeed(true));
+    if (auto b = g_bytecode.find(cs.cacheKey); b != g_bytecode.end())
+    {
+        cs.code = b->second;
+        cs.state = CompiledShader::Ready;
+        return &cs;
+    }
+    if (std::ifstream in{ ShaderCachePath(cs.cacheKey), std::ios::binary | std::ios::ate })
+    {
+        const auto size = size_t(in.tellg());
+        if (size && SUCCEEDED(D3DCreateBlob(size, &cs.code)))
+        {
+            in.seekg(0);
+            in.read(static_cast<char*>(cs.code->GetBufferPointer()), std::streamsize(size));
+            cs.state = CompiledShader::Ready;
+            g_bytecode.emplace(cs.cacheKey, cs.code);
+            return &cs;
+        }
+    }
+    g_compiler.Push(&cs, false);
+    return nullptr;
 }
 
 // FM2_SPLIT_ALPHA_TEST (from FM3-ReGPU; FM2_NO_SPLIT_ALPHA_TEST=1 live = off): draws with the alpha test off use a
@@ -5021,7 +5826,7 @@ std::shared_ptr<PipelineEntry> EnsurePipeline(const CompiledShader& vs, const Co
     }
     auto entry = std::make_shared<PipelineEntry>();
     g_r.pipelines[key] = entry;
-    if (!motion && !IsPsEditAlias(key.ps) && !IsPsEditAlias(key.vs)) // the manifest rebuilds pipelines from the base shaders (not live edits)
+    if (!motion && !(key.flags & ((1u << 25) | (1u << 29))) &&!IsPsEditAlias(key.ps) && !IsPsEditAlias(key.vs)) // the manifest rebuilds pipelines from the base shaders (not live edits)
     {
         g_manifest.RecordShader(false, key.vs, vs.ucodeBE);
         g_manifest.RecordShader(true, key.ps, ps.ucodeBE);
@@ -5064,10 +5869,20 @@ ID3D12PipelineState* WaitForPipeline(const std::shared_ptr<PipelineEntry>& entry
     return entry->state.load() == 1 ? entry->pso.Get() : nullptr;
 }
 
+// Hyper no-discard (gpu/hyper.h): set while a draw's pipeline is looked up with its pixel shader's no-discard variant,
+// so that pipeline has its own key (the key names shaders by guest hash, the same for both).
+thread_local bool g_noDiscardKey = false;
+thread_local uint64_t g_fetchSalt = 0; // Hyper fetch specialisation: the variant's signature, folded into the PS hash (flags bit 29)
+thread_local bool g_cullProbe = false; // Hyper culling: this draw only re-measures a culled draw (REGPU_HYPER_CULL_PROBE)
 PipelineKey MakePipelineKey(uint64_t vsHash, uint64_t psHash, bool depthOnly, bool cullable)
 {
-    const uint32_t blend = gpureg::Get(RB_BLENDCONTROL0);
+    uint32_t blend = gpureg::Get(RB_BLENDCONTROL0);
     uint32_t depth = gpureg::Get(RB_DEPTHCONTROL);
+    // Measurement (ceiling, can change the picture): REGPU_MEASURE_OPAQUE_ZWRITE=1 draws every blended draw that writes
+    // depth (FM2's cars) with blending off.
+    if (static const bool opaqueZ = getenv("REGPU_MEASURE_OPAQUE_ZWRITE") != nullptr; opaqueZ && !depthOnly && (depth & 6) == 6 &&
+        (blend & 0xFF1F1F1F) != 0x00010001)
+        blend = 0x00010001;
     // Debug: FM2_NO_ZTEST=a-b turns the depth test off for draws a..b-1 of the FM2_DUMP_FRAME frame.
     static uint32_t noZFrom = 0, noZTo = 0;
     static const bool noZParsed = [] { if (const char* s = getenv("FM2_NO_ZTEST")) sscanf(s, "%u-%u", &noZFrom, &noZTo); return true; }();
@@ -5078,11 +5893,15 @@ PipelineKey MakePipelineKey(uint64_t vsHash, uint64_t psHash, bool depthOnly, bo
     static LiveSwitch zFuncAlways("FM2_ZFUNC_ALWAYS");
     if (zFuncAlways)
         depth |= 0x70; // debug: depth func ALWAYS for every draw
-    const uint32_t mask = depthOnly ? 0 : gpureg::Get(RB_COLOR_MASK) & 0xF;
+    if (g_cullProbe)
+        depth &= ~4u; // the re-measure writes no depth either
+    const uint32_t mask = depthOnly || g_cullProbe ? 0 : gpureg::Get(RB_COLOR_MASK) & 0xF;
     // Stencil masks (not the reference, which is dynamic) and culling are pipeline state.
     const uint32_t stencil = gpureg::Get(RB_STENCILREFMASK) & 0xFFFF00, mode = gpureg::Get(PA_SU_SC_MODE_CNTL) & 7;
     // Alpha-to-mask (RB_COLORCONTROL bit 4): cut-out foliage and fences.
-    const bool alphaToMask = (gpureg::Get(RB_COLORCONTROL) >> 4) & 1;
+    // Hyper experiment REGPU_HYPER_A2M_TEST=1: alpha-to-mask draws use a plain alpha test instead (DrawImpl).
+    static const bool a2mTest = getenv("REGPU_HYPER_A2M_TEST") != nullptr;
+    const bool alphaToMask = ((gpureg::Get(RB_COLORCONTROL) >> 4) & 1) && !a2mTest;
     // Polygon offset's slope term (the constant one is in the vertex shader): the scale in 1/16-subpixel
     // units, kept in flags bits 8-23 (pipeline state). FM2_NO_POLY_OFFSET=1 leaves it out.
     uint32_t slope = 0;
@@ -5095,7 +5914,8 @@ PipelineKey MakePipelineKey(uint64_t vsHash, uint64_t psHash, bool depthOnly, bo
             slope = uint32_t(std::clamp(scale * 16.0f, -32768.0f, 32767.0f)) & 0xFFFF;
         }
     }
-    return PipelineKey{ vsHash, psHash, blend, depth, stencil | (mask << 24) | (mode << 28), uint32_t(alphaToMask) | (uint32_t(cullable) << 1) | (slope << 8) };
+    return PipelineKey{ vsHash, psHash ^ g_fetchSalt, blend, depth, stencil | (mask << 24) | (mode << 28),
+        uint32_t(alphaToMask) | (uint32_t(cullable) << 1) | (slope << 8) | (g_noDiscardKey ? 1u << 25 : 0u) | (g_fetchSalt ? 1u << 29 : 0u) };
 }
 
 // Alpha-blended colour draws (smoke, sparks, glows) are skippable for the moment it
@@ -5132,6 +5952,7 @@ bool SkippableDraw(bool depthOnly, uint32_t blend)
     return !opaque || GameSettled();
 }
 
+double g_pipeSplit[3] = {}; // measurement: see DrawImpl
 ID3D12PipelineState* GetPipeline(const CompiledShader& vs, const CompiledShader& ps, bool depthOnly, bool cullable, bool motion = false, bool noKill = false,
     uint32_t fetchMask = 0)
 {
@@ -5521,6 +6342,11 @@ const ResolvedTexture* ResolvedFor(const TextureFetch& fetch)
         if (r.stale)
             return nullptr;
     }
+    static const bool bySize = getenv("REGPU_HYPER_RESOLVE_BY_SIZE") && atoi(getenv("REGPU_HYPER_RESOLVE_BY_SIZE")) != 0;
+    if (bySize && (r.width != fetch.Width() || r.height != fetch.Height()))
+        for (const ResolvedTexture& spare : r.spares)
+            if (spare.resource && spare.width == fetch.Width() && spare.height == fetch.Height())
+                return &spare;
     return &r;
 }
 
@@ -6358,7 +7184,7 @@ void EnsureResolved(ResolvedTexture& dest, uint32_t width, uint32_t height, uint
             td.Format = format;
             td.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
             // Colour images can also be an upscaler's output (written by compute).
-            if (format == DXGI_FORMAT_R8G8B8A8_UNORM || format == DXGI_FORMAT_R16G16B16A16_FLOAT)
+            if (format == DXGI_FORMAT_R8G8B8A8_UNORM || format == DXGI_FORMAT_R16G16B16A16_FLOAT || format == DXGI_FORMAT_R10G10B10A2_UNORM)
                 td.Flags |= D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
             Check(g_r.device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &td,
                       D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, nullptr,
@@ -6377,6 +7203,7 @@ void EnsureResolved(ResolvedTexture& dest, uint32_t width, uint32_t height, uint
 
 // destRange: the destination's fixed-point range after the scale (the 16-bit integer range for the
 // 16-bit fixed formats); null none.
+uint32_t g_censusDestFormat = 0; // measurement: the guest destination format of the resolve being blitted
 void BlitResolve(bool depth, uint32_t base, uint32_t width, uint32_t height, DXGI_FORMAT format, const D3D12_RECT& rect, float scale, bool swapRB = false,
     const float* destRange = nullptr)
 {
@@ -6403,6 +7230,22 @@ void BlitResolve(bool depth, uint32_t base, uint32_t width, uint32_t height, DXG
     dest.frame = g_r.frame;
     dest.serial = ++g_resolveSerial;
     const D3D12_RECT sr{ rect.left, rect.top, std::min<LONG>(rect.right, width), std::min<LONG>(rect.bottom, height) };
+    // Measurement (FM2_PERF): resolves per frame by size, format and depth, every 600 frames.
+    if (static LiveSwitch perfLog("FM2_PERF"); perfLog)
+    {
+        static std::map<std::tuple<uint32_t, uint32_t, uint32_t, uint32_t, bool>, uint32_t> census;
+        static uint64_t censusStart = g_r.frame;
+        census[{ width, height, uint32_t(rect.right - rect.left) * uint32_t(rect.bottom - rect.top), uint32_t(format) * 100 + g_censusDestFormat, depth }]++;
+        if (g_r.frame - censusStart >= 600)
+        {
+            const double frames = double(g_r.frame - censusStart);
+            for (const auto& [k, n] : census)
+                Log("perf: resolve census %ux%u rect %u px format %u%s: %.2f per frame", std::get<0>(k), std::get<1>(k), std::get<2>(k),
+                    std::get<3>(k), std::get<4>(k) ? " depth" : "", n / frames);
+            census.clear();
+            censusStart = g_r.frame;
+        }
+    }
     FrameResources& f = Frame();
     if (sr.right <= sr.left || sr.bottom <= sr.top || f.descriptorsUsed >= kDescriptorsPerFrame)
         return;
@@ -6434,10 +7277,12 @@ void BlitResolve(bool depth, uint32_t base, uint32_t width, uint32_t height, DXG
     else
         TransitionColor(D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
     C().list->ResourceBarrier(barriers, b);
+    PassMark("rsv blit%.0u%.0u", 0, 0); // FM2_GPU_PASSES: the resolve's barriers end here, its blit starts
 
     const bool ms = g_msaa > 1;
     ID3D12PipelineState* pso = depth ? (ms ? g_r.depthBlitMs[g_msaa].Get() : g_r.depthBlit.Get())
         : format == DXGI_FORMAT_R8G8B8A8_UNORM ? (ms ? g_r.colorBlitMs8[g_msaa].Get() : g_r.colorBlit8.Get())
+        : format == DXGI_FORMAT_R10G10B10A2_UNORM && !ms ? g_r.colorBlit1010.Get()
         : (ms ? g_r.colorBlitMs16[g_msaa].Get() : g_r.colorBlit16.Get());
     C().list->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
     C().list->SetGraphicsRootSignature(g_r.blitRootSignature.Get());
@@ -6452,7 +7297,12 @@ void BlitResolve(bool depth, uint32_t base, uint32_t width, uint32_t height, DXG
     const D3D12_RECT hostRect = ToHost(sr);
     C().list->RSSetViewports(1, &vp);
     C().list->RSSetScissorRects(1, &hostRect);
-    C().list->DrawInstanced(3, 1, 0, 0);
+    // Measurement (ceiling, breaks the picture): REGPU_MEASURE_SKIP_RESOLVE=<min width> leaves out the copy of resolves
+    // at least that wide (game pixels).
+    static const uint32_t skipResolveWidth = getenv("REGPU_MEASURE_SKIP_RESOLVE") ? uint32_t(atoi(getenv("REGPU_MEASURE_SKIP_RESOLVE"))) : 0;
+    if (!skipResolveWidth || width < skipResolveWidth)
+        C().list->DrawInstanced(3, 1, 0, 0);
+    PassMark("rsv after%.0u%.0u", 0, 0); // FM2_GPU_PASSES: the blit is done; what follows is the resolve's tail
 
     // Depth: also the D24S8 words as 8888 (ResolvedTexture::bytes), while the depth buffer is readable.
     ID3D12PipelineState* bytesPso = ms ? g_r.depthBytesBlitMs[g_msaa].Get() : g_r.depthBytesBlit.Get();
@@ -6894,6 +7744,7 @@ bool EvaluateTemporal(uint32_t base, bool dlss)
     barrier(g_upscale.motion.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     barrier(g_upscale.reactive.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     barrier(in.output, read, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    PassMark("temporal upscaler%.0u%.0u", 0, 0); // FM2_GPU_PASSES: FSR 2/3 or DLSS dispatch starts here
     // NGX records into the real command list (after everything recorded so far).
     const bool ok = dlss ? DlssEvaluate(C().list->Real(), setup, in)
                          : GetSettings().upscaler == Settings::Upscaler::Fsr4 ? Fsr4Evaluate(g_r.device, C().list->Real(), setup, in, GetSettings().sharpness)
@@ -6942,6 +7793,7 @@ bool EvaluateTemporal(uint32_t base, bool dlss)
         pf.probeFrame = g_r.frame;
         pf.probePending = true;
     }
+    PassMark("after temporal upscaler%.0u%.0u", 0, 0);
     if (dlaa && ok)
     {
         barrier(in.output, read, D3D12_RESOURCE_STATE_COPY_SOURCE);
@@ -7034,6 +7886,9 @@ bool InitUpscale()
     pd.CS = { kGammaMain, sizeof(kGammaMain) };
     if (FAILED(g_r.device->CreateComputePipelineState(&pd, IID_PPV_ARGS(&g_upscale.gamma))))
         return false;
+    pd.CS = { kHyperUpscaleMain, sizeof(kHyperUpscaleMain) };
+    if (FAILED(g_r.device->CreateComputePipelineState(&pd, IID_PPV_ARGS(&g_upscale.hyperUpscale))))
+        return false;
     pd.CS = { kEnhanceMain, sizeof(kEnhanceMain) };
     if (FAILED(g_r.device->CreateComputePipelineState(&pd, IID_PPV_ARGS(&g_upscale.enhance))))
         return false;
@@ -7061,7 +7916,6 @@ ComPtr<ID3D12Resource> g_gammaOut;
 ComPtr<ID3D12Resource> g_enhanceOut; // enhanced lighting output (Settings::enhance)
 ComPtr<ID3D12Resource> g_pillarOut;  // ultrawide menus squeezed to 16:9 (PillarFrontBuffer)
 
-// Returns the graded copy of `image` (in COPY_SOURCE state), or null to show it as is.
 // The display's gamma table as the 17 points the gamma pass takes; false when it is off, unset or does nothing.
 bool GammaPoints(float points[17])
 {
@@ -7082,25 +7936,14 @@ bool GammaPoints(float points[17])
     return !identity;
 }
 
+// Returns the graded copy of `image` (in COPY_SOURCE state), or null to show it as is.
 ID3D12Resource* GradeFrontBuffer(ID3D12Resource* image)
 {
-    static LiveSwitch off("FM2_NO_GAMMA");
-    if (off || !g_gammaSet.load(std::memory_order_relaxed) || !InitUpscale())
+    // Hyper's cheap upscale applied the curve already (Fsr1Present).
+    if (g_upscale.gammaFused && image == g_upscale.presentOut.Get())
         return nullptr;
-    // 17 points of the table (green; the title writes equal channels), at x = k/16.
     float points[17];
-    bool identity = true;
-    for (uint32_t k = 0; k <= 16; k++)
-    {
-        const float at = k * 255.0f / 16.0f;
-        const uint32_t i = std::min(uint32_t(at), 254u);
-        const float t = at - float(i);
-        const float a = float((g_gammaTable[i].load(std::memory_order_relaxed) >> 10) & 0x3FF) / 1023.0f;
-        const float b = float((g_gammaTable[i + 1].load(std::memory_order_relaxed) >> 10) & 0x3FF) / 1023.0f;
-        points[k] = a + (b - a) * t;
-        identity &= std::fabs(points[k] - k / 16.0f) < 0.002f;
-    }
-    if (identity)
+    if (!GammaPoints(points) || !InitUpscale())
         return nullptr;
     const D3D12_RESOURCE_DESC desc = image->GetDesc();
     FrameResources& f = Frame();
@@ -7575,6 +8418,30 @@ ID3D12Resource* Fsr1Present(const ResolvedTexture& image)
         b.Transition.StateAfter = to;
         C().list->ResourceBarrier(1, &b);
     };
+    // Hyper (gpu/hyper.h): one bilinear upscale with the display gamma, in place of EASU, RCAS and the gamma pass.
+    g_upscale.gammaFused = false;
+    if (upscale && HyperCheapUpscale() && g_upscale.hyperUpscale)
+    {
+        float points[17];
+        const bool gamma = GammaPoints(points);
+        uint32_t h[24] = {};
+        if (gamma)
+            memcpy(h, points, sizeof(points));
+        h[20] = outWidth;
+        h[21] = outHeight;
+        h[22] = gamma ? 1u : 0u;
+        C().list->SetComputeRootSignature(g_upscale.root.Get());
+        C().list->SetComputeRoot32BitConstants(0, 24, h, 0);
+        barrier(g_upscale.presentOut.Get(), read, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        C().list->SetPipelineState(g_upscale.hyperUpscale.Get());
+        C().list->SetComputeRootDescriptorTable(1, Gpu(g_r.srvHeap.Get(), slots, g_r.srvStride));
+        C().list->SetComputeRootDescriptorTable(2, Gpu(g_r.srvHeap.Get(), slots + 3, g_r.srvStride));
+        C().list->Dispatch((outWidth + 7) / 8, (outHeight + 7) / 8, 1);
+        barrier(g_upscale.presentOut.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, read);
+        g_upscale.gammaFused = gamma;
+        g_drawState.Invalidate(); // the compute pipeline replaced the draw's
+        return g_upscale.presentOut.Get();
+    }
     const UINT gx = (outWidth + 15) / 16, gy = (outHeight + 15) / 16;
     C().list->SetComputeRootSignature(g_upscale.root.Get());
     C().list->SetComputeRoot32BitConstants(0, 24, c, 0);
@@ -8191,8 +9058,43 @@ ID3D12Resource* FinishFrameGen(uint32_t frontBuffer, bool graded)
     return show;
 }
 
+// Hyper frozen 3D helper passes (experiment, generic): REGPU_HYPER_FREEZE=<frames>. An offscreen surface narrower than
+// half the screen that draws with depth testing (a 3D helper view: reflections, environment or lighting views) is drawn
+// and resolved normally for that many frames, then its draws and resolves are skipped: the textures it fed keep their
+// last content (frozen reflections and lighting).
+struct FreezeState { uint64_t frames = 0, lastFrame = ~0ull; };
+std::unordered_map<uint32_t, FreezeState> g_freeze; // by RB_SURFACE_INFO
+uint32_t FreezeAfter()
+{
+    static const uint32_t after = getenv("REGPU_HYPER_FREEZE") ? uint32_t(std::max(0, atoi(getenv("REGPU_HYPER_FREEZE")))) : 0;
+    return after;
+}
+// REGPU_HYPER_FREEZE_REFRESH=<n>: a frozen surface is still drawn every n-th frame (odd n keeps double-buffered views
+// alternating). REGPU_HYPER_FREEZE_SHADOWS=1: depth-only helper passes (shadow maps) are frozen too (use with a refresh).
+uint32_t FreezeRefresh()
+{
+    static const uint32_t n = getenv("REGPU_HYPER_FREEZE_REFRESH") ? uint32_t(std::max(0, atoi(getenv("REGPU_HYPER_FREEZE_REFRESH")))) : 0;
+    return n;
+}
+bool FrozenSurface(uint32_t surfaceInfo)
+{
+    if (!FreezeAfter())
+        return false;
+    auto it = g_freeze.find(surfaceInfo);
+    if (it == g_freeze.end() || it->second.frames <= FreezeAfter())
+        return false;
+    return !(FreezeRefresh() && g_r.frame % FreezeRefresh() == 0);
+}
+
 void Resolve()
 {
+    if (FrozenSurface(gpureg::Get(0x2000)))
+    {
+        static uint64_t skipped = 0;
+        if (++skipped % 3000 == 1)
+            Log("hyper freeze: %llu resolves of frozen helper surfaces skipped", (unsigned long long)skipped);
+        return;
+    }
     g_resolveEpoch++; // texture bindings may now map to a new resolve
     if (!g_r.ok)
         Init();
@@ -8278,8 +9180,15 @@ void Resolve()
         // Destination: 8888 stays 8-bit (clamped, as the hardware does); other
         // formats keep the HDR range. The exponent bias scales colour copies.
         const uint32_t destFormat = (info >> 7) & 0x3F;
+        g_censusDestFormat = destFormat; // measurement (resolve census)
         const DXGI_FORMAT format = depth ? DXGI_FORMAT_R32_FLOAT
-            : destFormat == 6 ? DXGI_FORMAT_R8G8B8A8_UNORM : DXGI_FORMAT_R16G16B16A16_FLOAT;
+            : destFormat == 6 ? DXGI_FORMAT_R8G8B8A8_UNORM
+            // Hyper (gpu/hyper.h): k_2_10_10_10 kept at its own 32 bits (not with MSAA: no multisampled blit for it;
+            // not with a temporal upscaler, which needs the scene in half floats to run in HDR mode: in 10:10:10 it ran
+            // in LDR and every edge flickered, 6.3% of pixels parked, 14 Nov). By the setting, not the per-frame state: a scene
+            // surface made before the first temporal frame kept 10:10:10 and FSR 3 stayed in LDR.
+            : destFormat == 7 && HyperResolve1010() && g_msaa <= 1 && !TemporalUpscalerSet() ? DXGI_FORMAT_R10G10B10A2_UNORM
+            : DXGI_FORMAT_R16G16B16A16_FLOAT;
         const int bias = int32_t(info << 10) >> 26; // bits 16-21, signed
         // Bit 24 (copy swap): the destination stores red and blue exchanged; the
         // fetch swizzle swaps them back when the title samples it.
@@ -8373,6 +9282,8 @@ void Resolve()
     // Clears after a tile's resolve prepare the EDRAM for the next tile, which
     // we draw lower on the same host surface: a full-width clear covers every
     // row from the tile down.
+    if ((control >> 8) & 3)
+        PassMark("rsv clears%.0u%.0u", 0, 0); // FM2_GPU_PASSES: the clears after a resolve
     D3D12_RECT clearRect = rect;
     const uint32_t surfacePitch = gpureg::Get(RB_SURFACE_INFO) & 0x3FFF;
     static LiveSwitch noClearExtend("FM2_NO_CLEAR_EXTEND");
@@ -8400,6 +9311,8 @@ void Resolve()
         const D3D12_RECT hostClear = ToHost(clearRect);
         C().list->ClearDepthStencilView(C().dsv, D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, depth, UINT8(v & 0xFF), 1, &hostClear);
     }
+    if ((control >> 8) & 3)
+        PassMark("rsv draws after clear%.0u%.0u", 0, 0); // FM2_GPU_PASSES: the clears are done; the next draws follow
 }
 }
 
@@ -8801,15 +9714,23 @@ struct FpsOverlay
 
 bool OverlayWanted(std::vector<std::string>& lines)
 {
+    // The FPS meter (fps_meter.h, REGPU_FPS_OVERLAY=1) shows on its own; the shader lines follow when busy.
+    const bool fps = FpsMeterLines(lines);
     static LiveSwitch disabled("FM2_NO_OVERLAY");
+    // (The FPS meter alone: the overlay sized for its lines.)
+    auto meterOnly = [&] {
+        if (fps)
+            g_overlay.height = std::min<UINT>(kOverlayH, UINT(18 + lines.size() * 22));
+        return fps;
+    };
     if (disabled || GetSettings().hideShaderOverlay)
-        return false;
+        return meterOnly();
     const uint64_t nowMs = uint64_t(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
     const bool recentCold = g_stats.lastColdMs.load() && nowMs - g_stats.lastColdMs.load() < 4000;
     const bool warming = g_stats.warmTotal.load() && g_stats.warmDone.load() < g_stats.warmTotal.load();
     const bool compiling = g_stats.busy.load() != 0 || recentCold || warming || g_hold.active;
     if (!compiling && !g_fpsOverlay.visible)
-        return false;
+        return meterOnly();
     char l[160];
     lines.push_back(g_hold.active ? "FM2  preparing shaders - please wait" : compiling ? "FM2  shader compiler" : "FM2  performance");
     if (compiling)
@@ -9602,6 +10523,50 @@ void EndOcclusionQuery()
     g_occlusionPending[g_r.frameIndex].push_back({ g_occlusionOrder, g_occlusionIndex });
 }
 
+// Auto-drive (hooks/autodrive.h): every third presented frame is copied to this slot's readback buffer and
+// analysed when the slot comes round again (no stall).
+struct DriveReadback
+{
+    ComPtr<ID3D12Resource> buffer;
+    UINT width = 0, height = 0, pitch = 0;
+    bool pending = false;
+};
+DriveReadback g_driveReadback[kFrames];
+
+void FinishDriveReadback(UINT frameIndex)
+{
+    DriveReadback& d = g_driveReadback[frameIndex];
+    if (!d.pending)
+        return;
+    d.pending = false;
+    uint8_t* pixels = nullptr;
+    if (FAILED(d.buffer->Map(0, nullptr, reinterpret_cast<void**>(&pixels))) || !pixels)
+        return;
+    AutodriveAnalyze(pixels, d.width, d.height, d.pitch);
+    const D3D12_RANGE none{ 0, 0 };
+    d.buffer->Unmap(0, &none);
+}
+
+void CaptureDriveFrame(ID3D12Resource* image, UINT width, UINT height)
+{
+    DriveReadback& d = g_driveReadback[g_r.frameIndex];
+    d.width = width;
+    d.height = height;
+    d.pitch = (width * 4 + 255) & ~255u;
+    const UINT64 bytes = UINT64(d.pitch) * height;
+    if (!d.buffer || d.buffer->GetDesc().Width < bytes)
+        d.buffer = CreateBuffer(bytes, D3D12_HEAP_TYPE_READBACK, D3D12_RESOURCE_STATE_COPY_DEST);
+    D3D12_TEXTURE_COPY_LOCATION dst{};
+    dst.pResource = d.buffer.Get();
+    dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    dst.PlacedFootprint.Footprint = { DXGI_FORMAT_R8G8B8A8_UNORM, width, height, 1, d.pitch };
+    D3D12_TEXTURE_COPY_LOCATION src{};
+    src.pResource = image;
+    src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    C().list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+    d.pending = true;
+}
+
 // The depth around the screen centre (Photo Mode's focus reticle), written to guest memory as the
 // console stores a D24FS8 copy: tiled 32-bit words, the 20e4 float depth in the top 24 bits. The
 // box is copied to a readback buffer with the frame and written when that frame slot comes round
@@ -10171,6 +11136,47 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
     LiveSwitch &noRender = g_sw_FM2_NO_RENDER;
     if (noRender)
         return;
+    // Measurement (Hyper ceilings, not a cut): REGPU_MEASURE_SKIP_PITCH=<pitch>[,<pitch>...] skips draws into surfaces
+    // of those widths, to find what a pass costs. Logged in HYPER-CHANGES.md.
+    static const std::vector<uint32_t> skipPitches = [] {
+        std::vector<uint32_t> v;
+        for (const char* s = getenv("REGPU_MEASURE_SKIP_PITCH"); s && *s; s = strchr(s, ',') ? strchr(s, ',') + 1 : nullptr)
+            v.push_back(uint32_t(atoi(s)));
+        return v;
+    }();
+    if (!skipPitches.empty() && std::find(skipPitches.begin(), skipPitches.end(), gpureg::Get(0x2000) & 0x3FFF) != skipPitches.end())
+        return;
+    if (FreezeAfter())
+    {
+        const uint32_t si = gpureg::Get(0x2000), pitch = si & 0x3FFF;
+        // Colour passes only (EDRAM mode 4): depth-only passes are shadow maps, which must follow the cars.
+        static const bool freezeShadows = getenv("REGPU_HYPER_FREEZE_SHADOWS") != nullptr;
+        const uint32_t mode = gpureg::Get(0x2208) & 7;
+        if (pitch && pitch < kWidth / 2 && (gpureg::Get(RB_DEPTHCONTROL) & 2) && (mode == 4 || (freezeShadows && mode == 5)))
+        {
+            FreezeState& st = g_freeze[si];
+            if (st.lastFrame != g_r.frame)
+            {
+                st.lastFrame = g_r.frame;
+                if (++st.frames == FreezeAfter() + 1)
+                    Log("hyper freeze: helper surface %08x (pitch %u) frozen", si, pitch);
+            }
+        }
+        if (FrozenSurface(si))
+            return;
+    }
+    // Measurement (overdraw split, breaks the picture): REGPU_MEASURE_SKIP_BLENDED=1 skips blended draws,
+    // REGPU_MEASURE_SKIP_BLENDED=2 skips opaque ones (blend from RB_BLENDCONTROL0, as the pipeline key reads it).
+    static const int skipBlended = getenv("REGPU_MEASURE_SKIP_BLENDED") ? atoi(getenv("REGPU_MEASURE_SKIP_BLENDED")) : 0;
+    if (skipBlended)
+    {
+        const uint32_t bc = gpureg::Get(RB_BLENDCONTROL0);
+        const bool blended = !((bc & 31) == 1 && ((bc >> 8) & 31) == 0 && ((bc >> 5) & 7) == 0);
+        // 3: only true transparent effects (blended, depth test on, no depth write), the half-size-layer candidates.
+        const uint32_t dcs = gpureg::Get(RB_DEPTHCONTROL);
+        if (skipBlended == 3 ? blended && (dcs & 6) == 2 : skipBlended == 4 ? blended && (dcs & 6) == 6 : (skipBlended == 1) == blended)
+            return;
+    }
     // A draw with PA_SC_VIZ_QUERY.kill_pix_post_hi_z (bit 7) is viz query survey geometry: it only feeds
     // the hierarchical-Z visibility test of its query ID, and the hardware kills its pixels after hi-Z,
     // so it writes no colour, depth or stencil and no ZPD report counts it. Nothing here predicates
@@ -10353,9 +11359,81 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
             return;
         }
     }
+    // Measurement: the pipeline section split into frame start, surface selection and the pipeline lookup.
+    using SplitClock = std::chrono::steady_clock;
+    const bool splitTimed = g_perfTiming && !C().worker; // (FM2_PERF only: a clock read per draw is not free)
+    const auto split0 = splitTimed ? SplitClock::now() : SplitClock::time_point{};
     BeginFrameIfNeeded();
     FlushPendingUpscale();
+    const auto split1 = splitTimed ? SplitClock::now() : SplitClock::time_point{};
     SelectSurfaces(false);
+    const auto split2 = splitTimed ? SplitClock::now() : SplitClock::time_point{};
+    if (splitTimed)
+    {
+        g_pipeSplit[0] += std::chrono::duration<double, std::milli>(split1 - split0).count();
+        g_pipeSplit[1] += std::chrono::duration<double, std::milli>(split2 - split1).count();
+    }
+    // Hyper draw culling (see drawcull), decided here: after the surfaces are selected but before the pipeline lookup,
+    // constants and textures, so a culled draw costs none of that CPU work. Main-view depth-tested colour draws (or every
+    // pass with REGPU_HYPER_CULL_PASSES=1), outside the game's own occlusion queries. The mesh key uses the guest's
+    // index address (decimation and the arena swap the host index buffer later).
+    bool cullEligible = false, cullSkipLate = false;
+    uint64_t cullKey = 0;
+    g_cullProbe = false;
+    {
+        static const bool cullPasses = getenv("REGPU_HYPER_CULL_PASSES") != nullptr;
+        static const bool late = getenv("REGPU_MEASURE_LATE_CULL") != nullptr; // A/B: decide at the draw call, as before
+        if (drawcull::Threshold() >= 0 && (cullPasses ? (edramMode == 4 || edramMode == 5) : (edramMode == 4 && WidePass())) &&
+            !g_screenPassDraw && !g_occlusionOpen && (gpureg::Get(RB_DEPTHCONTROL) & 2) && C().list == &g_r.recorder &&
+            [] {
+                const uint32_t bc = gpureg::Get(RB_BLENDCONTROL0);
+                return HyperCullAll() || ((gpureg::Get(RB_DEPTHCONTROL) & 4) && (bc & 31) == 1 && ((bc >> 8) & 31) == 0 && ((bc >> 5) & 7) == 0);
+            }())
+        {
+            using namespace drawcull;
+            cullEligible = true;
+            cullKey = Fnv(&C().vsHash, 8, Fnv(&C().psHash, 8));
+            const uint64_t mesh[3] = { directIndex ? 0ull : uint64_t(dmaBase), indexCount, directIndex ? directVertices : UINT(list.size()) };
+            cullKey = Fnv(mesh, sizeof(mesh), cullKey);
+            if (cullPasses) { const uint32_t pass[2] = { gpureg::Get(0x2000), edramMode }; cullKey = Fnv(pass, sizeof(pass), cullKey); }
+            const auto st = g_states.find(cullKey);
+            const bool retest = (g_r.frame + (cullKey & 0xFF)) % Retest() == 0;
+            // REGPU_HYPER_CULL_HYST=<percent>: hysteresis. A culled draw stays culled until it covers more than the
+            // threshold times percent/100, so one hovering at the threshold doesn't flip every few frames.
+            static const int hyst = getenv("REGPU_HYPER_CULL_HYST") ? std::max(100, atoi(getenv("REGPU_HYPER_CULL_HYST"))) : 100;
+            if (st != g_states.end())
+            {
+                const uint64_t limit = st->second.culled ? uint64_t(Threshold()) * uint64_t(hyst) / 100 : uint64_t(Threshold());
+                bool now = st->second.pixels <= limit;
+                // REGPU_HYPER_CULL_PIN (on; 0 = off): a draw that comes back from being culled twice within 64 frames is
+                // never culled again. The probe re-measures without depth writes, so a draw whose layers hide each other
+                // counts more pixels in the probe than when really drawn: probe says big, real draw says tiny, and the
+                // draw blinked 6 frames on, 6 off (Potato, the highlight on the player's car, 16 Nov 2026).
+                static const bool pin = !getenv("REGPU_HYPER_CULL_PIN") || atoi(getenv("REGPU_HYPER_CULL_PIN")) != 0;
+                if (pin && st->second.pinned)
+                    now = false;
+                else if (pin && st->second.culled && !now)
+                {
+                    st->second.flips = g_r.frame - st->second.lastUncull < 64 ? uint8_t(st->second.flips + 1) : uint8_t(1);
+                    st->second.lastUncull = g_r.frame;
+                    if (st->second.flips >= 2)
+                    {
+                        st->second.pinned = true;
+                        g_pinned++;
+                    }
+                }
+                st->second.culled = now;
+            }
+            if (!late && st != g_states.end() && st->second.culled && !retest)
+            {
+                g_skipped++;
+                return;
+            }
+            cullSkipLate = late && st != g_states.end() && st->second.pixels <= uint64_t(Threshold()) && !retest;
+            static const bool probe = getenv("REGPU_HYPER_CULL_PROBE") && atoi(getenv("REGPU_HYPER_CULL_PROBE")) != 0;
+            g_cullProbe = probe && !late && st != g_states.end() && st->second.culled && retest;
+        }
+    }
     // Temporal upscaling: the main view's draws in the scene also write motion vectors (their
     // shaders' motion variants, once compiled; until then the draw has no motion).
     const bool cullable = (initiator & 0x3F) != 8 && (initiator & 0x3F) != 1;
@@ -10406,7 +11484,70 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
                     psUsed = k;
             }
         }
-        pso = GetPipeline(vs, *psUsed, edramMode == 5, cullable, false, psUsed != &ps);
+        // Hyper fetch specialisation (REGPU_HYPER_FETCHSPEC=1): the pixel shader with this draw's sampling modes as constants.
+        static const bool fetchSpec = getenv("REGPU_HYPER_FETCHSPEC") && atoi(getenv("REGPU_HYPER_FETCHSPEC")) != 0;
+        static const bool tailSpec = getenv("REGPU_HYPER_TAILSPEC") && atoi(getenv("REGPU_HYPER_TAILSPEC")) != 0;
+        if ((fetchSpec && ps.info.usedTextureSlots) || tailSpec)
+        {
+            thread_local std::vector<std::array<uint32_t, 3>> sig;
+            thread_local std::vector<std::pair<std::string, std::string>> subs;
+            sig.clear();
+            subs.clear();
+            uint64_t h = 0xCBF29CE484222325ull;
+            auto mix = [&](uint64_t v) { h = (h ^ v) * 0x100000001B3ull; };
+            for (uint32_t m = ps.info.usedTextureSlots; m; m &= m - 1)
+            {
+                const uint32_t slot = uint32_t(__builtin_ctz(m));
+                const TextureFetch fetch = ReadTextureFetch(slot);
+                if (fetchSpec)
+                {
+                    const uint32_t x = FetchModeBits(fetch), cube = fetch.Dimension() == 3;
+                    sig.push_back({ slot, x, cube });
+                    mix(uint64_t(slot) << 40 ^ uint64_t(x) << 1 ^ cube);
+                }
+            }
+            if (tailSpec)
+            {
+                const uint32_t cc = gpureg::Get(RB_COLORCONTROL), colorInfo = gpureg::Get(RB_COLOR_INFO);
+                static const bool depthAlphaTestTail = getenv("FM2_NO_DEPTH_ALPHATEST") == nullptr;
+                const bool alphaHere = edramMode != 5 || (depthAlphaTestTail && ps.info.usedTextureSlots != 0);
+                uint32_t fx = (cc >> 3) & 1 && alphaHere ? (cc & 7) : 7;
+                static const bool a2mTail = getenv("REGPU_HYPER_A2M_TEST") != nullptr;
+                if (a2mTail && ((cc >> 4) & 1) && fx == 7 && edramMode != 5)
+                    fx = 6;
+                const uint32_t fy = (gpureg::Get(SQ_PROGRAM_CNTL) >> 18) & 1 ? (gpureg::Get(SQ_CONTEXT_MISC) >> 8) & 0xFF : 0xFF;
+                static const bool noExp = getenv("FM2_NO_COLOR_EXP_BIAS") != nullptr;
+                const uint32_t fw = noExp ? 0u : uint32_t(int32_t(colorInfo << 6) >> 26);
+                const uint32_t fmt = (colorInfo >> 16) & 0xF;
+                const uint32_t fz = !noExp && (fmt == 4 || fmt == 5) ? 8u : 0u;
+                const bool ceil7e3 = fmt == 3 || fmt == 12;
+                subs.emplace_back("pinfo.x", std::to_string(fx) + "u");
+                subs.emplace_back("pinfo.y", std::to_string(fy) + "u");
+                subs.emplace_back("pinfo.z", std::to_string(fz) + "u");
+                subs.emplace_back("pinfo.w", std::to_string(fw) + "u");
+                subs.emplace_back("pinfo2.w", ceil7e3 ? "31.875" : "0.0");
+                mix(0x7A11ull << 48 ^ uint64_t(fx) << 40 ^ uint64_t(fy) << 24 ^ uint64_t(fz) << 16 ^ uint64_t(fw & 0xFF) << 8 ^ ceil7e3);
+            }
+            // (Built on the variant chosen above; which one is part of the signature, and the pipeline key's own
+            // no-kill flag stays clear so a rebuild never swaps the specialised shader for another variant.)
+            mix(psUsed != &ps ? 0x4E4Bull : 0);
+            const CompiledShader* spec = nullptr;
+            if (psUsed->IsReady() && !IsPsEditAlias(C().psHash))
+            {
+                std::lock_guard shaderLock(g_shaderMutex); // (the variants' map and the bytecode cache: draw workers)
+                spec = FetchSpecShader(*psUsed, h, sig, subs);
+            }
+            if (spec)
+            {
+                g_fetchSalt = h | 1;
+                pso = GetPipeline(vs, *spec, edramMode == 5, cullable);
+                g_fetchSalt = 0;
+                if (pso)
+                    psUsed = nullptr; // (no plain-fetch variant on top: FM2_FETCH_VARIANTS below)
+            }
+        }
+        if (!pso)
+            pso = GetPipeline(vs, *psUsed, edramMode == 5, cullable, false, psUsed != &ps);
     }
     if (!pso)
     {
@@ -10423,6 +11564,61 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
         TraceSkip("pipeline", initiator);
         g_skippedPipeline++;
         return;
+    }
+    if (splitTimed)
+        g_pipeSplit[2] += std::chrono::duration<double, std::milli>(SplitClock::now() - split2).count();
+    // Measurement (FM2_PERF): blended main-view draws per frame by blend control, depth control (enables, write,
+    // stencil) and colour mask, every 600 frames.
+    if (static LiveSwitch perfBlend("FM2_PERF"); perfBlend && !C().worker && edramMode == 4 && WidePass())
+    {
+        const uint32_t bc = gpureg::Get(RB_BLENDCONTROL0);
+        if (!((bc & 31) == 1 && ((bc >> 8) & 31) == 0 && ((bc >> 5) & 7) == 0))
+        {
+            static std::map<std::tuple<uint32_t, uint32_t, uint32_t>, uint64_t> blends;
+            static uint64_t blendStart = g_r.frame;
+            blends[{ bc, gpureg::Get(RB_DEPTHCONTROL) & 0x77, gpureg::Get(RB_COLOR_MASK) & 0xF }]++;
+            // Measurement: the pixel shaders of blended draws that write depth (FM2's cars), with fetch count and
+            // HLSL size, every 600 frames; REGPU_MEASURE_DUMP_PS=<hash> writes that shader's HLSL to out/ps_<hash>.hlsl.
+            if ((gpureg::Get(RB_DEPTHCONTROL) & 6) == 6)
+            {
+                static std::map<uint64_t, std::tuple<uint64_t, uint32_t, size_t>> shaders;
+                static uint64_t shaderStart = g_r.frame;
+                auto& e = shaders[ps.hash];
+                std::get<0>(e)++;
+                std::get<1>(e) = ps.info.textureFetches;
+                std::get<2>(e) = ps.info.hlsl.size();
+                static const uint64_t dumpPs = getenv("REGPU_MEASURE_DUMP_PS") ? strtoull(getenv("REGPU_MEASURE_DUMP_PS"), nullptr, 16) : 0;
+                if (dumpPs == ps.hash)
+                {
+                    static bool dumped = false;
+                    if (!dumped)
+                    {
+                        dumped = true;
+                        char name[64];
+                        snprintf(name, sizeof(name), "out/ps_%016llx.hlsl", (unsigned long long)ps.hash);
+                        std::ofstream(name) << ps.info.hlsl;
+                    }
+                }
+                if (g_r.frame - shaderStart >= 600)
+                {
+                    const double fr = double(g_r.frame - shaderStart);
+                    for (const auto& [h, v] : shaders)
+                        Log("perf: depth-writing blended PS %016llx: %.0f draws per frame, %u texture fetches, %zu bytes HLSL", (unsigned long long)h,
+                            std::get<0>(v) / fr, std::get<1>(v), std::get<2>(v));
+                    shaders.clear();
+                    shaderStart = g_r.frame;
+                }
+            }
+            if (g_r.frame - blendStart >= 600)
+            {
+                const double fr = double(g_r.frame - blendStart);
+                for (const auto& [k, n] : blends)
+                    if (n / fr >= 1)
+                        Log("perf: blended draws: blend %08x depth %02x mask %x: %.0f per frame", std::get<0>(k), std::get<1>(k), std::get<2>(k), n / fr);
+                blends.clear();
+                blendStart = g_r.frame;
+            }
+        }
     }
     FrameResources& f = Frame();
 
@@ -10897,6 +12093,42 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
         Sub(3);
         if (indexedCount < 3 || !GetIndexBuffer(dmaBase & 0x1FFFFFFF & ~(is32 ? 3u : 1u), count, is32, dmaSize >> 30, indexView))
             indexedCount = 0;
+        else if (prim == 4)
+            hyperdec::Apply(vs.info, dmaBase & 0x1FFFFFFF & ~(is32 ? 3u : 1u), indexedCount, is32, dmaSize >> 30, indexView, indexedCount);
+        // Measurement (FM2_PERF): main-view colour draws per frame by their pixel shader's texture fetch count.
+        if (static LiveSwitch perfFetch("FM2_PERF"); perfFetch && !C().worker && edramMode == 4)
+        {
+            static std::map<uint32_t, uint64_t> fetches;
+            static uint64_t fetchStart = g_r.frame;
+            fetches[std::min(ps.info.textureFetches, 12u)]++;
+            if (g_r.frame - fetchStart >= 600)
+            {
+                std::string line;
+                for (const auto& [k, n] : fetches)
+                    line += " " + std::to_string(k) + (k == 12 ? "+" : "") + ":" + std::to_string(uint64_t(n / double(g_r.frame - fetchStart)));
+                Log("perf: colour draws per frame by PS texture fetches (fetches:draws):%s", line.c_str());
+                fetches.clear();
+                fetchStart = g_r.frame;
+            }
+        }
+        // Measurement (FM2_PERF): indexed draws per frame by primitive type and size, and their indices, every 600 frames.
+        if (static LiveSwitch perfLog("FM2_PERF"); perfLog && !C().worker && indexedCount)
+        {
+            static std::map<std::pair<uint32_t, bool>, std::pair<uint64_t, uint64_t>> census;
+            static uint64_t censusStart = g_r.frame;
+            auto& c = census[{ prim, indexedCount >= 300 }];
+            c.first++;
+            c.second += indexedCount;
+            if (g_r.frame - censusStart >= 600)
+            {
+                const double fr = double(g_r.frame - censusStart);
+                for (const auto& [k, v] : census)
+                    Log("perf: indexed draw census prim %u %s: %.0f draws, %.0fk indices per frame", k.first, k.second ? ">=300" : "<300",
+                        v.first / fr, v.second / fr / 1000.0);
+                census.clear();
+                censusStart = g_r.frame;
+            }
+        }
         Sub(7);
     }
     if (indexedCount)
@@ -10945,6 +12177,10 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
     static const bool depthAlphaTest = getenv("FM2_NO_DEPTH_ALPHATEST") == nullptr;
     const bool alphaTestHere = edramMode != 5 || (depthAlphaTest && ps.info.usedTextureSlots != 0);
     pc->info[0] = (colorControl >> 3) & 1 && alphaTestHere ? (colorControl & 7) : 7;
+    static const bool a2mTest = getenv("REGPU_HYPER_A2M_TEST") != nullptr;
+    const bool a2mAsTest = a2mTest && ((colorControl >> 4) & 1) && pc->info[0] == 7 && edramMode != 5;
+    if (a2mAsTest)
+        pc->info[0] = 6; // alpha >= 0.5, what one-sample alpha-to-coverage keeps
     // Colour exponent bias (RB_COLOR_INFO bits 20-25, signed): the hardware scales the colour output by
     // 2^bias before it is stored and blended, in every format; the 16_16 and 16_16_16_16 targets
     // (formats 4, 5) hold -32..32 (pinfo.z bit 3). A title drawing a 16_16 shadow map with bias 5,
@@ -10957,7 +12193,7 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
         const uint32_t format = (colorInfo >> 16) & 0xF;
         pc->info[2] = !noColorExpBias && (format == 4 || format == 5) ? 8u : 0u;
     }
-    pc->info2[0] = RegFloat(RB_ALPHA_REF);
+    pc->info2[0] = a2mAsTest ? 0.5f : RegFloat(RB_ALPHA_REF);
     pc->info2[1] = 1.0f / pass.XScale();
     pc->info2[2] = 1.0f / pass.YScale();
     // Our colour target is half float: a 7e3 surface (formats 3 and 12, the title's HDR scene)
@@ -11086,21 +12322,7 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
         // once): the telemetry's car diagram draws its symmetric parts mirrored, which clamped smeared
         // the edge column across the other half (report #26). A mirrored axis is still clamped after
         // the fold: wrapped, the filter blended the opposite edge in, a line down menu images.
-        const uint32_t clampX = (fetch.dwords[0] >> 10) & 7, clampY = (fetch.dwords[0] >> 13) & 7;
-        LiveSwitch &oldClamp = g_sw_FM2_OLD_CLAMP; // A/B: X's mode for both axes (before the kerb fix)
-        static LiveSwitch noMirror("FM2_NO_TEXTURE_MIRROR"); // A/B: mirrored modes clamped only
-        const bool clamp = oldClamp ? clampX != 0 : clampX != 0 && clampY != 0;
-        const bool point = ((fetch.dwords[3] >> 19) & 3) == 0;
-        ti[0] = (point ? (clamp ? 2 : 3) : (clamp ? 1 : 0)) | ((uint32_t(fetch.ExpAdjust()) & 0x3F) << 8);
-        if (!clamp && !oldClamp)
-            ti[0] |= (clampX ? 1u << 18 : 0u) | (clampY ? 1u << 19 : 0u);
-        if (!oldClamp && !noMirror)
-            ti[0] |= (clampX == 1 ? 1u << 20 : 0u) | (clampY == 1 ? 1u << 21 : 0u) | (clampX >= 3 && (clampX & 1) ? 1u << 22 : 0u) |
-                (clampY >= 3 && (clampY & 1) ? 1u << 23 : 0u);
-        // Clamp to border on both axes (modes 6, 7): the shader returns the border colour
-        // outside the image (dword 5 bits 0-1: 1 white, else black).
-        if (clampX >= 6 && clampY >= 6)
-            ti[0] |= (1u << 16) | ((fetch.dwords[5] & 3) == 1 ? 1u << 17 : 0u);
+        ti[0] = FetchModeBits(fetch);
         // A temporal upscaler's scene (below output resolution): mips biased sharper by log2 of the scale
         // (-0.58 at 67%), as upscalers ask, so the upscaled image keeps the output's texture detail (from
         // ReGPU 5924641 / the FM4 port). FSR 1 is left as shipped. FM2_NO_LOD_BIAS=1 (live): the fetch's bias alone.
@@ -11296,6 +12518,72 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
             if (f && f->IsReady())
                 if (ID3D12PipelineState* fp = GetPipeline(vs, *f, edramMode == 5, cullable, false, psUsed != &ps, plain))
                     pso = fp;
+        }
+    }
+    // Hyper REGPU_HYPER_LEAN_FETCH=1 (lossless): when none of the pixel shader's 2D textures mirror, clamp to border,
+    // clamp one axis, sit inside a wider resolve, adjust the exponent or swizzle, draw with a variant whose fetch
+    // helper leaves those run-time checks out (see LeanFetchAlias). Its pipeline is used once compiled.
+    static const int leanMode = !getenv("FM2_FORCE_LOD") ? HyperLeanFetch() : 0;
+    if (leanMode >= 2 && !motion && ps.info.usedTextureSlots && edramMode == 4 && WidePass() && GameSettled())
+    {
+        static uint64_t nAll = 0, nUsed = 0;
+        nAll++;
+        const uint64_t real = C().psHash;
+        if (const uint64_t lean = BakedFetchAlias(real, ps.info.usedTextureSlots, pc->tinfo, pc->tbias, leanMode == 3 && !g_screenPassDraw))
+        {
+            const CompiledShader& lps = GetShader(lean, *C().psCode, true);
+            if (lps.IsReady())
+            {
+                C().psHash = lean;
+                if (ID3D12PipelineState* p = GetPipeline(vs, lps, edramMode == 5, cullable))
+                    pso = p, nUsed++;
+                C().psHash = real;
+            }
+        }
+        if (nAll % 200000 == 0)
+            Log("hyper: baked fetch %llu of %llu textured draws drawn baked, %zu variants", (unsigned long long)nUsed, (unsigned long long)nAll, g_bakedFetch.size());
+    }
+    if (leanMode == 1 && !motion && ps.info.usedTextureSlots && edramMode == 4 && WidePass() && GameSettled())
+    {
+        bool plain = true;
+        for (uint32_t m = ps.info.usedTextureSlots; m && plain; m &= m - 1)
+        {
+            const uint32_t slot = uint32_t(std::countr_zero(m));
+            const uint32_t* ti = pc->tinfo[slot];
+            const float* tb = pc->tbias[slot];
+            if ((ti[3] & 0xFFu) == 3)
+                continue; // cube maps take their own path, unchanged
+            plain = (ti[0] & 0xFFFF00u) == 0 && (!(ti[3] >> 31) || ((ti[3] >> 8) & 0xFFFu) == 0x688u) && tb[2] == 1.0f && tb[3] == 1.0f;
+        }
+        static uint64_t nAll = 0, nPlain = 0, nUsed = 0, why[4] = {};
+        nAll++;
+        if (!plain)
+            for (uint32_t m = ps.info.usedTextureSlots; m; m &= m - 1)
+            {
+                const uint32_t* ti = pc->tinfo[std::countr_zero(m)];
+                const float* tb = pc->tbias[std::countr_zero(m)];
+                if ((ti[3] & 0xFFu) == 3) continue;
+                if (ti[0] & 0xFF0000u) why[0]++;
+                if (ti[0] & 0x3F00u) why[1]++;
+                if ((ti[3] >> 31) && ((ti[3] >> 8) & 0xFFFu) != 0x688u) why[2]++;
+                if (tb[2] != 1.0f || tb[3] != 1.0f) why[3]++;
+            }
+        if (nAll % 200000 == 0)
+            Log("hyper: lean fetch %llu of %llu textured draws plain, %llu drawn lean; slots blocked by mode bits %llu, exponent %llu, swizzle %llu, resolve scale %llu",
+                (unsigned long long)nPlain, (unsigned long long)nAll, (unsigned long long)nUsed, (unsigned long long)why[0], (unsigned long long)why[1],
+                (unsigned long long)why[2], (unsigned long long)why[3]);
+        if (plain)
+        {
+            nPlain++;
+            const uint64_t real = C().psHash, lean = LeanFetchAlias(real);
+            const CompiledShader& lps = GetShader(lean, *C().psCode, true);
+            if (lps.IsReady())
+            {
+                C().psHash = lean;
+                if (ID3D12PipelineState* p = GetPipeline(vs, lps, edramMode == 5, cullable))
+                    pso = p, nUsed++;
+                C().psHash = real;
+            }
         }
     }
     if (pso != ds.pso)
@@ -11591,6 +12879,54 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
             g_drawState.topology = topology;
             C().list->IASetPrimitiveTopology(topology);
         }
+        // Measurement only (they break the picture; never part of a preset): what the GPU spends where.
+        // REGPU_MEASURE_NO_PIXELS=1: an empty scissor on every game draw: vertices are still processed, nothing is
+        // rasterised or shaded. REGPU_MEASURE_HALF_VERTS=1: each draw sends only the first half of its triangles
+        // (as many draws, half the vertex work).
+        static const bool measureNoPixels = getenv("REGPU_MEASURE_NO_PIXELS") != nullptr;
+        static const bool measureHalfVerts = getenv("REGPU_MEASURE_HALF_VERTS") != nullptr;
+        // REGPU_MEASURE_EMPTY_DRAWS=1: every game draw sent with no vertices (all the CPU work, almost none on the GPU).
+        static const bool measureEmptyDraws = getenv("REGPU_MEASURE_EMPTY_DRAWS") != nullptr;
+        if (measureNoPixels)
+        {
+            const D3D12_RECT none{ 0, 0, 0, 0 };
+            C().list->RSSetScissorRects(1, &none);
+        }
+        auto half = [&](uint32_t n) { return measureEmptyDraws ? 0u : measureHalfVerts ? (topology == D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP ? std::max(3u, n / 2) : std::max(3u, n / 6 * 3)) : n; };
+        // Hyper draw culling (see drawcull): main-view colour draws with depth testing, outside the game's own queries.
+        UINT cullQuery = ~0u;
+        if (cullEligible)
+        {
+            using namespace drawcull;
+            if (cullSkipLate)
+            {
+                g_skipped++;
+                return;
+            }
+            const uint64_t key = cullKey;
+            g_drawn++;
+            if (g_r.frame >= g_logFrame + 600)
+            {
+                g_logFrame = g_r.frame;
+                Log("hyper cull: %llu drawn, %llu skipped (%.1f%%), %llu draws pinned", (unsigned long long)g_drawn, (unsigned long long)g_skipped,
+                    100.0 * g_skipped / std::max<uint64_t>(1, g_drawn + g_skipped), (unsigned long long)g_pinned);
+            }
+            if (!g_heap)
+            {
+                D3D12_QUERY_HEAP_DESC qd{};
+                qd.Type = D3D12_QUERY_HEAP_TYPE_OCCLUSION;
+                qd.Count = kPerFrame * kFrames;
+                g_r.device->CreateQueryHeap(&qd, IID_PPV_ARGS(&g_heap));
+                g_readback = CreateBuffer(8ull * kPerFrame * kFrames, D3D12_HEAP_TYPE_READBACK, D3D12_RESOURCE_STATE_COPY_DEST);
+            }
+            const UINT slot = g_r.frameIndex;
+            if (g_heap && g_readback && g_used[slot] < kPerFrame)
+            {
+                cullQuery = slot * kPerFrame + g_used[slot]++;
+                g_pending[slot].push_back({ key, cullQuery });
+                C().list->BeginQuery(g_heap.Get(), D3D12_QUERY_TYPE_OCCLUSION, cullQuery);
+            }
+        }
         if (indexedCount)
         {
             if (memcmp(&indexView, &g_drawState.indexBuffer, sizeof(indexView)) != 0)
@@ -11598,10 +12934,15 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
                 g_drawState.indexBuffer = indexView;
                 C().list->IASetIndexBuffer(&indexView);
             }
-            C().list->DrawIndexedInstanced(indexedCount, 1, 0, 0, 0);
+            C().list->DrawIndexedInstanced(half(indexedCount), 1, 0, 0, 0);
         }
         else
-            C().list->DrawInstanced(directIndex ? directVertices : UINT(list.size()), 1, 0, 0);
+            C().list->DrawInstanced(half(directIndex ? directVertices : UINT(list.size())), 1, 0, 0);
+        if (cullQuery != ~0u)
+        {
+            C().list->EndQuery(drawcull::g_heap.Get(), D3D12_QUERY_TYPE_OCCLUSION, cullQuery);
+        }
+        g_cullProbe = false;
         // Frame generation: a post-processing composite draw goes a second time into the HUD-less surface.
         if (HudlessBeginRedraw())
         {
@@ -11827,6 +13168,12 @@ void RendererOnSwap(uint64_t frameNumber, uint32_t frontBuffer)
             Log("perf:   shaders %.2f | indices %.2f | pipeline %.2f | constants %.2f | textures %.2f | submit %.2f ms/frame",
                 g_perf.section[0] * 1000.0 / g_perf.frames, g_perf.section[1] * 1000.0 / g_perf.frames, g_perf.section[2] * 1000.0 / g_perf.frames,
                 g_perf.section[3] * 1000.0 / g_perf.frames, g_perf.section[4] * 1000.0 / g_perf.frames, g_perf.section[5] * 1000.0 / g_perf.frames);
+        if (perf && g_perf.frames)
+        {
+            Log("perf:   pipeline split: frame start %.2f | surfaces %.2f | pipeline lookup %.2f ms/frame",
+                g_pipeSplit[0] / g_perf.frames, g_pipeSplit[1] / g_perf.frames, g_pipeSplit[2] / g_perf.frames);
+            g_pipeSplit[0] = g_pipeSplit[1] = g_pipeSplit[2] = 0;
+        }
         if (perf && g_perf.frames)
             Log("perf:   constants split: index list %.2f | constant banks %.2f | vertex fetch %.2f (bools and loops %.2f, uploads %.2f) | the rest %.2f (MSAA scale %.2f, index buffer %.2f) ms/frame",
                 g_perf.sub[0] * 1000.0 / g_perf.frames, g_perf.sub[1] * 1000.0 / g_perf.frames, g_perf.sub[2] * 1000.0 / g_perf.frames, g_perf.sub[4] * 1000.0 / g_perf.frames, g_perf.sub[5] * 1000.0 / g_perf.frames, g_perf.sub[3] * 1000.0 / g_perf.frames, g_perf.sub[6] * 1000.0 / g_perf.frames, g_perf.sub[7] * 1000.0 / g_perf.frames);
@@ -12175,7 +13522,16 @@ void PrecompileAll()
                 if (!ps && Manifest::LoadShader(true, key.ps, code))
                     ps = &GetShader(key.ps, code, true);
             }
-            if (!vs || !ps || vs->state.load() == CompiledShader::Pending || ps->state.load() == CompiledShader::Pending)
+            if (!vs || !ps)
+            {
+                // The shader's ucode isn't on disk (cache deleted or copied without it): nothing can ever
+                // build this pipeline here, so skip it; the game records it again when it draws. Waiting
+                // instead hangs the boot screen forever.
+                nextKey++;
+                g_stats.warmDone++;
+                continue;
+            }
+            if (vs->state.load() == CompiledShader::Pending || ps->state.load() == CompiledShader::Pending)
                 break; // wait for this one to finish compiling before going on
             if (vs->state.load() == CompiledShader::Ready && ps->state.load() == CompiledShader::Ready)
             {
@@ -12523,6 +13879,20 @@ void RendererOnSwapImpl(uint64_t frameNumber, uint32_t frontBuffer)
         static const auto start = std::chrono::steady_clock::now();
         if (dumpAt > 0 && !dumpFrame && fromResolve && std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count() >= dumpAt)
             dumpFrame = g_r.frame;
+        // Test tooling: FM2_DUMP_AFTER_RACE=<frames>: the dump (or sweep) starts that many frames after the race view is
+        // up (12 frames in a row of over 300 draws: loading and menu screens draw far fewer), so captures of different
+        // builds start at the same point of the race whatever their load time.
+        static const int afterRace = getenv("FM2_DUMP_AFTER_RACE") ? atoi(getenv("FM2_DUMP_AFTER_RACE")) : -1;
+        static uint64_t raceFrame = 0;
+        static uint32_t busyRun = 0;
+        if (afterRace >= 0 && !dumpFrame && fromResolve)
+        {
+            busyRun = g_r.drawsThisFrame.load() > 300 ? busyRun + 1 : 0;
+            if (!raceFrame && busyRun >= 12)
+                raceFrame = g_r.frame;
+            if (raceFrame && g_r.frame >= raceFrame + uint64_t(afterRace))
+                dumpFrame = g_r.frame;
+        }
     }
     g_tile = TileState{};
     static LiveSwitch dumpSecond("FM2_SKIP_VS");
@@ -12556,6 +13926,9 @@ void RendererOnSwapImpl(uint64_t frameNumber, uint32_t frontBuffer)
         wf.watchFrame = g_r.frame;
         wf.watchPending = true;
     }
+    // Auto-drive: the picture it steers by, every third frame, read back when this slot comes round.
+    if (fromResolve && !dump && AutodriveOn() && g_r.frame % 3 == 0)
+        CaptureDriveFrame(shown, OutputWidth(), OutputHeight());
     if (dump)
     {
         D3D12_TEXTURE_COPY_LOCATION dst{};
@@ -12638,6 +14011,14 @@ void RendererOnSwapImpl(uint64_t frameNumber, uint32_t frontBuffer)
         C().list->ResolveQueryData(g_passQueries.Get(), D3D12_QUERY_TYPE_TIMESTAMP, frameIndex * kPassMarks, n, g_passReadback.Get(),
             UINT64(frameIndex) * kPassMarks * 8);
     }
+    if (g_gpuStats && g_statsHeap)
+    {
+        const UINT frameIndex = UINT(&Frame() - g_r.frames);
+        C().list->EndQuery(g_statsHeap.Get(), D3D12_QUERY_TYPE_PIPELINE_STATISTICS, frameIndex);
+        C().list->ResolveQueryData(g_statsHeap.Get(), D3D12_QUERY_TYPE_PIPELINE_STATISTICS, frameIndex, 1, g_statsReadback.Get(),
+            UINT64(frameIndex) * sizeof(D3D12_QUERY_DATA_PIPELINE_STATISTICS));
+        g_statsPending[frameIndex] = true;
+    }
     if (g_timestamps)
     {
         const UINT frameIndex = UINT(&Frame() - g_r.frames);
@@ -12645,6 +14026,10 @@ void RendererOnSwapImpl(uint64_t frameNumber, uint32_t frontBuffer)
         C().list->ResolveQueryData(g_timestamps.Get(), D3D12_QUERY_TYPE_TIMESTAMP, frameIndex * 2, 2, g_timestampReadback.Get(), UINT64(frameIndex) * 16);
         Frame().timed = true;
     }
+    // Hyper draw culling: this frame's pixel counts, copied before the frame is submitted (read when its slot comes back).
+    if (const UINT slot = UINT(&Frame() - g_r.frames); drawcull::g_heap && drawcull::g_readback && drawcull::g_used[slot])
+        C().list->ResolveQueryData(drawcull::g_heap.Get(), D3D12_QUERY_TYPE_OCCLUSION, slot * drawcull::kPerFrame, drawcull::g_used[slot],
+            drawcull::g_readback.Get(), UINT64(slot) * drawcull::kPerFrame * 8);
     if (asyncEnd)
     {
         // The fence value is taken here, in order with the draw thread's other signals (which flush this first).
@@ -12791,7 +14176,12 @@ void RendererOnSwapImpl(uint64_t frameNumber, uint32_t frontBuffer)
             std::filesystem::create_directories("out/sweep");
             char name[64];
             snprintf(name, sizeof(name), "out/sweep/%03llu.png", (unsigned long long)(g_r.frame - dumpFrame));
-            WritePng(name, dw, dh, full);
+            // Test tooling: the PNG is encoded on its own thread so a frame sequence isn't slowed by the writes
+            // (the game runs on real time: a stalled frame jumps the scene ahead). FM2_SWEEP_SYNC=1: as before.
+            if (getenv("FM2_SWEEP_SYNC"))
+                WritePng(name, dw, dh, full);
+            else
+                std::thread([n = std::string(name), dw, dh, px = full]() { WritePng(n.c_str(), dw, dh, px); }).detach();
         }
         else if (shot && g_r.frame == dumpFrame)
         {
@@ -12813,6 +14203,7 @@ void RendererOnSwapImpl(uint64_t frameNumber, uint32_t frontBuffer)
     static auto lastFrameAt = std::chrono::steady_clock::now();
     const auto frameAt = std::chrono::steady_clock::now();
     frameMs.push_back(std::chrono::duration<float, std::milli>(frameAt - lastFrameAt).count());
+    FpsMeterFrame(frameMs.back());
     lastFrameAt = frameAt;
     if (frameNumber % 600 == 0)
     {
