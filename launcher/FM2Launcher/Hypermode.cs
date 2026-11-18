@@ -137,7 +137,7 @@ internal static class HypermodeWindow
             _main = main;
             var screen = main.MainMonitor.WorkArea;
             var w = Web.Create("Hypermode - Forza Motorsport 2 ReGPU", "hyper.html",
-                Math.Min(1120, screen.Width - 40), Math.Min(820, screen.Height - 60), 760, 520, main);
+                Math.Min(1500, screen.Width - 40), Math.Min(1080, screen.Height - 60), 700, 520, main); // (device pixels: roomy at 150% scaling)
             _ = new Bridge(w);
             w.RegisterWindowClosingHandler((_, _) => { _open = null; return false; });
             _open = w;
