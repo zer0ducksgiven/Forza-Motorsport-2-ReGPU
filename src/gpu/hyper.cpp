@@ -78,19 +78,23 @@ void HyperConfigure(const HyperSettings& settings)
         Log("hyper: auto picked %s (GPU vendor %04X, %s)", pick, gpu.vendor, gpu.integrated ? "integrated" : "dedicated");
     }
     // Potato on Intel: the cuts measured on the Intel thread (HD 630, INTEL-PATH.md); every value only a default, the
-    // environment and the hyper_* settings keys win. Other vendors keep the laptop's measured Potato (hyper.cpp getters).
-    if (HyperLevel() == HyperPreset::Potato && gpu.vendor == 0x8086)
+    // environment and the hyper_* settings keys win. Also on AMD since 15 Nov 2026: on the Vega laptop this set measured
+    // 77.3 fps against 71.5 for the laptop's own Potato (docs/hyper/INTEL-VS-AMD.md). REGPU_HYPER_POTATO_SET=laptop keeps
+    // the older laptop set (hyper.cpp getters), which is also what other vendors get.
+    const char* potatoSet = getenv("REGPU_HYPER_POTATO_SET");
+    const bool laptopSet = potatoSet && !_stricmp(potatoSet, "laptop");
+    if (HyperLevel() == HyperPreset::Potato && (gpu.vendor == 0x8086 || gpu.vendor == 0x1002) && !laptopSet)
     {
         static const char* const intel[][2] = {
             { "REGPU_HYPER_SHADER_OPT", "1" }, { "REGPU_HYPER_VCACHE", "2" }, { "REGPU_HYPER_PLAIN_MUL", "5" },
             { "REGPU_HYPER_FETCHSPEC", "1" }, { "REGPU_HYPER_SWIZZLE_SEL", "1" }, { "REGPU_HYPER_LEAN_LOD", "1" },
-            { "REGPU_HYPER_CULL_PASSES", "1" }, { "REGPU_HYPER_FREEZE", "120" }, { "REGPU_HYPER_FREEZE_REFRESH", "3" },
-            { "REGPU_HYPER_TAILSPEC", "1" }, { "REGPU_HYPER_CULL_PIXELS", "128" }, { "REGPU_HYPER_CULL_PROBE", "1" }, { "REGPU_HYPER_CULL_HYST", "200" }, { "REGPU_HYPER_RESOLVE_BY_SIZE", "1" },
+            { "REGPU_HYPER_CULL_PASSES", "1" }, { "REGPU_HYPER_FREEZE", "120" }, { "REGPU_HYPER_FREEZE_REFRESH", "4" },
+            { "REGPU_HYPER_TAILSPEC", "1" }, { "REGPU_HYPER_CULL_PIXELS", "256" }, { "REGPU_HYPER_CULL_PROBE", "1" }, { "REGPU_HYPER_CULL_HYST", "200" }, { "REGPU_HYPER_RESOLVE_BY_SIZE", "1" },
             { "REGPU_HYPER_LEAN_FETCH", "0" }, { "REGPU_HYPER_LEAN_VFETCH", "0" }, // the laptop's fetch path: superseded here
         };
         for (const auto& [name, value] : intel)
             Default(name, value);
-        Log("hyper: potato, Intel set (fetch specialisation, smart multiply, swizzle selects, lean LOD, culling, frozen helpers)");
+        Log("hyper: potato, shader-cut set (fetch specialisation, smart multiply, swizzle selects, lean LOD, culling, frozen helpers)");
     }
 }
 

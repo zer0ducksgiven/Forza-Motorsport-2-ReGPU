@@ -48,8 +48,11 @@ skipped=$(awk -v s="$start" '{t=substr($0,2,index($0,"]")-2)+0} t>s && /compiled
 racefps=$(awk -v s="$start" '{t=substr($0,2,index($0,"]")-2)+0} t>s+1 && /fps meter/ {match($0,/meter: [0-9.]+/); g+=substr($0,RSTART+7,RLENGTH-7); n++} END{printf "%.1f", n?g/n:0}' "$log")
 perffps=$(awk -v s="$start" '{t=substr($0,2,index($0,"]")-2)+0} t>s+5 && /perf: [0-9.]+ fps/ {match($0,/perf: [0-9.]+/); g+=substr($0,RSTART+6,RLENGTH-6); n++} END{printf "%.1f", n?g/n:0}' "$log")
 # A run stuck on the loading screen (race fps > 250: the race never drew) is rerun once, as a failure. [laptop]
-if [ "${racefps%.*}" -gt 250 ] && [ -z "$BENCH_RERUN" ]; then
-    echo "$label: stuck on the loading screen (race fps $racefps), rerunning" | tee -a out/bench_failures.txt
+# With a temporal upscaler the loading screen runs at only ~60 fps, so also check the draw count: the race draws over
+# 1000 draws a frame, loading and menus under 200 (15 Nov 2026: this passed as a fast "FSR 3 state" of 60-69 fps).
+lastdraws=$(grep 'renderer: frame [0-9]*: [0-9]* draws' "$log" | tail -1 | sed 's/.*frame [0-9]*: \([0-9]*\) draws.*/\1/')
+if { [ "${racefps%.*}" -gt 250 ] || [ "${lastdraws:-9999}" -lt 400 ]; } && [ -z "$BENCH_RERUN" ]; then
+    echo "$label: stuck on the loading screen (race fps $racefps, ${lastdraws:-?} draws/frame), rerunning" | tee -a out/bench_failures.txt
     cp -f "$log" "out/bench_${label}_stuck.err"
     BENCH_RERUN=1 exec sh "$0" "$label" "$secs" "$@"
 fi

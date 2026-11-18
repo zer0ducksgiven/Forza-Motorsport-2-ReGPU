@@ -50,6 +50,7 @@ static void RaceNow(const std::string& payload)
     set("race", "FM2_RACENOW_RACE");
     set("class", "FM2_RACENOW_CLASS");
     set("car", "FM2_RACENOW_CAR");
+    set("ai", "FM2_RACENOW_AI"); // ai=1: the game's driver AI races the player's car (zip_overlay.cpp)
     if (kv.count("countdown") && kv["countdown"] == "1")
         _putenv_s("FM2_RACENOW_COUNTDOWN", "1");
     _putenv_s("FM2_NO_LAUNCHER", "1");

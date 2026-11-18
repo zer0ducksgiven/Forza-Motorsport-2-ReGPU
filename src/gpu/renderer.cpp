@@ -1966,7 +1966,7 @@ void EvictBindless()
 namespace drawcull
 {
 constexpr UINT kPerFrame = 4096;
-struct State { uint64_t pixels = ~0ull; bool culled = false; };
+struct State { uint64_t pixels = ~0ull; bool culled = false; bool pinned = false; uint8_t flips = 0; uint64_t lastUncull = 0; };
 std::unordered_map<uint64_t, State> g_states;
 std::unordered_map<uint64_t, uint32_t> g_occurrence;
 uint64_t g_occurrenceFrame = ~0ull;
@@ -1975,7 +1975,7 @@ ComPtr<ID3D12Resource> g_readback;
 struct Pending { uint64_t key; UINT index; };
 std::vector<Pending> g_pending[kFrames];
 UINT g_used[kFrames] = {};
-uint64_t g_drawn = 0, g_skipped = 0, g_logFrame = 0;
+uint64_t g_drawn = 0, g_skipped = 0, g_logFrame = 0, g_pinned = 0;
 int Threshold()
 {
     static const int n = HyperCullPixels();
@@ -9251,7 +9251,25 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
             if (st != g_states.end())
             {
                 const uint64_t limit = st->second.culled ? uint64_t(Threshold()) * uint64_t(hyst) / 100 : uint64_t(Threshold());
-                st->second.culled = st->second.pixels <= limit;
+                bool now = st->second.pixels <= limit;
+                // REGPU_HYPER_CULL_PIN (on; 0 = off): a draw that comes back from being culled twice within 64 frames is
+                // never culled again. The probe re-measures without depth writes, so a draw whose layers hide each other
+                // counts more pixels in the probe than when really drawn: probe says big, real draw says tiny, and the
+                // draw blinked 6 frames on, 6 off (Potato, the highlight on the player's car, 16 Nov 2026).
+                static const bool pin = !getenv("REGPU_HYPER_CULL_PIN") || atoi(getenv("REGPU_HYPER_CULL_PIN")) != 0;
+                if (pin && st->second.pinned)
+                    now = false;
+                else if (pin && st->second.culled && !now)
+                {
+                    st->second.flips = g_r.frame - st->second.lastUncull < 64 ? uint8_t(st->second.flips + 1) : uint8_t(1);
+                    st->second.lastUncull = g_r.frame;
+                    if (st->second.flips >= 2)
+                    {
+                        st->second.pinned = true;
+                        g_pinned++;
+                    }
+                }
+                st->second.culled = now;
             }
             if (!late && st != g_states.end() && st->second.culled && !retest)
             {
@@ -10373,8 +10391,8 @@ void DrawImpl(uint32_t initiator, uint32_t dmaBase, uint32_t dmaSize)
             if (g_r.frame >= g_logFrame + 600)
             {
                 g_logFrame = g_r.frame;
-                Log("hyper cull: %llu drawn, %llu skipped (%.1f%%)", (unsigned long long)g_drawn, (unsigned long long)g_skipped,
-                    100.0 * g_skipped / std::max<uint64_t>(1, g_drawn + g_skipped));
+                Log("hyper cull: %llu drawn, %llu skipped (%.1f%%), %llu draws pinned", (unsigned long long)g_drawn, (unsigned long long)g_skipped,
+                    100.0 * g_skipped / std::max<uint64_t>(1, g_drawn + g_skipped), (unsigned long long)g_pinned);
             }
             if (!g_heap)
             {

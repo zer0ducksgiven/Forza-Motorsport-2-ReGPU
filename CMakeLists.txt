@@ -159,3 +159,10 @@ target_link_libraries(xenos_dis PRIVATE d3dcompiler)
 add_executable(xmadecode tools/xmadecode.cpp)
 target_include_directories(xmadecode PRIVATE "${FM2_FFMPEG}/include")
 target_link_libraries(xmadecode PRIVATE "${FM2_FFMPEG}/lib/avcodec.lib" "${FM2_FFMPEG}/lib/avutil.lib")
+
+# Hyper Settings (prototype): a Win32 form that starts fm2.exe with a Hyper preset or hand-picked cuts, the upscaler and
+# the resolutions, all passed as environment variables. Built next to fm2.exe.
+add_executable(hyper_menu WIN32 tools/hyper_menu.cpp tools/hyper_menu.manifest)
+target_compile_definitions(hyper_menu PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS UNICODE _UNICODE)
+target_link_libraries(hyper_menu PRIVATE comctl32 shell32 user32 gdi32 gdiplus dwmapi)
+set_target_properties(hyper_menu PROPERTIES RUNTIME_OUTPUT_DIRECTORY "$<TARGET_FILE_DIR:fm2>")

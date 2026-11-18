@@ -241,8 +241,20 @@ std::string RaceNowFlow()
         Lobby.activePlayer.Choices.AssistShifting = ProfileManager.Arcade.Shifting
         Lobby.gameOptions.DamageType = 0
         Lobby.gameOptions.TiresAndFuel = 0
+        -- FM2_RACENOW_AI=1 (payload ai=1): the game's own driver AI races the player's car, as Career's "Hire Driver"
+        -- does (CareerCircuitRace.xml): the most skilled free driver in AIPlayers.
+        if @AI@ ~= 0 then
+            local ok, err = pcall(function()
+                local ai = DB:execute("SELECT Id FROM AIPlayers WHERE isUsed = 0 ORDER BY UISkill DESC")
+                local aiId = ai:getValue(1, "Id", false)
+                Lobby.activePlayer.aiDriverId = aiId
+                pcall(error, "racenow: AI driver " .. tostring(aiId) .. " chosen (the car takes it at the start)")
+            end)
+            if not ok then pcall(error, "racenow: AI driver failed: " .. tostring(err)) end
+        end
         pcall(error, "racenow: race " .. tostring(raceId) .. ", track " .. tostring(Lobby.gameOptions.Track) .. ", class " .. tostring(classId) .. ", car " .. tostring(carId))
     </logic>
+    @WAITSCENE@
     <event Name="RequestGame" GameType="ArcadeCircuitRace"/>
     <logic>
         pcall(error, "racenow: launching")
@@ -263,8 +275,25 @@ std::string RaceNowFlow()
             f.replace(at, strlen(key), value);
     };
     put("@RACE@", env("FM2_RACENOW_RACE", 0));
+    put("@AI@", env("FM2_RACENOW_AI", 0));
     put("@CLASS@", env("FM2_RACENOW_CLASS", 1));
     put("@CAR@", env("FM2_RACENOW_CAR", -1));
+    // FM2_RACENOW_WAIT=<updates> (experiment, 16 Nov 2026): the loading screen stays up for that many updates between
+    // setting the race up and launching it. The shortcut launches about 0.3 s after the profile loads; some launches
+    // then stay on the loading screen for ever (no track file is read). Does more time before the launch cure that?
+    const int wait = getenv("FM2_RACENOW_WAIT") ? atoi(getenv("FM2_RACENOW_WAIT")) : 30; // 30: 0 of 10 launches stuck, against 8 of 10 with 0
+    put("@WAITSCENE@", wait <= 0 ? std::string() : R"xml(<scene path="GAME:\Media\UI\Scenes\P_Scenes\P_LOA\P_LOA_LoadingScreen.xgf" fadein="0" fadeout="0">
+        <onEnter>
+            RaceNowWait = 0
+            pcall(error, "racenow: waiting before the launch")
+        </onEnter>
+        <onUpdate>
+            RaceNowWait = RaceNowWait + 1
+            if RaceNowWait == )xml" + std::to_string(wait) + R"xml( then
+                UI:flowProcess()
+            end
+        </onUpdate>
+    </scene>)xml");
     return f;
 }
 
@@ -278,9 +307,20 @@ bool PatchRaceFlowCountdown(std::vector<uint8_t>& data)
         const size_t grid = s.find(R"(<scene path="GAME:\Media\UI\Scenes\I_Scenes\I_PRE\I_PRE_All_Modes.xgf">)");
         const size_t start = grid == std::string::npos ? grid : s.find(R"(<choice event="StartRace">)", grid);
         const size_t end = start == std::string::npos ? start : s.find("</branch>", start);
+        // FM2_RACENOW_AI: the race is loaded here, so the player's car exists and takes the AI driver, as after
+        // Career's "Hire Driver" (setAIDriverId, then the runtime re-init of the hired driver).
+        const char* ai = getenv("FM2_RACENOW_AI");
+        const std::string hire = ai && atoi(ai) ? std::string(
+            "        local id = Lobby.activePlayer.aiDriverId\n"
+            "        if id and id ~= 0 then\n"
+            "            local ok, err = pcall(function() Lobby.activePlayer:getCar():setAIDriverId(id) end)\n"
+            "            pcall(error, \"racenow: car setAIDriverId(\" .. tostring(id) .. \") \" .. (ok and \"ok\" or tostring(err)))\n"
+            "            ok, err = pcall(function() GameLib:RuntimeReInitCareerHireFireDriver() end)\n"
+            "            pcall(error, \"racenow: hired-driver re-init \" .. (ok and \"ok\" or tostring(err)))\n"
+            "        end\n") : std::string();
         if (end != std::string::npos)
             s.replace(grid, end + 9 - grid,
-                "<logic>\n        UI.Flow.SelectedOption = \"StartRace\"\n        Game:HandleMenuOption(\"StartRace\")\n"
+                "<logic>\n" + hire + "        UI.Flow.SelectedOption = \"StartRace\"\n        Game:HandleMenuOption(\"StartRace\")\n"
                 "        Game:Unpause()\n    </logic>");
         else
             Log("racenow: the race flow's starting grid was not found; it stays");
