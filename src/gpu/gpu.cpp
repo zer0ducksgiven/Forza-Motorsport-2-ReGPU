@@ -117,7 +117,7 @@ void RaiseInterrupt(uint32_t source, uint32_t cpu)
 // (translation, not parsing, is the cost), so it pays off once draws are spread over workers.
 namespace work
 {
-enum : uint32_t { kPad, kRegs, kShader, kDraw, kSwap, kWriteBack, kStore };
+enum : uint32_t { kPad, kRegs, kShader, kDraw, kSwap, kWriteBack, kStore, kQueryBegin, kQueryEnd };
 constexpr uint64_t kWords = 16ull << 20; // 64 MB
 std::vector<uint32_t> g_ring(kWords);
 alignas(64) std::atomic<uint64_t> g_head{ 0 }; // written by the command processor
@@ -127,6 +127,10 @@ std::vector<uint8_t> g_file(0x8000 * 4);       // the worker's register file (re
 // FM2_NO_DRAW_THREAD=1: the parallel draw workers on the command processor, as before.
 const bool g_enabled = getenv("FM2_NO_DRAW_THREAD") == nullptr;
 std::atomic<bool> g_started{ false };
+// Occlusion queries on the draw thread (EVENT_WRITE_ZPD): the command processor's view.
+bool g_queryOpen = false;
+uint32_t g_queryCount = 0; // queries begun this frame
+uint32_t g_queryOrder = 0; // the open one's order in the frame
 
 // Space for a record of `words` payload words; returns where to write it.
 uint32_t* Begin(uint32_t type, uint32_t words)
@@ -484,6 +488,12 @@ void WorkerLoop()
             case work::kStore:
                 StoreBE32(a[0], a[1]);
                 break;
+            case work::kQueryBegin:
+                RendererOcclusionBegin(a[0]);
+                break;
+            case work::kQueryEnd:
+                RendererOcclusionEndRecorded();
+                break;
             default:
                 break;
             }
@@ -784,6 +794,7 @@ uint32_t ExecutePacket(uint32_t ptr)
                 seg::g_tile = RendererTile{};
                 if (work::Active())
                 {
+                    work::g_queryCount = 0; // the next frame's queries
                     uint32_t* p = work::Begin(work::kSwap, 3);
                     p[0] = uint32_t(swap.frame);
                     p[1] = uint32_t(swap.frame >> 32);
@@ -876,15 +887,47 @@ uint32_t ExecutePacket(uint32_t ptr)
             logged++;
             Log("zpd: %08X %08X %08X %08X %08X %08X %08X %08X%s", c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7], end ? " (end)" : "");
         }
-        // Real counts when draws are recorded here in stream order (not with the draw thread
-        // or workers, whose lists the query would not wrap): the sun flare fades behind trees.
+        // Real counts when draws are recorded in stream order: the sun flare fades behind trees and the
+        // HUD. Here, or with the draw thread on it: the query's begin and end go into its log around the
+        // draws between them, and the end is answered here with the same query (its order in the frame)
+        // from the last completed frame. Not with the parallel draw workers, whose lists the query would
+        // not wrap (fully visible, as before).
         static LiveSwitch fake("FM2_FAKE_OCCLUSION"); // A/B: the old fixed answer
-        const bool real = !fake && !work::Active() && !seg::Enabled();
+        const bool real = !fake && !seg::Enabled();
         uint32_t samples = 1000;
-        if (real && !end)
+        if (real && work::Active())
+        {
+            if (!end && !work::g_queryOpen && work::g_queryCount < kRendererOcclusionsPerFrame)
+            {
+                work::g_queryOpen = true;
+                work::g_queryOrder = work::g_queryCount++;
+                uint32_t* p = work::Begin(work::kQueryBegin, 1);
+                p[0] = work::g_queryOrder;
+                work::End(1);
+            }
+            else if (end && work::g_queryOpen)
+            {
+                work::g_queryOpen = false;
+                work::Begin(work::kQueryEnd, 0);
+                work::End(0);
+                if (!RendererOcclusionResult(work::g_queryOrder, samples))
+                    samples = 1000; // no result yet (the first frames): fully visible
+            }
+        }
+        else if (real && !end)
             RendererOcclusionBegin();
         else if (real && !RendererOcclusionEnd(samples))
             samples = 1000; // no result yet (the first frames): fully visible
+        if (end)
+        {
+            // FM2_TRACE_ZPD_RESULTS=1 (live): the next 40 answers.
+            static LiveSwitch traceResults("FM2_TRACE_ZPD_RESULTS");
+            static int answers = 0;
+            if (!traceResults)
+                answers = 0;
+            else if (answers < 40)
+                Log("zpd answer %d: %u samples%s", answers++, samples, work::Active() ? " (draw thread)" : "");
+        }
         memset(c, 0, 8 * 4);
         if (end)
         {

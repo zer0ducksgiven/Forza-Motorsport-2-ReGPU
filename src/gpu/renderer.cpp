@@ -848,11 +848,14 @@ uint32_t g_passDraws = 0;
 // Occlusion queries (EVENT_WRITE_ZPD: the sun flare's visibility). Each guest query becomes a
 // D3D12 one; the guest gets the result of the same query (by order in the frame) from the
 // last frame that has completed, so the command processor never waits for the GPU.
-constexpr UINT kOcclusionPerFrame = 64;
+constexpr UINT kOcclusionPerFrame = kRendererOcclusionsPerFrame;
 ComPtr<ID3D12QueryHeap> g_occlusionHeap;
 ComPtr<ID3D12Resource> g_occlusionReadback;
 std::vector<std::pair<UINT, UINT>> g_occlusionPending[3]; // per frame slot: (order in the frame, query index)
 std::vector<int64_t> g_occlusionResult;                     // by order in the frame: host samples, -1 none yet
+// g_occlusionResult is filled by the thread that records frames and, with the draw thread, read by the
+// command processor (RendererOcclusionResult).
+std::mutex g_occlusionResultLock;
 uint64_t g_occlusionFrame = ~0ull;
 UINT g_occlusionCount = 0, g_occlusionIndex = 0, g_occlusionOrder = 0;
 bool g_occlusionOpen = false;
@@ -2845,6 +2848,7 @@ void BeginFrameIfNeeded()
         const D3D12_RANGE range{ size_t(frameIndex) * kOcclusionPerFrame * 8, size_t(frameIndex + 1) * kOcclusionPerFrame * 8 };
         if (SUCCEEDED(g_occlusionReadback->Map(0, &range, reinterpret_cast<void**>(&counts))))
         {
+            std::lock_guard lock(g_occlusionResultLock);
             for (const auto& [order, index] : g_occlusionPending[frameIndex])
             {
                 if (g_occlusionResult.size() <= order)
@@ -10938,7 +10942,7 @@ bool RendererIsResolveDraw()
     return (gpureg::Get(RB_MODECONTROL) & 7) == 6;
 }
 
-void RendererOcclusionBegin()
+void RendererOcclusionBegin(uint32_t order)
 {
     // Not on Vulkan: this started the whole Direct3D 12 renderer next to it (device, upload ring, vertex arena and a
     // rebuild of every pipeline in the manifest, on the CPU for minutes) for a query that never saw a draw.
@@ -10953,7 +10957,7 @@ void RendererOcclusionBegin()
         g_occlusionFrame = g_r.frame;
         g_occlusionCount = 0;
     }
-    if (g_occlusionOpen || g_occlusionCount >= kOcclusionPerFrame)
+    if (g_occlusionOpen || g_occlusionCount >= kOcclusionPerFrame || (order != ~0u && order >= kOcclusionPerFrame))
         return;
     if (!g_occlusionHeap)
     {
@@ -10965,8 +10969,10 @@ void RendererOcclusionBegin()
         if (!g_occlusionHeap || !g_occlusionReadback)
             return;
     }
-    g_occlusionOrder = g_occlusionCount++;
-    g_occlusionIndex = g_r.frameIndex * kOcclusionPerFrame + g_occlusionOrder;
+    // (The heap slot is the next free one; the order is the command processor's when it gave one.)
+    const UINT slot = g_occlusionCount++;
+    g_occlusionOrder = order != ~0u ? order : slot;
+    g_occlusionIndex = g_r.frameIndex * kOcclusionPerFrame + slot;
     C().list->BeginQuery(g_occlusionHeap.Get(), D3D12_QUERY_TYPE_OCCLUSION, g_occlusionIndex);
     g_occlusionOpen = true;
 }
@@ -10977,13 +10983,29 @@ bool RendererOcclusionEnd(uint32_t& samples)
         return false;
     const UINT order = g_occlusionOrder;
     EndOcclusionQuery();
-    if (order >= g_occlusionResult.size() || g_occlusionResult[order] < 0)
-        return false;
+    return RendererOcclusionResult(order, samples);
+}
+
+void RendererOcclusionEndRecorded()
+{
+    if (g_occlusionOpen)
+        EndOcclusionQuery();
+}
+
+bool RendererOcclusionResult(uint32_t order, uint32_t& samples)
+{
+    int64_t host;
+    {
+        std::lock_guard lock(g_occlusionResultLock);
+        if (order >= g_occlusionResult.size() || g_occlusionResult[order] < 0)
+            return false;
+        host = g_occlusionResult[order];
+    }
     // Host samples to the console's: the output is ScaleX x ScaleY host pixels per game pixel
     // with g_msaa samples each; the guest surface has 1, 2 or 4 samples per pixel.
     const uint32_t guestMsaa = (gpureg::Get(RB_SURFACE_INFO) >> 16) & 3;
     const double perHost = double(1u << guestMsaa) / (double(ScaleX()) * double(ScaleY()) * double(g_msaa));
-    samples = uint32_t(std::min(double(g_occlusionResult[order]) * perHost + 0.5, 4294967295.0));
+    samples = uint32_t(std::min(double(host) * perHost + 0.5, 4294967295.0));
     return true;
 }
 

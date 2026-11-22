@@ -82,9 +82,15 @@ uint32_t RendererDrawWorkers();
 bool RendererIsResolveDraw();
 // Occlusion queries (EVENT_WRITE_ZPD): Begin starts counting the samples later draws pass;
 // End stops and gives the count in console samples (of the same query in the last completed
-// frame), false while there is none yet.
-void RendererOcclusionBegin();
+// frame), false while there is none yet. With the draw thread the command processor picks each
+// query's order in the frame (below kRendererOcclusionsPerFrame) and passes it to Begin on the
+// draw thread, which records the query around its draws (EndRecorded ends it); the command
+// processor answers the query's end itself with Result.
+constexpr uint32_t kRendererOcclusionsPerFrame = 64;
+void RendererOcclusionBegin(uint32_t order = ~0u);
 bool RendererOcclusionEnd(uint32_t& samples);
+void RendererOcclusionEndRecorded();
+bool RendererOcclusionResult(uint32_t order, uint32_t& samples);
 // Follows the tile state draws set (see DrawImpl), for the state at each piece's start.
 void RendererTrackTile(RendererTile& tile);
 void RendererSetTile(const RendererTile& tile);
