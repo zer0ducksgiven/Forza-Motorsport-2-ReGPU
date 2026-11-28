@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <set>
 #include <string>
 
 // Player settings: Documents\fm2\settings.ini, edited by the launcher. Environment
@@ -10,6 +11,8 @@ struct Settings
     enum class Renderer { D3d12, Vulkan };
     Renderer renderer = Renderer::D3d12;
     std::string profile = "Player";     // the gamer profile name the game sees
+    std::string deck = "auto";           // the Steam Deck profile: auto, on or off (regpu_host/deck.cpp, ReGPU-V build)
+    std::set<std::string> fromFile;      // the keys settings.ini set (presets fill only the others)
     uint32_t width = 1280, height = 720; // output resolution
     uint32_t aspectW = 0, aspectH = 0;   // forced aspect ratio (0 = from the resolution)
     bool fullscreen = false;             // borderless fullscreen on the primary display

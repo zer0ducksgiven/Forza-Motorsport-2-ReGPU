@@ -1,4 +1,8 @@
 #pragma once
+#if FM2_REGPU
+// The ReGPU-V build (-DFM2_REGPU=ON): the GPU is ReGPU-V, and this header's calls are src/regpu_host/hyper.h.
+#include "regpu_host/hyper.h"
+#else
 // Hyper: a low-spec, high-performance mode (see HYPER.md in the ReGPU_Hyper workspace). It degrades how the GPU
 // work is done (resolution, precision, sampling, refresh) and never removes any of it: every pass, draw and effect
 // still runs. Strictly generic: decided from what the renderer sees, with no game-specific knowledge.
@@ -83,3 +87,4 @@ bool HyperCullAll();
 
 // One line for the log: the preset and every cut's value.
 void HyperLogSummary();
+#endif // FM2_REGPU

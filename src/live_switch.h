@@ -23,6 +23,7 @@ public:
     // The debug server's side: false if the name was never a switch (it's then kept for when one registers).
     static bool Set(const std::string& name, bool on);
     static std::vector<std::pair<std::string, bool>> List(); // the switches registered so far
+    void SetFromWatch(bool on); // (live_switch.cpp's environment watch: ReGPU's debug server "env FM2_NAME 1")
 
 private:
     const char* name_;

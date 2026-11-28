@@ -4,6 +4,9 @@
 // steering force and the centring spring at full strength (gain 255), which is what the Xbox 360
 // wheel did in menus, pauses and replays. sub_82360378 is its setter (reached only through a
 // virtual call); the state is taken here on the way through.
+#if FM2_REGPU
+#include "regpu_host/bench.h"
+#endif
 #include "input/wheel.h"
 #include "kernel/imports.h"
 #include "log.h"
@@ -23,6 +26,9 @@ PPC_FUNC(sub_82360378)
         last = driving;
     }
     WheelSetDriving(driving);
+#if FM2_REGPU
+    BenchDriving(driving); // (the ReGPU-V benchmark, regpu_host/bench.cpp)
+#endif
     *GuestPtr<uint8_t>(ctx.r3.u32 + 5) = uint8_t(ctx.r4.u32);
     (void)base;
 }

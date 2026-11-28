@@ -382,6 +382,57 @@ on the CPU), `FM2_VK_DEBUG_PS` / `FM2_VK_DEBUG_VS` (as `FM2_DEBUG_PS` / `FM2_DEB
 `FM2_VK_FRAME_GPU_TIMES=1` with `FM2_VK_PHASE_GPU_TIMES=1|2` (GPU time per pass, or per draw and pixel shader, in the
 `FM2_PERF` log) and `FM2_VK_SAMPLE=1` (a sampling profile of the render thread, written to `out/vk_samples.txt`).
 
+## ReGPU-V renderer (optional build)
+
+`-DFM2_REGPU=ON` builds the port with **ReGPU-V** as its GPU instead of its own renderer: the Vulkan ReGPU the PGR3, FM3
+and FM4 ports use (`thirdparty/ReGPU`, a submodule of [braaap-stututu/ReGPU](https://github.com/braaap-stututu/ReGPU),
+branch `pgr3vk`). The default build is unchanged; this one leaves `src/gpu`, `src/render` and the debug server out and
+builds `src/regpu_host` instead (the headers the rest of the port includes switch to it). Build it in a folder of its own:
+
+```
+git submodule update --init thirdparty/ReGPU
+tools\vcenv.cmd cmake -S . -B build/regpu -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl -DCMAKE_LINKER=lld-link -DFM2_REGPU=ON
+tools\vcenv.cmd ninja -C build/regpu fm2
+```
+
+It needs the DirectXShaderCompiler release in `thirdparty/dxc` (as the Vulkan renderer above: `dxcompiler.dll` and
+`dxil.dll` are copied beside `fm2.exe`, and its `dxc.exe` builds ReGPU's own compute shaders; on Linux pass
+`-DREGPU_DXC_EXE=/usr/bin/dxc`). DLSS and the Direct3D 12 FidelityFX libraries are not used; FSR 3 is, through
+FidelityFX's Vulkan DLLs when `thirdparty/fidelityfx` has them. `-DFM2_TITLE_UPDATE=ON` works as for the default build.
+
+What it does differently on FM2:
+- **Early fences** (`REGPU_EARLY_FENCES`, on by default; `FM2_LATE_FENCES=1` turns them off): fences are written when
+  ReGPU's command processor reaches them, not after the host GPU has finished. FM2's render thread waits for each, so
+  the game, the command processor and the GPU took turns; on a Steam Deck this doubled the frame rate.
+- **Direct dynamic indices** (`REGPU_DIRECT_DYNAMIC_INDICES`, on; `FM2_NO_DIRECT_INDICES=1` off): +7.7% on the Deck.
+- **Steam Deck profile** (`src/regpu_host/deck.cpp`, `deck=auto|on|off` in `settings.ini`, `FM2_DECK`): on a Deck APU
+  under Proton the frame cap follows the display's refresh rate, and when `settings.ini` doesn't set them, 1280x800 and
+  2x MSAA. Under any cap of 144 or below (or VSync) the command processor sleeps while idle instead of spinning a core.
+- The CPU read-backs FM2 needs: the garage thumbnail (256x128), the race livery (1024x1024) and Photo Mode's focus
+  depth and picture.
+- The debug server is ReGPU's (`REGPU_DEBUG=1`, `thirdparty/ReGPU/tools/regpuctl.py`); `FM2_*` live switches follow
+  their environment variable (`regpuctl.py env FM2_NAME 1`).
+
+Steam Deck, 720p, 2x MSAA, uncapped, base disc (frames counted over the same 50 s of an AI race; the default build
+from the same commit for comparison):
+
+| | fps |
+|---|---|
+| This port's Direct3D 12 renderer (through vkd3d-proton) | 95-99 |
+| ReGPU-V build | 98-101 |
+| ReGPU-V build, Deck profile (1280x800, 2x, capped at the display) | 106 (AI race), 99 (start grid) |
+
+At 720p without MSAA (the experimental Vulkan renderer has none yet): the Vulkan renderer 45-46 fps, the ReGPU-V build
+105-109 fps.
+
+**Benchmark** (`src/regpu_host/bench.cpp`, `FM2_AI_BENCH=<seconds>`; Linux/Proton driver `tools/regpu/bench.sh <label>
+[seconds]`): boots straight into a race with the game's driver AI driving player 1's car, freezes the start grid (game
+time held: byte-identical frames, so `FM2_BENCH_AB=<switch>` gives live A/B pixel comparisons, `tools/regpu/abdiff.sh`),
+measures it, then lets the race go on and measures that. Works on the disc and the title update.
+
+Not there yet: DLSS and FSR frame generation (Direct3D 12 only), F12 frame capture and `tools/fm2ctl.py` (the debug
+server is ReGPU's), and a saved Photo Mode picture still shows the "Saving..." dialog over the photo.
+
 ## Debugging switches
 
 | Variable | Effect |

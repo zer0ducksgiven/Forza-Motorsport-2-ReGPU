@@ -1,4 +1,8 @@
 #pragma once
+#if FM2_REGPU
+// The ReGPU-V build (-DFM2_REGPU=ON): the GPU is ReGPU-V, and this header's calls are src/regpu_host/presenter.h.
+#include "regpu_host/presenter.h"
+#else
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -59,3 +63,4 @@ void PresenterReleaseWindow();
 void PresenterCountFrame();
 // Called by the renderer: the presenter stops drawing its own frames.
 void PresenterUseRenderer();
+#endif // FM2_REGPU

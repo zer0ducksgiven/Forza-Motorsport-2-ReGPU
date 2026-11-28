@@ -64,6 +64,17 @@ endif()
 message(STATUS "mftb: ${FM2_MFTB_RESULT}")
 
 file(GLOB_RECURSE FM2_SOURCES CONFIGURE_DEPENDS src/*.cpp)
+# -DFM2_REGPU=ON: the GPU is ReGPU-V instead of this port's renderer (thirdparty/ReGPU, github.com/braaap-stututu/ReGPU,
+# a Vulkan ReGPU shared with the PGR3 port). src/gpu, src/render and the debug server are left out, src/regpu_host is
+# built (the headers the rest of the port includes switch to it). Build it in a folder of its own, e.g. build/regpu.
+option(FM2_REGPU "Build with ReGPU-V (Vulkan) as the GPU instead of the port's renderer" OFF)
+if(FM2_REGPU)
+    list(FILTER FM2_SOURCES EXCLUDE REGEX "/src/(gpu|render)/")
+    list(REMOVE_ITEM FM2_SOURCES "${CMAKE_SOURCE_DIR}/src/debug.cpp")
+else()
+    list(FILTER FM2_SOURCES EXCLUDE REGEX "/src/regpu_host/")
+endif()
+if(NOT FM2_REGPU)
 # The native Vulkan renderer (experimental; the launcher's Vulkan switch). It needs the Vulkan headers
 # and dxc (see README), and is on by default when thirdparty/vulkan-headers is there.
 # linux/vk.sh builds its test tools natively.
@@ -87,6 +98,7 @@ else()
 endif()
 # meshoptimizer (MIT): Hyper's mesh decimation.
 list(APPEND FM2_SOURCES "${CMAKE_SOURCE_DIR}/thirdparty/meshoptimizer/src/simplifier.cpp" "${CMAKE_SOURCE_DIR}/thirdparty/meshoptimizer/src/allocator.cpp" "${CMAKE_SOURCE_DIR}/thirdparty/meshoptimizer/src/vcacheoptimizer.cpp" "${CMAKE_SOURCE_DIR}/thirdparty/meshoptimizer/src/overdrawoptimizer.cpp")
+endif() # NOT FM2_REGPU (ReGPU-V builds meshoptimizer itself)
 if(FM2_TITLE_UPDATE)
     set(FM2_TU_DIR "${CMAKE_SOURCE_DIR}/out/tu4")
     set(FM2_REMAP_DIR "${CMAKE_BINARY_DIR}/remapped")
@@ -100,7 +112,8 @@ if(FM2_TITLE_UPDATE)
     # Sources with guest addresses are compiled from translated copies.
     foreach(rel ${FM2_REMAP_LIST})
         string(STRIP "${rel}" rel)
-        if(rel MATCHES "\\.cpp$")
+        # (only sources this build compiles: the other GPU's are left out)
+        if(rel MATCHES "\\.cpp$" AND "${CMAKE_SOURCE_DIR}/src/${rel}" IN_LIST FM2_SOURCES)
             list(REMOVE_ITEM FM2_SOURCES "${CMAKE_SOURCE_DIR}/src/${rel}")
             add_custom_command(OUTPUT "${FM2_REMAP_DIR}/${rel}"
                 COMMAND ${FM2_PYTHON} -I "${CMAKE_SOURCE_DIR}/tools/xexremap.py" source ${FM2_REMAP_ARGS} "${CMAKE_SOURCE_DIR}/src/${rel}" "${FM2_REMAP_DIR}/${rel}"
@@ -123,6 +136,49 @@ set(FM2_FFX "${CMAKE_SOURCE_DIR}/thirdparty/fidelityfx/Kits/FidelityFX")
 if(NOT EXISTS "${FM2_FFX}/upscalers/fsr3/include/gpu/fsr1/ffx_fsr1.h")
     message(FATAL_ERROR "thirdparty/fidelityfx is missing: clone FidelityFX-SDK v2.3.0 there (see README)")
 endif()
+if(FM2_REGPU)
+# ReGPU-V: a static library providing the Vd* imports, the window, presentation and the debug server (regpuctl.py).
+# It translates the game's shaders to SPIR-V at run time with dxcompiler.dll + dxil.dll beside fm2.exe (a
+# DirectXShaderCompiler release: the Windows SDK's copy has no SPIR-V output; FM2_DXC_DIR, default thirdparty/dxc/bin/x64
+# as for the Vulkan renderer), and builds its own compute shaders with that release's dxc.exe (REGPU_DXC_EXE; on Linux
+# /usr/bin/dxc). FidelityFX's Vulkan DLLs (FSR 3) are used when thirdparty/fidelityfx has them.
+set(FM2_REGPU_DIR "${CMAKE_SOURCE_DIR}/thirdparty/ReGPU" CACHE PATH "ReGPU-V source folder (git submodule)")
+if(NOT EXISTS "${FM2_REGPU_DIR}/src/gpu/vk")
+    message(FATAL_ERROR "FM2_REGPU: ${FM2_REGPU_DIR} is not a ReGPU-V checkout (git submodule update --init thirdparty/ReGPU)")
+endif()
+set(FM2_DXC_DIR "${CMAKE_SOURCE_DIR}/thirdparty/dxc/bin/x64" CACHE PATH "DirectXShaderCompiler release bin/x64 (dxcompiler.dll, dxil.dll)")
+if(EXISTS "${FM2_DXC_DIR}/dxc.exe" AND CMAKE_HOST_WIN32)
+    set(REGPU_DXC_EXE "${FM2_DXC_DIR}/dxc.exe" CACHE FILEPATH "DXC with SPIR-V output (ReGPU's own compute shaders)")
+endif()
+set(REGPU_XENONRECOMP "${CMAKE_SOURCE_DIR}/thirdparty/ReXenon")
+set(REGPU_PPC_DIR "${FM2_PPC_DIR}")
+set(REGPU_FFX "${FM2_FFX}")
+if(EXISTS "${FM2_FFX}/signedbin/amd_fidelityfx_upscaler_vk.dll")
+    set(REGPU_FSR3 ON)
+endif()
+set(REGPU_MESHOPT_DIR "${CMAKE_SOURCE_DIR}/thirdparty/meshoptimizer" CACHE PATH "" FORCE) # Hypermode
+# REGPU_AA_DIR (optional): a folder with fxaa/Fxaa3_11.h, smaa/ and cmaa2/CMAA2.hlsl for ReGPU's post-AA filters.
+add_subdirectory("${FM2_REGPU_DIR}" regpu)
+
+add_executable(fm2 ${FM2_SOURCES} "${CMAKE_SOURCE_DIR}/src/fm2.rc")
+target_compile_definitions(fm2 PRIVATE FM2_REGPU=1)
+if(FM2_TITLE_UPDATE)
+    target_compile_definitions(fm2 PRIVATE FM2_TITLE_UPDATE=1)
+endif()
+target_include_directories(fm2 PRIVATE src "${FM2_PPC_DIR}" thirdparty/ReXenon/thirdparty/simde)
+target_link_libraries(fm2 PRIVATE regpu fm2_ppc XenonUtils synchronization winmm onecore dxgi)
+if(REGPU_FSR3)
+    add_custom_command(TARGET fm2 POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${FM2_FFX}/signedbin/amd_fidelityfx_loader_vk.dll" "${FM2_FFX}/signedbin/amd_fidelityfx_upscaler_vk.dll" $<TARGET_FILE_DIR:fm2>)
+endif()
+foreach(FM2_DXC_DLL dxcompiler.dll dxil.dll)
+    if(EXISTS "${FM2_DXC_DIR}/${FM2_DXC_DLL}")
+        add_custom_command(TARGET fm2 POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different "${FM2_DXC_DIR}/${FM2_DXC_DLL}" $<TARGET_FILE_DIR:fm2>)
+    else()
+        message(WARNING "${FM2_DXC_DIR}/${FM2_DXC_DLL} is missing: ReGPU-V needs a DirectXShaderCompiler release beside fm2.exe")
+    endif()
+endforeach()
+else() # the port's own renderer (Direct3D 12, and the experimental Vulkan backend)
 # FSR 1 compute shaders, compiled with fxc at build time and embedded.
 set(FM2_GENERATED "${CMAKE_BINARY_DIR}/generated")
 add_custom_command(OUTPUT "${FM2_GENERATED}/fsr1_cs.h"
@@ -184,6 +240,7 @@ add_custom_command(TARGET fm2 POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_dif
 set(FM2_D3DCOMPILER "C:/Program Files (x86)/Windows Kits/10/Redist/D3D/x64/d3dcompiler_47.dll" CACHE FILEPATH "Redistributable d3dcompiler_47.dll")
 add_custom_command(TARGET fm2 POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different "${FM2_D3DCOMPILER}" $<TARGET_FILE_DIR:fm2>)
 target_link_libraries(fm2 PRIVATE fm2_ppc XenonUtils synchronization winmm onecore d3d12 dxgi d3dcompiler)
+endif() # FM2_REGPU
 # -DFM2_PPC_LAYOUT_SEED=<n> links the generated functions in a random order fixed by n (only a
 # relink): A/B tests then compare builds over several code layouts instead of one.
 # -DFM2_PPC_LAYOUT_PROFILE=<file> (FM2_SAMPLE_OUT from a profiled run) puts the sampled functions first,
@@ -241,9 +298,11 @@ add_custom_command(TARGET fm2 POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_dif
 
 # Xenos shader disassembler for captured microcode.
 # hlsl.cpp reads a live switch and logs, so the disassembler pulls those in too.
+if(NOT FM2_REGPU)
 add_executable(xenos_dis tools/xenos_dis.cpp src/gpu/ucode.cpp src/gpu/hlsl.cpp src/live_switch.cpp src/log.cpp)
 target_include_directories(xenos_dis PRIVATE src)
 target_link_libraries(xenos_dis PRIVATE d3dcompiler)
+endif()
 
 # FMOD sound banks decoded as the game's XMA decoder does, for tools/mkloops.py (audio/seamless_loops.h).
 add_executable(xmadecode tools/xmadecode.cpp)

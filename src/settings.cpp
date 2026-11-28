@@ -144,7 +144,10 @@ void Load()
         if (eq == std::string::npos || line[0] == '#' || line[0] == ';')
             continue;
         const std::string key = line.substr(0, eq), value = line.substr(eq + 1);
-        if (key == "renderer")
+        g_settings.fromFile.insert(key);
+        if (key == "deck")
+            g_settings.deck = value;
+        else if (key == "renderer")
             g_settings.renderer = ParseRenderer(value);
         else if (key == "settings_rev")
             rev = atoi(value.c_str());
@@ -382,6 +385,10 @@ Settings& GetSettings()
     {
         g_loaded = true;
         Load();
+#if FM2_REGPU
+        void DeckProfileInit(); // regpu_host/deck.cpp
+        DeckProfileInit();
+#endif
     }
     return g_settings;
 }
@@ -394,6 +401,9 @@ void SaveSettings()
     out << "renderer=" << RendererName(s.renderer) << "\n";
     out << "profile=" << s.profile << "\n";
     out << "online_server=" << (s.onlineServer.empty() ? "off" : s.onlineServer) << "\n";
+#if FM2_REGPU
+    out << "deck=" << s.deck << "\n";
+#endif
     out << "resolution=" << s.width << "x" << s.height << "\n";
     out << "aspect=" << (s.aspectW ? std::to_string(s.aspectW) + ":" + std::to_string(s.aspectH) : std::string("auto")) << "\n";
     out << "fullscreen=" << (s.fullscreen ? 1 : 0) << "\n";
