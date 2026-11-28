@@ -4,3 +4,7 @@
 [submodule "thirdparty/meshoptimizer"]
 	path = thirdparty/meshoptimizer
 	url = https://github.com/zeux/meshoptimizer
+[submodule "thirdparty/ReGPU"]
+	path = thirdparty/ReGPU
+	url = https://github.com/braaap-stututu/ReGPU.git
+	branch = pgr3vk

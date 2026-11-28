@@ -66,3 +66,17 @@ std::vector<std::string> LogTail(size_t n)
     const size_t from = g_recent.size() > n ? g_recent.size() - n : 0;
     return std::vector<std::string>(g_recent.begin() + ptrdiff_t(from), g_recent.end());
 }
+
+#if FM2_REGPU
+// The Vulkan ReGPU calls LogStart once Config::userDir is final (its own regpu.log); FM2 keeps its own fm2.log, so this
+// does nothing (and keeps ReGPU's log.cpp out of the link, where its Log would clash with this one).
+void LogStart() {}
+
+// What ReGPU-V's log has besides (it calls both): every line is already flushed as it is written, and the seconds
+// since start are the log's own clock.
+void LogFlush() {}
+double LogSeconds()
+{
+    return std::chrono::duration<double>(std::chrono::steady_clock::now() - g_start).count();
+}
+#endif // FM2_REGPU

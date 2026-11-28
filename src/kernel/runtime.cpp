@@ -13,7 +13,12 @@
 
 #include "kernel/imports.h"
 #include "kernel/thread.h"
+#if FM2_REGPU
+#include "regpu_host/bench.h"
+#endif
+#include "live_switch.h"
 #include "loader.h"
+#include "log.h"
 #include "render/presenter.h"
 #include "settings.h"
 #include "user_dir.h"
@@ -43,7 +48,47 @@ void TimeStampThread()
             GetSystemTimeAsFileTime(&ft);
             StoreBE64(bundle + 0, uint64_t(since / 100));
             StoreBE64(bundle + 8, (uint64_t(ft.dwHighDateTime) << 32) | ft.dwLowDateTime);
+#if FM2_REGPU
+            // Freeze (FM2_FREEZE_TIME=1, live; the benchmark's frozen grid, regpu_host/bench.cpp): the main loop takes its frame
+            // dt from TickCount's whole-millisecond delta (docs/research/ai-framerate.md), so holding TickCount still stops
+            // the world (cars, physics, camera, countdown) while every frame is still drawn on the vblanks. Let go, it goes
+            // on from where it stopped (the frozen time is left out), so there is no jump.
+            static LiveSwitch freeze("FM2_FREEZE_TIME");
+            static int64_t frozenNs = 0, frozenSince = -1;
+            if (freeze)
+            {
+                if (frozenSince < 0)
+                {
+                    frozenSince = since;
+                    Log("time: frozen (FM2_FREEZE_TIME)");
+                }
+            }
+            else if (frozenSince >= 0)
+            {
+                frozenNs += since - frozenSince;
+                frozenSince = -1;
+                Log("time: running again after %.1f s frozen", double(frozenNs) / 1e9);
+            }
+            int64_t tickNs = (frozenSince >= 0 ? frozenSince : since) - frozenNs;
+            // Frame-locked time (the benchmark's start, regpu_host/bench.cpp BenchTickNs): TickCount follows the frames shown
+            // (1/60 s each) instead of the clock, so the start grid is the same picture in every run. When it ends, real
+            // time goes on from where it was (the difference is left out, as for a freeze).
+            static bool locked = false;
+            if (const int64_t lockedNs = BenchTickNs(); lockedNs >= 0)
+            {
+                locked = true;
+                tickNs = lockedNs;
+            }
+            else if (locked)
+            {
+                locked = false;
+                frozenNs = (frozenSince >= 0 ? frozenSince : since) - BenchTickEndNs();
+                tickNs = BenchTickEndNs();
+            }
+            StoreBE32(bundle + 16, uint32_t(tickNs / 1000000));
+#else
             StoreBE32(bundle + 16, uint32_t(since / 1000000));
+#endif
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
@@ -65,7 +110,11 @@ double MeasureTsc()
 }
 }
 
+#if FM2_REGPU
+void Fm2GpuInit(); // regpu_host/gpu_host.cpp
+#else
 void GpuInit();
+#endif
 void AudioInit();
 bool CheatsOn();    // hooks/cheats.cpp
 bool RogueModeOn(); // hooks/roguelike.cpp
@@ -117,7 +166,11 @@ void RuntimeInit(const std::filesystem::path& gameDir)
         Log("runtime: FM2 Live off: %s", CheatsOn() ? "this profile has cheats on" : RogueModeOn() ? "Rogue Mode is on" : "Forza Plus 2 is on");
     }
     PresenterInit();
+#if FM2_REGPU
+    Fm2GpuInit();
+#else
     GpuInit();
+#endif
     AudioInit();
 }
 

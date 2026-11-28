@@ -1,4 +1,8 @@
 #pragma once
+#if FM2_REGPU
+// The ReGPU-V build (-DFM2_REGPU=ON): the GPU is ReGPU-V, and this header's calls are src/regpu_host/debug.h.
+#include "regpu_host/debug.h"
+#else
 // The live debug server (FM2_DEBUG=1, port FM2_DEBUG_PORT or 7341, 127.0.0.1 only): drive and inspect the
 // running game without restarting it. tools/fm2ctl.py is its client; the commands are listed there.
 #include <cstdint>
@@ -21,3 +25,4 @@ bool DebugPadState(DebugPad& pad);
 void DebugOnSwap(uint64_t frame);
 bool DebugShotPending(std::string& path);
 void DebugShotDone(const std::string& path);
+#endif // FM2_REGPU

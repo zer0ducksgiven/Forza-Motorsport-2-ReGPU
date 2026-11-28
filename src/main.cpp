@@ -107,12 +107,14 @@ int main(int argc, char** argv)
     RuntimeInit(gameDir);
     WheelStart(); // early (the game asks what player 1 holds a second in), after the settings' folder is known
     DebugServerStart(); // FM2_DEBUG=1: tools/fm2ctl.py drives the running game
+#if !FM2_REGPU
     if (getenv("FM2_BOOTSCREEN_PREVIEW"))
     {
         void BootScreenPreview();
         BootScreenPreview();
         return 0;
     }
+#endif
     ThreadSystemInit(g_title.tlsTemplate, g_title.tlsDataSize, g_title.tlsSlotCount);
 
     void StartThreadProfiler();

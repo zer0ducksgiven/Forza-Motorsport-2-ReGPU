@@ -1,4 +1,8 @@
 #pragma once
+#if FM2_REGPU
+// The ReGPU-V build (-DFM2_REGPU=ON): the GPU is ReGPU-V, and this header's calls are src/regpu_host/renderer.h.
+#include "regpu_host/renderer.h"
+#else
 #include <cstdint>
 #include <vector>
 
@@ -97,3 +101,4 @@ void RendererSetTile(const RendererTile& tile);
 // Runs translate(i), i in [0, n), on the draw workers (and this thread), each into its own
 // command list, and executes them in order after everything recorded so far.
 void RendererRunPieces(uint32_t n, const std::function<void(uint32_t)>& translate);
+#endif // FM2_REGPU
